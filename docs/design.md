@@ -219,7 +219,6 @@ Rules:
 ### 5.1 Command Overview
 
 ```text
-lazytmux                    # runs init (default)
 lazytmux init               # tmux startup: install missing, apply opts, load plugins
 lazytmux install [id]       # install all/specified missing remote plugins
 lazytmux update [id]        # update all/specified remote plugins (only command that advances lock)
