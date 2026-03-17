@@ -30,7 +30,7 @@ pub async fn install(
             continue;
         }
 
-        if installed.contains(id.as_str()) {
+        if installed.contains_key(id.as_str()) {
             continue;
         }
 
@@ -259,7 +259,7 @@ pub fn clean(config: &Config, paths: &Paths) -> Result<()> {
         .filter_map(|p| p.remote_id())
         .collect();
 
-    for id in &installed {
+    for id in installed.keys() {
         if !declared_ids.contains(id.as_str()) {
             let dir = paths.plugin_dir(id);
             eprintln!("removing undeclared plugin: {id}");
@@ -276,13 +276,14 @@ pub fn clean(config: &Config, paths: &Paths) -> Result<()> {
 /// List plugin statuses.
 pub fn list(config: &Config, lock: &LockFile, paths: &Paths) -> Result<Vec<PluginStatus>> {
     let installed = planner::scan_installed_plugins(&paths.plugin_root);
+    let installed_ids: HashSet<String> = installed.keys().cloned().collect();
     let markers = state::read_failure_markers(&paths.failures_root)?;
     let failed_keys = collect_failure_keys(&markers);
 
     Ok(planner::compute_statuses(
         config,
         lock,
-        &installed,
+        &installed_ids,
         &failed_keys,
     ))
 }

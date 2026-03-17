@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use lazytmux::{
     config::parse_config,
@@ -16,7 +16,8 @@ fn init_read_only_path_detected_when_aligned() {
         "github.com/user/repo".into(),
         LockEntry::branch("user/repo", "main", "abc123"),
     );
-    let installed: HashSet<String> = ["github.com/user/repo".into()].into();
+    let installed: HashMap<String, Option<String>> =
+        [("github.com/user/repo".into(), Some("abc123".into()))].into();
 
     let decision = planner::plan_init(&config, &lock, &installed, false);
     assert_eq!(decision, InitDecision::ReadOnly);
@@ -30,7 +31,8 @@ fn init_waits_for_writer_before_read_only_load() {
         "github.com/user/repo".into(),
         LockEntry::branch("user/repo", "main", "abc123"),
     );
-    let installed: HashSet<String> = ["github.com/user/repo".into()].into();
+    let installed: HashMap<String, Option<String>> =
+        [("github.com/user/repo".into(), Some("abc123".into()))].into();
 
     let decision = planner::plan_init(&config, &lock, &installed, true);
     assert_eq!(decision, InitDecision::WaitForWriter);
@@ -46,7 +48,7 @@ plugin "user/repo"
     )
     .unwrap();
     let lock = LockFile::new();
-    let installed = HashSet::new();
+    let installed = HashMap::new();
 
     let decision = planner::plan_init(&config, &lock, &installed, false);
     match decision {
@@ -77,7 +79,8 @@ plugin "user/repo"
         LockEntry::branch("user/repo", "main", "abc123"),
     );
     // Between preflight and lock acquisition, plugin was installed
-    let installed: HashSet<String> = ["github.com/user/repo".into()].into();
+    let installed: HashMap<String, Option<String>> =
+        [("github.com/user/repo".into(), Some("abc123".into()))].into();
 
     let decision = planner::plan_init(&config, &lock, &installed, false);
     assert_eq!(decision, InitDecision::ReadOnly);
