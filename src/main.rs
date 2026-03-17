@@ -15,7 +15,7 @@ use lazytmux::{
 #[command(name = "lazytmux", about = "Modern tmux plugin manager")]
 struct Cli {
     #[command(subcommand)]
-    command: Option<Commands>,
+    command: Commands,
 }
 
 #[derive(Debug, Subcommand)]
@@ -50,13 +50,13 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        None | Some(Commands::Init) => run_init().await,
-        Some(Commands::Install { id }) => run_install(id).await,
-        Some(Commands::Update { id }) => run_update(id).await,
-        Some(Commands::Restore { id }) => run_restore(id).await,
-        Some(Commands::Clean) => run_clean(),
-        Some(Commands::List) => run_list(),
-        Some(Commands::Migrate) => {
+        Commands::Init => run_init().await,
+        Commands::Install { id } => run_install(id).await,
+        Commands::Update { id } => run_update(id).await,
+        Commands::Restore { id } => run_restore(id).await,
+        Commands::Clean => run_clean(),
+        Commands::List => run_list(),
+        Commands::Migrate => {
             eprintln!("migrate not yet implemented");
             Ok(())
         }
