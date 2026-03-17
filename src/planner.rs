@@ -94,7 +94,7 @@ pub struct WritePlan {
 pub fn compute_statuses(
     config: &Config,
     lock: &LockFile,
-    installed_plugins: &HashSet<String>,
+    installed_plugins: &HashMap<String, Option<String>>,
     failed_keys: &HashSet<FailureKey>,
 ) -> Vec<PluginStatus> {
     let mut statuses = Vec::new();
@@ -102,7 +102,12 @@ pub fn compute_statuses(
     for spec in &config.plugins {
         match &spec.source {
             PluginSource::Remote { raw, id, .. } => {
-                let is_installed = installed_plugins.contains(id.as_str());
+                let installed_entry = installed_plugins.get(id.as_str());
+                let is_installed = installed_entry.is_some();
+                let current_commit = installed_entry.and_then(|c| c.clone());
+
+                let lock_entry = lock.plugins.get(id.as_str());
+                let lock_commit_str = lock_entry.map(|e| e.commit.as_str());
 
                 let state = if !is_installed {
                     PluginState::Missing
@@ -110,13 +115,25 @@ pub fn compute_statuses(
                     match &spec.tracking {
                         Tracking::Tag(_) => PluginState::PinnedTag,
                         Tracking::Commit(_) => PluginState::PinnedCommit,
-                        _ => PluginState::Installed,
+                        _ => {
+                            // Check if installed commit has drifted from lock
+                            if let (Some(cur), Some(locked)) =
+                                (current_commit.as_deref(), lock_commit_str)
+                            {
+                                if cur != locked {
+                                    PluginState::Outdated
+                                } else {
+                                    PluginState::Installed
+                                }
+                            } else {
+                                PluginState::Installed
+                            }
+                        }
                     }
                 };
 
                 let last_result = if let Some(build_cmd) = &spec.build {
-                    let lock_commit = lock.plugins.get(id.as_str()).map(|e| e.commit.as_str());
-                    if let Some(commit) = lock_commit {
+                    if let Some(commit) = lock_commit_str {
                         let bh = build_command_hash(build_cmd);
                         let key = FailureKey::new(id, commit, &bh);
                         if failed_keys.contains(&key) {
@@ -142,8 +159,8 @@ pub fn compute_statuses(
                     kind: "remote".into(),
                     state,
                     last_result,
-                    current_commit: None, // filled by caller if needed
-                    lock_commit: lock.plugins.get(id.as_str()).map(|e| e.commit.clone()),
+                    current_commit,
+                    lock_commit: lock_entry.map(|e| e.commit.clone()),
                 });
             }
             PluginSource::Local { path } => {
