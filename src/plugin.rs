@@ -228,6 +228,7 @@ pub async fn restore(
     target_id: Option<&str>,
 ) -> Result<()> {
     paths.ensure_dirs()?;
+    let mut failures: Vec<String> = Vec::new();
 
     for spec in &config.plugins {
         let PluginSource::Remote { id, clone_url, .. } = &spec.source else {
@@ -246,7 +247,6 @@ pub async fn restore(
         };
 
         let target_dir = paths.plugin_dir(id);
-        let staging = paths.staging_dir(id);
 
         // Check if revision would actually change
         let current_commit = if target_dir.exists() {
@@ -256,15 +256,19 @@ pub async fn restore(
         };
         let revision_changed = current_commit.as_deref() != Some(&entry.commit);
 
+        // Already at the correct commit — nothing to do
+        if !revision_changed && target_dir.exists() {
+            continue;
+        }
+
+        let staging = paths.staging_dir(id);
+
         // Clone into staging and checkout lock commit
         git::clone_repo(clone_url, &staging).await?;
         git::checkout(&staging, &entry.commit).await?;
 
-        let build = if revision_changed {
-            spec.build.as_deref()
-        } else {
-            None
-        };
+        // Revision changed (or missing), so run build if declared
+        let build = spec.build.as_deref();
 
         let result = if target_dir.exists() {
             let backup = paths.backup_dir(id);
@@ -291,11 +295,20 @@ pub async fn restore(
                     let _ = state::write_failure_marker(&paths.failures_root, &marker);
                 }
                 let _ = std::fs::remove_dir_all(&staging);
-                eprintln!("failed to restore {id}: {e}");
+                let msg = format!("{id}: {e}");
+                eprintln!("failed to restore {msg}");
+                failures.push(msg);
             }
         }
     }
 
+    if !failures.is_empty() {
+        anyhow::bail!(
+            "{} plugin(s) failed to restore:\n  {}",
+            failures.len(),
+            failures.join("\n  ")
+        );
+    }
     Ok(())
 }
 
