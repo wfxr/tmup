@@ -50,8 +50,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        None => run_tui().await,
-        Some(Commands::Init) => run_init().await,
+        None | Some(Commands::Init) => run_init().await,
         Some(Commands::Install { id }) => run_install(id).await,
         Some(Commands::Update { id }) => run_update(id).await,
         Some(Commands::Restore { id }) => run_restore(id).await,
@@ -167,11 +166,6 @@ async fn run_init() -> Result<()> {
     let plan = loader::build_load_plan(&cfg, &paths.plugin_root);
     tmux::execute_plan(&plan)?;
 
-    // Optionally bind UI key
-    if let Some(bind) = loader::build_bind_command(&cfg, "lazytmux") {
-        let _ = tmux::execute(&bind);
-    }
-
     Ok(())
 }
 
@@ -276,16 +270,6 @@ async fn wait_for_writer(paths: &Paths) -> Result<()> {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     anyhow::bail!("timed out waiting for writer lock")
-}
-
-async fn run_tui() -> Result<()> {
-    let paths = Paths::resolve()?;
-    let cfg = load_config(&paths)?;
-    let lock = load_lockfile(&paths)?;
-    let statuses = plugin::list(&cfg, &lock, &paths)?;
-    let busy = OperationLock::is_writer_active(&paths.lock_path)?;
-    let app = lazytmux::ui::App::new(statuses, busy);
-    lazytmux::ui::run_tui(app)
 }
 
 fn dirs_home() -> std::path::PathBuf {

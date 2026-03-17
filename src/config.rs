@@ -41,12 +41,6 @@ fn parse_options(doc: &KdlDocument) -> Result<Options> {
     if let Some(v) = children.get_arg("auto-clean") {
         opts.auto_clean = v.as_bool().context("auto-clean must be a bool")?;
     }
-    if let Some(v) = children.get_arg("bind-ui") {
-        opts.bind_ui = v.as_bool().context("bind-ui must be a bool")?;
-    }
-    if let Some(v) = children.get_arg("ui-key") {
-        opts.ui_key = v.as_string().context("ui-key must be a string")?.into();
-    }
 
     Ok(opts)
 }
