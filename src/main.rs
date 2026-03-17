@@ -7,7 +7,7 @@ use lazytmux::{
     lockfile,
     planner,
     plugin,
-    state::{OperationLock, Paths},
+    state::{OperationLock, OperationLockGuard, Paths},
     tmux,
 };
 
@@ -103,9 +103,13 @@ fn load_lockfile(paths: &Paths) -> Result<lockfile::LockFile> {
     }
 }
 
-/// Acquire lock, replan, execute writes if needed.
-async fn acquire_and_write(cfg: &lazytmux::model::Config, paths: &Paths) -> Result<()> {
-    let _guard = OperationLock::try_acquire(&paths.lock_path)?
+/// Acquire lock, replan, execute writes if needed. Returns the guard
+/// so the caller can hold it through plugin loading.
+async fn acquire_replan_write(
+    cfg: &lazytmux::model::Config,
+    paths: &Paths,
+) -> Result<OperationLockGuard> {
+    let guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("failed to acquire operation lock")?;
     let installed = planner::scan_installed_plugins(&paths.plugin_root);
     let mut lock = load_lockfile(paths)?;
@@ -113,10 +117,14 @@ async fn acquire_and_write(cfg: &lazytmux::model::Config, paths: &Paths) -> Resu
     if let planner::InitDecision::Write(plan) = decision {
         run_init_write(cfg, &mut lock, paths, &plan).await?;
     }
-    Ok(())
+    Ok(guard)
 }
 
 /// Writer-aware init flow (v5 design §5.2)
+///
+/// The write lock is held from before mutations through plugin loading
+/// and tmux binding, ensuring no other writer can modify plugin state
+/// while this init is loading.
 async fn run_init() -> Result<()> {
     let paths = Paths::resolve()?;
     paths.ensure_dirs()?;
@@ -128,37 +136,34 @@ async fn run_init() -> Result<()> {
     let writer_active = OperationLock::is_writer_active(&paths.lock_path)?;
     let decision = planner::plan_init(&cfg, &lock, &installed, writer_active);
 
-    match decision {
-        planner::InitDecision::ReadOnly => {
-            // No writes needed, just load
-        }
+    // Hold the write lock (if acquired) through loading and binding.
+    // The guard is dropped at function exit, after tmux loading completes.
+    let _guard = match decision {
+        planner::InitDecision::ReadOnly => None,
         planner::InitDecision::WaitForWriter => {
-            // Wait for writer to finish, then acquire lock and replan
             eprintln!("lazytmux: waiting for active writer to finish...");
             wait_for_writer(&paths).await?;
-            acquire_and_write(&cfg, &paths).await?;
+            Some(acquire_replan_write(&cfg, &paths).await?)
         }
-        planner::InitDecision::Write(_write_plan) => {
-            // Try to acquire exclusive lock
-            let guard = OperationLock::try_acquire(&paths.lock_path)?;
-            if guard.is_none() {
-                // Another writer beat us, wait then re-acquire
+        planner::InitDecision::Write(_) => match OperationLock::try_acquire(&paths.lock_path)? {
+            None => {
                 eprintln!("lazytmux: lock contention, waiting...");
                 wait_for_writer(&paths).await?;
-                acquire_and_write(&cfg, &paths).await?;
-            } else {
-                // Replan inside lock
+                Some(acquire_replan_write(&cfg, &paths).await?)
+            }
+            Some(guard) => {
                 let installed = planner::scan_installed_plugins(&paths.plugin_root);
                 let mut lock = load_lockfile(&paths)?;
                 let decision = planner::plan_init(&cfg, &lock, &installed, false);
                 if let planner::InitDecision::Write(plan) = decision {
                     run_init_write(&cfg, &mut lock, &paths, &plan).await?;
                 }
+                Some(guard)
             }
-        }
-    }
+        },
+    };
 
-    // Load plugins into tmux
+    // Load plugins into tmux (still under lock if we wrote)
     let plan = loader::build_load_plan(&cfg, &paths.plugin_root);
     tmux::execute_plan(&plan)?;
 
