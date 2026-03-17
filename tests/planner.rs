@@ -148,7 +148,8 @@ fn build_failure_keeps_state_and_result_separate() {
         "github.com/user/repo".into(),
         LockEntry::branch("user/repo", "main", "abc123"),
     );
-    let installed: HashSet<String> = ["github.com/user/repo".into()].into();
+    let installed: HashMap<String, Option<String>> =
+        [("github.com/user/repo".into(), Some("abc123".into()))].into();
 
     let bh = build_command_hash("make");
     let marker = FailureMarker {
@@ -175,7 +176,7 @@ fn missing_plugin_with_build_failure_shows_missing_and_failed() {
         "github.com/user/repo".into(),
         LockEntry::branch("user/repo", "main", "abc123"),
     );
-    let installed: HashSet<String> = HashSet::new();
+    let installed: HashMap<String, Option<String>> = HashMap::new();
 
     let bh = build_command_hash("make");
     let marker = FailureMarker {
@@ -197,7 +198,7 @@ fn missing_plugin_with_build_failure_shows_missing_and_failed() {
 fn local_plugin_status() {
     let config = make_config(r#"plugin "~/dev/my-plugin" local=#true"#);
     let lock = LockFile::new();
-    let installed = HashSet::new();
+    let installed = HashMap::new();
     let failed_keys = HashSet::new();
 
     let statuses = compute_statuses(&config, &lock, &installed, &failed_keys);
@@ -214,9 +215,28 @@ fn pinned_tag_status() {
         "github.com/user/repo".into(),
         LockEntry::tag("user/repo", "v1.0", "abc123"),
     );
-    let installed: HashSet<String> = ["github.com/user/repo".into()].into();
+    let installed: HashMap<String, Option<String>> =
+        [("github.com/user/repo".into(), Some("abc123".into()))].into();
     let failed_keys = HashSet::new();
 
     let statuses = compute_statuses(&config, &lock, &installed, &failed_keys);
     assert_eq!(statuses[0].state, PluginState::PinnedTag);
+}
+
+#[test]
+fn outdated_state_when_installed_commit_differs_from_lock() {
+    let config = make_config(r#"plugin "user/repo""#);
+    let mut lock = LockFile::new();
+    lock.plugins.insert(
+        "github.com/user/repo".into(),
+        LockEntry::branch("user/repo", "main", "abc123"),
+    );
+    let installed: HashMap<String, Option<String>> =
+        [("github.com/user/repo".into(), Some("def456".into()))].into();
+    let failed_keys = HashSet::new();
+
+    let statuses = compute_statuses(&config, &lock, &installed, &failed_keys);
+    assert_eq!(statuses[0].state, PluginState::Outdated);
+    assert_eq!(statuses[0].current_commit.as_deref(), Some("def456"));
+    assert_eq!(statuses[0].lock_commit.as_deref(), Some("abc123"));
 }

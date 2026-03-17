@@ -241,6 +241,18 @@ pub async fn restore(
                 state::clear_failure_markers(&paths.failures_root, id)?;
             }
             Err(e) => {
+                if let Some(build_cmd) = &spec.build {
+                    let bh = build_command_hash(build_cmd);
+                    let marker = FailureMarker {
+                        plugin_id:      id.clone(),
+                        commit:         entry.commit.clone(),
+                        build_hash:     bh,
+                        build_command:  build_cmd.clone(),
+                        failed_at:      chrono_now(),
+                        stderr_summary: format!("{e}"),
+                    };
+                    let _ = state::write_failure_marker(&paths.failures_root, &marker);
+                }
                 let _ = std::fs::remove_dir_all(&staging);
                 eprintln!("failed to restore {id}: {e}");
             }
@@ -276,14 +288,13 @@ pub fn clean(config: &Config, paths: &Paths) -> Result<()> {
 /// List plugin statuses.
 pub fn list(config: &Config, lock: &LockFile, paths: &Paths) -> Result<Vec<PluginStatus>> {
     let installed = planner::scan_installed_plugins(&paths.plugin_root);
-    let installed_ids: HashSet<String> = installed.keys().cloned().collect();
     let markers = state::read_failure_markers(&paths.failures_root)?;
     let failed_keys = collect_failure_keys(&markers);
 
     Ok(planner::compute_statuses(
         config,
         lock,
-        &installed_ids,
+        &installed,
         &failed_keys,
     ))
 }
@@ -298,6 +309,13 @@ pub fn is_known_failure(
     let bh = build_command_hash(build_cmd);
     let key = FailureKey::new(plugin_id, commit, &bh);
     state::has_failure_marker(&paths.failures_root, &key)
+}
+
+/// Check if any build failure exists for a plugin + build command, regardless of commit.
+/// Used when no lock entry exists (first-install failure case).
+pub fn is_known_failure_for_build(paths: &Paths, plugin_id: &str, build_cmd: &str) -> Result<bool> {
+    let bh = build_command_hash(build_cmd);
+    state::has_failure_for_build(&paths.failures_root, plugin_id, &bh)
 }
 
 async fn resolve_tracking(
