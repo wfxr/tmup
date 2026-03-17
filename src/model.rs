@@ -11,19 +11,11 @@ pub struct Options {
     pub concurrency:  usize,
     pub auto_install: bool,
     pub auto_clean:   bool,
-    pub bind_ui:      bool,
-    pub ui_key:       String,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self {
-            concurrency:  8,
-            auto_install: true,
-            auto_clean:   false,
-            bind_ui:      false,
-            ui_key:       "L".into(),
-        }
+        Self { concurrency: 8, auto_install: true, auto_clean: false }
     }
 }
 

@@ -7,8 +7,6 @@ pub enum TmuxCommand {
     SetEnvironment { key: String, value: String },
     SetOption { key: String, value: String },
     RunShell { script: PathBuf },
-    BindPopup { key: String, command: String },
-    BindSplit { key: String, command: String },
 }
 
 impl TmuxCommand {
@@ -28,28 +26,6 @@ impl TmuxCommand {
             }
             Self::RunShell { script } => {
                 vec!["run-shell".into(), script.to_string_lossy().to_string()]
-            }
-            Self::BindPopup { key, command } => {
-                vec![
-                    "bind".into(),
-                    key.clone(),
-                    "display-popup".into(),
-                    "-E".into(),
-                    "-w".into(),
-                    "80%".into(),
-                    "-h".into(),
-                    "80%".into(),
-                    command.clone(),
-                ]
-            }
-            Self::BindSplit { key, command } => {
-                vec![
-                    "bind".into(),
-                    key.clone(),
-                    "split-window".into(),
-                    "-h".into(),
-                    command.clone(),
-                ]
             }
         }
     }
