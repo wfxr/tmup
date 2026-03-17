@@ -95,12 +95,25 @@ fn resolve_config_path(paths: &Paths) -> Result<std::path::PathBuf> {
     )
 }
 
-fn load_lockfile(paths: &Paths) -> lockfile::LockFile {
+fn load_lockfile(paths: &Paths) -> Result<lockfile::LockFile> {
     if paths.lockfile_path.exists() {
-        lockfile::read_lockfile(&paths.lockfile_path).unwrap_or_default()
+        lockfile::read_lockfile(&paths.lockfile_path)
     } else {
-        lockfile::LockFile::new()
+        Ok(lockfile::LockFile::new())
     }
+}
+
+/// Acquire lock, replan, execute writes if needed.
+async fn acquire_and_write(cfg: &lazytmux::model::Config, paths: &Paths) -> Result<()> {
+    let _guard = OperationLock::try_acquire(&paths.lock_path)?
+        .context("failed to acquire operation lock")?;
+    let installed = planner::scan_installed_plugins(&paths.plugin_root);
+    let mut lock = load_lockfile(paths)?;
+    let decision = planner::plan_init(cfg, &lock, &installed, false);
+    if let planner::InitDecision::Write(plan) = decision {
+        run_init_write(cfg, &mut lock, paths, &plan).await?;
+    }
+    Ok(())
 }
 
 /// Writer-aware init flow (v5 design §5.2)
@@ -108,7 +121,7 @@ async fn run_init() -> Result<()> {
     let paths = Paths::resolve()?;
     paths.ensure_dirs()?;
     let cfg = load_config(&paths)?;
-    let mut lock = load_lockfile(&paths);
+    let lock = load_lockfile(&paths)?;
 
     // Step 1: Read-only preflight
     let installed = planner::scan_installed_plugins(&paths.plugin_root);
@@ -118,45 +131,36 @@ async fn run_init() -> Result<()> {
     match decision {
         planner::InitDecision::ReadOnly => {
             // No writes needed, just load
-            let plan = loader::build_load_plan(&cfg, &paths.plugin_root);
-            tmux::execute_plan(&plan)?;
         }
         planner::InitDecision::WaitForWriter => {
-            // Wait for writer to finish, then re-preflight
+            // Wait for writer to finish, then acquire lock and replan
             eprintln!("lazytmux: waiting for active writer to finish...");
             wait_for_writer(&paths).await?;
-            // Replan after writer completes
-            let installed = planner::scan_installed_plugins(&paths.plugin_root);
-            let lock = load_lockfile(&paths);
-            let decision = planner::plan_init(&cfg, &lock, &installed, false);
-            if let planner::InitDecision::Write(plan) = decision {
-                run_init_write(&cfg, &mut lock.clone(), &paths, &plan).await?;
-            }
-            let plan = loader::build_load_plan(&cfg, &paths.plugin_root);
-            tmux::execute_plan(&plan)?;
+            acquire_and_write(&cfg, &paths).await?;
         }
         planner::InitDecision::Write(_write_plan) => {
-            // Acquire exclusive lock, replan inside lock, then mutate
+            // Try to acquire exclusive lock
             let guard = OperationLock::try_acquire(&paths.lock_path)?;
             if guard.is_none() {
-                // Another writer beat us, wait and retry
+                // Another writer beat us, wait then re-acquire
                 eprintln!("lazytmux: lock contention, waiting...");
                 wait_for_writer(&paths).await?;
-                let installed = planner::scan_installed_plugins(&paths.plugin_root);
-                let lock = load_lockfile(&paths);
-                let _decision = planner::plan_init(&cfg, &lock, &installed, false);
+                acquire_and_write(&cfg, &paths).await?;
             } else {
                 // Replan inside lock
                 let installed = planner::scan_installed_plugins(&paths.plugin_root);
+                let mut lock = load_lockfile(&paths)?;
                 let decision = planner::plan_init(&cfg, &lock, &installed, false);
                 if let planner::InitDecision::Write(plan) = decision {
                     run_init_write(&cfg, &mut lock, &paths, &plan).await?;
                 }
             }
-            let plan = loader::build_load_plan(&cfg, &paths.plugin_root);
-            tmux::execute_plan(&plan)?;
         }
     }
+
+    // Load plugins into tmux
+    let plan = loader::build_load_plan(&cfg, &paths.plugin_root);
+    tmux::execute_plan(&plan)?;
 
     // Optionally bind UI key
     if let Some(bind) = loader::build_bind_command(&cfg, "lazytmux") {
@@ -172,9 +176,8 @@ async fn run_init_write(
     paths: &Paths,
     plan: &planner::WritePlan,
 ) -> Result<()> {
-    // Install missing plugins (with failure marker suppression)
+    // Install missing plugins, skipping known build failures
     for id in &plan.to_install {
-        // Check failure markers
         if let Some(spec) = cfg.plugins.iter().find(|p| p.remote_id() == Some(id))
             && let Some(build_cmd) = &spec.build
         {
@@ -190,10 +193,13 @@ async fn run_init_write(
                 continue;
             }
         }
+        plugin::install(cfg, lock, paths, Some(id.as_str())).await?;
     }
 
-    // Run install for missing
-    plugin::install(cfg, lock, paths, None).await?;
+    // Restore plugins whose installed commit has drifted from the lock
+    for id in &plan.to_restore {
+        plugin::restore(cfg, lock, paths, Some(id.as_str())).await?;
+    }
 
     // Clean undeclared
     if !plan.to_clean.is_empty() {
@@ -208,7 +214,7 @@ async fn run_install(id: Option<String>) -> Result<()> {
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another lazytmux operation is in progress")?;
     let cfg = load_config(&paths)?;
-    let mut lock = load_lockfile(&paths);
+    let mut lock = load_lockfile(&paths)?;
     plugin::install(&cfg, &mut lock, &paths, id.as_deref()).await
 }
 
@@ -217,7 +223,7 @@ async fn run_update(id: Option<String>) -> Result<()> {
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another lazytmux operation is in progress")?;
     let cfg = load_config(&paths)?;
-    let mut lock = load_lockfile(&paths);
+    let mut lock = load_lockfile(&paths)?;
     plugin::update(&cfg, &mut lock, &paths, id.as_deref()).await
 }
 
@@ -226,7 +232,7 @@ async fn run_restore(id: Option<String>) -> Result<()> {
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another lazytmux operation is in progress")?;
     let cfg = load_config(&paths)?;
-    let lock = load_lockfile(&paths);
+    let lock = load_lockfile(&paths)?;
     plugin::restore(&cfg, &lock, &paths, id.as_deref()).await
 }
 
@@ -241,7 +247,7 @@ fn run_clean() -> Result<()> {
 fn run_list() -> Result<()> {
     let paths = Paths::resolve()?;
     let cfg = load_config(&paths)?;
-    let lock = load_lockfile(&paths);
+    let lock = load_lockfile(&paths)?;
     let statuses = plugin::list(&cfg, &lock, &paths)?;
 
     // Print header
@@ -285,7 +291,7 @@ async fn wait_for_writer(paths: &Paths) -> Result<()> {
 async fn run_tui() -> Result<()> {
     let paths = Paths::resolve()?;
     let cfg = load_config(&paths)?;
-    let lock = load_lockfile(&paths);
+    let lock = load_lockfile(&paths)?;
     let statuses = plugin::list(&cfg, &lock, &paths)?;
     let busy = OperationLock::is_writer_active(&paths.lock_path)?;
     let app = lazytmux::ui::App::new(statuses, busy);

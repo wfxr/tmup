@@ -1,6 +1,11 @@
-use std::{collections::HashSet, fmt, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    path::Path,
+};
 
 use crate::{
+    git,
     lockfile::LockFile,
     model::{Config, PluginSource, Tracking},
     state::{FailureKey, build_command_hash},
@@ -77,8 +82,10 @@ pub enum InitDecision {
 /// Plan for write operations during init.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WritePlan {
-    /// Remote plugins that need to be installed.
+    /// Remote plugins that need to be installed (missing from disk).
     pub to_install: Vec<String>,
+    /// Remote plugins that need to be restored (installed but at wrong commit).
+    pub to_restore: Vec<String>,
     /// Remote plugins that should be cleaned (undeclared).
     pub to_clean:   Vec<String>,
 }
@@ -160,8 +167,8 @@ pub fn compute_statuses(
 /// Plan the init decision based on config, lock, and filesystem state.
 pub fn plan_init(
     config: &Config,
-    _lock: &LockFile,
-    installed_plugins: &HashSet<String>,
+    lock: &LockFile,
+    installed_plugins: &HashMap<String, Option<String>>,
     writer_active: bool,
 ) -> InitDecision {
     let declared_ids: HashSet<&str> = config
@@ -170,21 +177,42 @@ pub fn plan_init(
         .filter_map(|p| p.remote_id())
         .collect();
 
-    // Check what needs installing
+    // Check what needs installing (missing from disk)
     let to_install: Vec<String> = if config.options.auto_install {
         declared_ids
             .iter()
-            .filter(|id| !installed_plugins.contains(**id))
+            .filter(|id| !installed_plugins.contains_key(**id))
             .map(|id| id.to_string())
             .collect()
     } else {
         Vec::new()
     };
 
+    // Check what needs restoring (installed but at wrong commit vs lock)
+    let to_restore: Vec<String> = declared_ids
+        .iter()
+        .filter(|id| {
+            if let Some(installed_commit) = installed_plugins.get(**id) {
+                if let Some(lock_entry) = lock.plugins.get(**id) {
+                    // Installed commit differs from locked commit
+                    match installed_commit {
+                        Some(c) => c != &lock_entry.commit,
+                        None => true, // couldn't read HEAD, treat as needing restore
+                    }
+                } else {
+                    false // no lock entry, nothing to restore to
+                }
+            } else {
+                false // not installed, handled by to_install
+            }
+        })
+        .map(|id| id.to_string())
+        .collect();
+
     // Check what needs cleaning
     let to_clean: Vec<String> = if config.options.auto_clean {
         installed_plugins
-            .iter()
+            .keys()
             .filter(|id| !declared_ids.contains(id.as_str()))
             .cloned()
             .collect()
@@ -192,7 +220,7 @@ pub fn plan_init(
         Vec::new()
     };
 
-    let needs_write = !to_install.is_empty() || !to_clean.is_empty();
+    let needs_write = !to_install.is_empty() || !to_restore.is_empty() || !to_clean.is_empty();
 
     if !needs_write {
         if writer_active {
@@ -201,18 +229,18 @@ pub fn plan_init(
             InitDecision::ReadOnly
         }
     } else {
-        InitDecision::Write(WritePlan { to_install, to_clean })
+        InitDecision::Write(WritePlan { to_install, to_restore, to_clean })
     }
 }
 
-/// Scan the plugin root for installed remote plugin ids.
-pub fn scan_installed_plugins(plugin_root: &Path) -> HashSet<String> {
-    let mut installed = HashSet::new();
+/// Scan the plugin root for installed remote plugin ids and their HEAD commits.
+pub fn scan_installed_plugins(plugin_root: &Path) -> HashMap<String, Option<String>> {
+    let mut installed = HashMap::new();
     scan_recursive(plugin_root, plugin_root, &mut installed);
     installed
 }
 
-fn scan_recursive(root: &Path, current: &Path, installed: &mut HashSet<String>) {
+fn scan_recursive(root: &Path, current: &Path, installed: &mut HashMap<String, Option<String>>) {
     let Ok(entries) = std::fs::read_dir(current) else {
         return;
     };
@@ -224,7 +252,9 @@ fn scan_recursive(root: &Path, current: &Path, installed: &mut HashSet<String>) 
         // Check if this looks like a plugin directory (has *.tmux files or .git)
         if path.join(".git").exists() {
             if let Ok(rel) = path.strip_prefix(root) {
-                installed.insert(rel.to_string_lossy().to_string());
+                let id = rel.to_string_lossy().to_string();
+                let commit = git::head_commit_sync(&path).ok();
+                installed.insert(id, commit);
             }
         } else {
             // Recurse into host/owner directories

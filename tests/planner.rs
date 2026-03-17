@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use lazytmux::{
     lockfile::{LockEntry, LockFile},
@@ -43,7 +43,8 @@ fn read_only_init_plan_when_all_installed() {
         "github.com/user/repo".into(),
         LockEntry::branch("user/repo", "main", "abc123"),
     );
-    let installed: HashSet<String> = ["github.com/user/repo".into()].into();
+    let installed: HashMap<String, Option<String>> =
+        [("github.com/user/repo".into(), Some("abc123".into()))].into();
 
     let decision = plan_init(&config, &lock, &installed, false);
     assert_eq!(decision, InitDecision::ReadOnly);
@@ -58,12 +59,13 @@ plugin "user/repo"
     "#,
     );
     let lock = LockFile::new();
-    let installed: HashSet<String> = HashSet::new();
+    let installed: HashMap<String, Option<String>> = HashMap::new();
 
     let decision = plan_init(&config, &lock, &installed, false);
     match decision {
         InitDecision::Write(plan) => {
             assert_eq!(plan.to_install, vec!["github.com/user/repo"]);
+            assert!(plan.to_restore.is_empty());
             assert!(plan.to_clean.is_empty());
         }
         other => panic!("expected Write, got {other:?}"),
@@ -78,7 +80,8 @@ fn wait_for_writer_when_read_only_and_writer_active() {
         "github.com/user/repo".into(),
         LockEntry::branch("user/repo", "main", "abc123"),
     );
-    let installed: HashSet<String> = ["github.com/user/repo".into()].into();
+    let installed: HashMap<String, Option<String>> =
+        [("github.com/user/repo".into(), Some("abc123".into()))].into();
 
     let decision = plan_init(&config, &lock, &installed, true);
     assert_eq!(decision, InitDecision::WaitForWriter);
@@ -97,9 +100,9 @@ plugin "user/repo"
         "github.com/user/repo".into(),
         LockEntry::branch("user/repo", "main", "abc123"),
     );
-    let installed: HashSet<String> = [
-        "github.com/user/repo".into(),
-        "github.com/old/removed".into(),
+    let installed: HashMap<String, Option<String>> = [
+        ("github.com/user/repo".into(), Some("abc123".into())),
+        ("github.com/old/removed".into(), Some("def456".into())),
     ]
     .into();
 
@@ -107,9 +110,33 @@ plugin "user/repo"
     match decision {
         InitDecision::Write(plan) => {
             assert!(plan.to_install.is_empty());
+            assert!(plan.to_restore.is_empty());
             assert_eq!(plan.to_clean, vec!["github.com/old/removed"]);
         }
         other => panic!("expected Write, got {other:?}"),
+    }
+}
+
+#[test]
+fn restore_plan_when_installed_commit_drifted() {
+    let config = make_config(r#"plugin "user/repo""#);
+    let mut lock = LockFile::new();
+    lock.plugins.insert(
+        "github.com/user/repo".into(),
+        LockEntry::branch("user/repo", "main", "abc123"),
+    );
+    // Installed at a different commit than the lock
+    let installed: HashMap<String, Option<String>> =
+        [("github.com/user/repo".into(), Some("def456".into()))].into();
+
+    let decision = plan_init(&config, &lock, &installed, false);
+    match decision {
+        InitDecision::Write(plan) => {
+            assert!(plan.to_install.is_empty());
+            assert_eq!(plan.to_restore, vec!["github.com/user/repo"]);
+            assert!(plan.to_clean.is_empty());
+        }
+        other => panic!("expected Write with to_restore, got {other:?}"),
     }
 }
 
