@@ -5,7 +5,7 @@ use crate::{
     git,
     lockfile::{LockEntry, LockFile, TrackingRecord, write_lockfile_atomic},
     model::{Config, PluginSource, Tracking},
-    planner::{self, PluginStatus, collect_failure_keys},
+    planner::{self, PluginStatus, collect_failed_builds},
     state::{self, FailureKey, FailureMarker, Paths, build_command_hash},
 };
 
@@ -22,6 +22,7 @@ pub async fn install(
 ) -> Result<()> {
     paths.ensure_dirs()?;
     let installed = planner::scan_installed_plugins(&paths.plugin_root);
+    let mut failures: Vec<String> = Vec::new();
 
     for spec in &config.plugins {
         let PluginSource::Remote { raw, id, clone_url } = &spec.source else {
@@ -97,12 +98,21 @@ pub async fn install(
                 }
                 // Clean up staging if it still exists
                 let _ = std::fs::remove_dir_all(&staging);
-                eprintln!("failed to install {id}: {e}");
+                let msg = format!("{id}: {e}");
+                eprintln!("failed to install {msg}");
+                failures.push(msg);
             }
         }
     }
 
     write_lockfile_atomic(&paths.lockfile_path, lock)?;
+    if !failures.is_empty() {
+        anyhow::bail!(
+            "{} plugin(s) failed to install:\n  {}",
+            failures.len(),
+            failures.join("\n  ")
+        );
+    }
     Ok(())
 }
 
@@ -114,6 +124,7 @@ pub async fn update(
     target_id: Option<&str>,
 ) -> Result<()> {
     paths.ensure_dirs()?;
+    let mut failures: Vec<String> = Vec::new();
 
     for spec in &config.plugins {
         let PluginSource::Remote { raw, id, clone_url } = &spec.source else {
@@ -191,12 +202,21 @@ pub async fn update(
                     let _ = state::write_failure_marker(&paths.failures_root, &marker);
                 }
                 let _ = std::fs::remove_dir_all(&staging);
-                eprintln!("failed to update {id}: {e}");
+                let msg = format!("{id}: {e}");
+                eprintln!("failed to update {msg}");
+                failures.push(msg);
             }
         }
     }
 
     write_lockfile_atomic(&paths.lockfile_path, lock)?;
+    if !failures.is_empty() {
+        anyhow::bail!(
+            "{} plugin(s) failed to update:\n  {}",
+            failures.len(),
+            failures.join("\n  ")
+        );
+    }
     Ok(())
 }
 
@@ -306,13 +326,13 @@ pub fn clean(config: &Config, paths: &Paths) -> Result<()> {
 pub fn list(config: &Config, lock: &LockFile, paths: &Paths) -> Result<Vec<PluginStatus>> {
     let installed = planner::scan_installed_plugins(&paths.plugin_root);
     let markers = state::read_failure_markers(&paths.failures_root)?;
-    let failed_keys = collect_failure_keys(&markers);
+    let failed_builds = collect_failed_builds(&markers);
 
     Ok(planner::compute_statuses(
         config,
         lock,
         &installed,
-        &failed_keys,
+        &failed_builds,
     ))
 }
 

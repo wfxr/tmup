@@ -8,7 +8,7 @@ use crate::{
     git,
     lockfile::LockFile,
     model::{Config, PluginSource, Tracking},
-    state::{FailureKey, build_command_hash},
+    state::build_command_hash,
 };
 
 /// Current availability state of a plugin.
@@ -90,12 +90,25 @@ pub struct WritePlan {
     pub to_clean:   Vec<String>,
 }
 
+/// Set of `(plugin_id, build_hash)` pairs that have uncleared failure markers.
+/// Keyed without commit so that both fresh-install failures (no lock entry)
+/// and update/restore failures (marker commit != lock commit) are detected.
+pub type FailedBuilds = HashSet<(String, String)>;
+
+/// Collect `(plugin_id, build_hash)` pairs from failure markers.
+pub fn collect_failed_builds(markers: &[crate::state::FailureMarker]) -> FailedBuilds {
+    markers
+        .iter()
+        .map(|m| (m.plugin_id.clone(), m.build_hash.clone()))
+        .collect()
+}
+
 /// Compute plugin statuses from config, lock, installed state, and failure markers.
 pub fn compute_statuses(
     config: &Config,
     lock: &LockFile,
     installed_plugins: &HashMap<String, Option<String>>,
-    failed_keys: &HashSet<FailureKey>,
+    failed_builds: &FailedBuilds,
 ) -> Vec<PluginStatus> {
     let mut statuses = Vec::new();
 
@@ -132,17 +145,14 @@ pub fn compute_statuses(
                     }
                 };
 
+                // last-result: any uncleared failure marker for this plugin + build
+                // means the last operation failed. Success always clears markers.
                 let last_result = if let Some(build_cmd) = &spec.build {
-                    if let Some(commit) = lock_commit_str {
-                        let bh = build_command_hash(build_cmd);
-                        let key = FailureKey::new(id, commit, &bh);
-                        if failed_keys.contains(&key) {
-                            LastResult::BuildFailed
-                        } else if is_installed {
-                            LastResult::Ok
-                        } else {
-                            LastResult::None
-                        }
+                    let bh = build_command_hash(build_cmd);
+                    if failed_builds.contains(&(id.clone(), bh)) {
+                        LastResult::BuildFailed
+                    } else if is_installed {
+                        LastResult::Ok
                     } else {
                         LastResult::None
                     }
@@ -278,9 +288,4 @@ fn scan_recursive(root: &Path, current: &Path, installed: &mut HashMap<String, O
             scan_recursive(root, &path, installed);
         }
     }
-}
-
-/// Collect known failure keys from a list of failure markers.
-pub fn collect_failure_keys(markers: &[crate::state::FailureMarker]) -> HashSet<FailureKey> {
-    markers.iter().map(|m| m.key()).collect()
 }

@@ -7,7 +7,7 @@ use lazytmux::{
         InitDecision,
         LastResult,
         PluginState,
-        collect_failure_keys,
+        collect_failed_builds,
         compute_statuses,
         plan_init,
     },
@@ -160,9 +160,9 @@ fn build_failure_keeps_state_and_result_separate() {
         failed_at:      "2025-01-01T00:00:00Z".into(),
         stderr_summary: "error".into(),
     };
-    let failed_keys = collect_failure_keys(&[marker]);
+    let failed_builds = collect_failed_builds(&[marker]);
 
-    let statuses = compute_statuses(&config, &lock, &installed, &failed_keys);
+    let statuses = compute_statuses(&config, &lock, &installed, &failed_builds);
     assert_eq!(statuses.len(), 1);
     assert_eq!(statuses[0].state, PluginState::Installed);
     assert_eq!(statuses[0].last_result, LastResult::BuildFailed);
@@ -187,9 +187,9 @@ fn missing_plugin_with_build_failure_shows_missing_and_failed() {
         failed_at:      "2025-01-01T00:00:00Z".into(),
         stderr_summary: "error".into(),
     };
-    let failed_keys = collect_failure_keys(&[marker]);
+    let failed_builds = collect_failed_builds(&[marker]);
 
-    let statuses = compute_statuses(&config, &lock, &installed, &failed_keys);
+    let statuses = compute_statuses(&config, &lock, &installed, &failed_builds);
     assert_eq!(statuses[0].state, PluginState::Missing);
     assert_eq!(statuses[0].last_result, LastResult::BuildFailed);
 }
@@ -199,9 +199,9 @@ fn local_plugin_status() {
     let config = make_config(r#"plugin "~/dev/my-plugin" local=#true"#);
     let lock = LockFile::new();
     let installed = HashMap::new();
-    let failed_keys = HashSet::new();
+    let failed_builds = HashSet::new();
 
-    let statuses = compute_statuses(&config, &lock, &installed, &failed_keys);
+    let statuses = compute_statuses(&config, &lock, &installed, &failed_builds);
     assert_eq!(statuses.len(), 1);
     assert_eq!(statuses[0].state, PluginState::Local);
     assert_eq!(statuses[0].kind, "local");
@@ -217,9 +217,9 @@ fn pinned_tag_status() {
     );
     let installed: HashMap<String, Option<String>> =
         [("github.com/user/repo".into(), Some("abc123".into()))].into();
-    let failed_keys = HashSet::new();
+    let failed_builds = HashSet::new();
 
-    let statuses = compute_statuses(&config, &lock, &installed, &failed_keys);
+    let statuses = compute_statuses(&config, &lock, &installed, &failed_builds);
     assert_eq!(statuses[0].state, PluginState::PinnedTag);
 }
 
@@ -233,9 +233,9 @@ fn outdated_state_when_installed_commit_differs_from_lock() {
     );
     let installed: HashMap<String, Option<String>> =
         [("github.com/user/repo".into(), Some("def456".into()))].into();
-    let failed_keys = HashSet::new();
+    let failed_builds = HashSet::new();
 
-    let statuses = compute_statuses(&config, &lock, &installed, &failed_keys);
+    let statuses = compute_statuses(&config, &lock, &installed, &failed_builds);
     assert_eq!(statuses[0].state, PluginState::Outdated);
     assert_eq!(statuses[0].current_commit.as_deref(), Some("def456"));
     assert_eq!(statuses[0].lock_commit.as_deref(), Some("abc123"));
