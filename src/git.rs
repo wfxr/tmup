@@ -56,6 +56,22 @@ pub async fn checkout(repo: &Path, rev: &str) -> Result<()> {
     Ok(())
 }
 
+/// Get the HEAD commit hash of a repository (synchronous).
+pub fn head_commit_sync(repo: &Path) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(repo)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to run git rev-parse HEAD")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git rev-parse HEAD failed: {stderr}");
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 /// Get the HEAD commit hash of a repository.
 pub async fn head_commit(repo: &Path) -> Result<String> {
     let output = Command::new("git")
