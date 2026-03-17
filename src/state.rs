@@ -200,31 +200,6 @@ pub fn has_failure_marker(failures_root: &Path, key: &FailureKey) -> Result<bool
     Ok(path.exists())
 }
 
-/// Check if any failure marker exists for a given (plugin_id, build_hash) pair,
-/// regardless of commit. Used when no lock entry exists (first-install failure).
-pub fn has_failure_for_build(
-    failures_root: &Path,
-    plugin_id: &str,
-    build_hash: &str,
-) -> Result<bool> {
-    if !failures_root.exists() {
-        return Ok(false);
-    }
-    for entry in fs::read_dir(failures_root)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("json")
-            && let Ok(content) = fs::read_to_string(&path)
-            && let Ok(marker) = serde_json::from_str::<FailureMarker>(&content)
-            && marker.plugin_id == plugin_id
-            && marker.build_hash == build_hash
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 /// Operation lock using fd-lock for cross-process mutual exclusion.
 ///
 /// Uses `flock(LOCK_EX)` under the hood. The lock is released when the

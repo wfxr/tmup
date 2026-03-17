@@ -176,23 +176,9 @@ async fn run_init_write(
     paths: &Paths,
     plan: &planner::WritePlan,
 ) -> Result<()> {
-    // Install missing plugins, skipping known build failures
+    // Install missing plugins (known build failures are suppressed inside install)
     for id in &plan.to_install {
-        if let Some(spec) = cfg.plugins.iter().find(|p| p.remote_id() == Some(id))
-            && let Some(build_cmd) = &spec.build
-        {
-            let is_failure = if let Some(entry) = lock.plugins.get(id.as_str()) {
-                plugin::is_known_failure(paths, id, &entry.commit, build_cmd)?
-            } else {
-                // No lock entry (first-install failure): check by plugin + build command
-                plugin::is_known_failure_for_build(paths, id, build_cmd)?
-            };
-            if is_failure {
-                eprintln!("lazytmux: skipping {id} (known build failure)");
-                continue;
-            }
-        }
-        plugin::install(cfg, lock, paths, Some(id.as_str())).await?;
+        plugin::install(cfg, lock, paths, Some(id.as_str()), true).await?;
     }
 
     // Restore plugins whose installed commit has drifted from the lock
@@ -214,7 +200,7 @@ async fn run_install(id: Option<String>) -> Result<()> {
         .context("another lazytmux operation is in progress")?;
     let cfg = load_config(&paths)?;
     let mut lock = load_lockfile(&paths)?;
-    plugin::install(&cfg, &mut lock, &paths, id.as_deref()).await
+    plugin::install(&cfg, &mut lock, &paths, id.as_deref(), false).await
 }
 
 async fn run_update(id: Option<String>) -> Result<()> {

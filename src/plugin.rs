@@ -10,11 +10,15 @@ use crate::{
 };
 
 /// Install missing remote plugins. Lock-first: uses lock entry if present.
+///
+/// When `skip_known_failures` is true (used by init auto-install), plugins whose
+/// resolved commit matches an existing failure marker are silently skipped.
 pub async fn install(
     config: &Config,
     lock: &mut LockFile,
     paths: &Paths,
     target_id: Option<&str>,
+    skip_known_failures: bool,
 ) -> Result<()> {
     paths.ensure_dirs()?;
     let installed = planner::scan_installed_plugins(&paths.plugin_root);
@@ -50,6 +54,19 @@ pub async fn install(
             git::checkout(&staging, &commit).await?;
             (commit, record)
         };
+
+        // Check known failure suppression (for init auto-install)
+        if skip_known_failures
+            && let Some(build_cmd) = &spec.build
+            && is_known_failure(paths, id, &commit, build_cmd)?
+        {
+            eprintln!(
+                "lazytmux: skipping {id} (known build failure at {})",
+                &commit[..7.min(commit.len())]
+            );
+            let _ = std::fs::remove_dir_all(&staging);
+            continue;
+        }
 
         // Publish
         let result = git::publish_fresh_install(&staging, &target_dir, spec.build.as_deref());
@@ -309,13 +326,6 @@ pub fn is_known_failure(
     let bh = build_command_hash(build_cmd);
     let key = FailureKey::new(plugin_id, commit, &bh);
     state::has_failure_marker(&paths.failures_root, &key)
-}
-
-/// Check if any build failure exists for a plugin + build command, regardless of commit.
-/// Used when no lock entry exists (first-install failure case).
-pub fn is_known_failure_for_build(paths: &Paths, plugin_id: &str, build_cmd: &str) -> Result<bool> {
-    let bh = build_command_hash(build_cmd);
-    state::has_failure_for_build(&paths.failures_root, plugin_id, &bh)
 }
 
 async fn resolve_tracking(
