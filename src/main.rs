@@ -181,14 +181,13 @@ async fn run_init_write(
         if let Some(spec) = cfg.plugins.iter().find(|p| p.remote_id() == Some(id))
             && let Some(build_cmd) = &spec.build
         {
-            let lock_commit = lock
-                .plugins
-                .get(id.as_str())
-                .map(|e| e.commit.as_str())
-                .unwrap_or("");
-            if !lock_commit.is_empty()
-                && plugin::is_known_failure(paths, id, lock_commit, build_cmd)?
-            {
+            let is_failure = if let Some(entry) = lock.plugins.get(id.as_str()) {
+                plugin::is_known_failure(paths, id, &entry.commit, build_cmd)?
+            } else {
+                // No lock entry (first-install failure): check by plugin + build command
+                plugin::is_known_failure_for_build(paths, id, build_cmd)?
+            };
+            if is_failure {
                 eprintln!("lazytmux: skipping {id} (known build failure)");
                 continue;
             }
