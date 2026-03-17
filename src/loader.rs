@@ -45,18 +45,6 @@ pub fn build_load_plan(config: &Config, plugin_root: &Path) -> Vec<TmuxCommand> 
     plan
 }
 
-/// Build bind command for TUI keybinding.
-pub fn build_bind_command(config: &Config, lazytmux_bin: &str) -> Option<TmuxCommand> {
-    if !config.options.bind_ui {
-        return None;
-    }
-    // Default to popup style
-    Some(TmuxCommand::BindPopup {
-        key:     config.options.ui_key.clone(),
-        command: lazytmux_bin.to_string(),
-    })
-}
-
 /// Find all *.tmux files in a directory, sorted by filename.
 pub fn find_tmux_scripts(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut scripts = Vec::new();

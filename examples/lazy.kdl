@@ -5,10 +5,6 @@ options {
     concurrency 8
     auto-install #true
     auto-clean #false
-
-    // UI keybinding: opt-in only
-    bind-ui #false
-    ui-key "L"
 }
 
 // Simplest form: GitHub shorthand, track default branch

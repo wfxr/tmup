@@ -24,16 +24,12 @@ options {
     concurrency 4
     auto-install #false
     auto-clean #true
-    bind-ui #true
-    ui-key "T"
 }
     "#;
     let cfg = parse_config(input).unwrap();
     assert_eq!(cfg.options.concurrency, 4);
     assert!(!cfg.options.auto_install);
     assert!(cfg.options.auto_clean);
-    assert!(cfg.options.bind_ui);
-    assert_eq!(cfg.options.ui_key, "T");
 }
 
 #[test]
@@ -102,7 +98,5 @@ fn defaults_are_applied() {
     assert_eq!(cfg.options.concurrency, 8);
     assert!(cfg.options.auto_install);
     assert!(!cfg.options.auto_clean);
-    assert!(!cfg.options.bind_ui);
-    assert_eq!(cfg.options.ui_key, "L");
     assert!(cfg.plugins.is_empty());
 }
