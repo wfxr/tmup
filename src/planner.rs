@@ -307,36 +307,3 @@ fn scan_recursive_ids(root: &Path, current: &Path, ids: &mut HashSet<String>) {
         }
     }
 }
-
-/// Scan the plugin root for installed remote plugin ids and their HEAD commits.
-#[deprecated(
-    note = "use inspect_plugin_dir for declared plugins, scan_managed_plugin_ids for clean"
-)]
-pub fn scan_installed_plugins(plugin_root: &Path) -> HashMap<String, Option<String>> {
-    let mut installed = HashMap::new();
-    scan_recursive(plugin_root, plugin_root, &mut installed);
-    installed
-}
-
-fn scan_recursive(root: &Path, current: &Path, installed: &mut HashMap<String, Option<String>>) {
-    let Ok(entries) = std::fs::read_dir(current) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        // Check if this looks like a plugin directory (has *.tmux files or .git)
-        if path.join(".git").exists() {
-            if let Ok(rel) = path.strip_prefix(root) {
-                let id = rel.to_string_lossy().to_string();
-                let commit = git::head_commit_sync(&path).ok();
-                installed.insert(id, commit);
-            }
-        } else {
-            // Recurse into host/owner directories
-            scan_recursive(root, &path, installed);
-        }
-    }
-}
