@@ -100,3 +100,21 @@ fn defaults_are_applied() {
     assert!(!cfg.options.auto_clean);
     assert!(cfg.plugins.is_empty());
 }
+
+#[test]
+fn rejects_wrong_type_branch() {
+    let err = parse_config(r#"plugin "user/repo" branch=123"#).unwrap_err();
+    assert!(err.to_string().contains("branch must be a string"), "{err}");
+}
+
+#[test]
+fn rejects_wrong_type_local() {
+    let err = parse_config(r#"plugin "user/repo" local="yes""#).unwrap_err();
+    assert!(err.to_string().contains("local must be a bool"), "{err}");
+}
+
+#[test]
+fn rejects_wrong_type_build() {
+    let err = parse_config(r#"plugin "user/repo" build=42"#).unwrap_err();
+    assert!(err.to_string().contains("build must be a string"), "{err}");
+}

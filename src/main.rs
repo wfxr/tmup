@@ -138,14 +138,20 @@ async fn run_init_write(
     paths: &Paths,
     plan: &planner::WritePlan,
 ) -> Result<()> {
+    let mut failures: Vec<String> = Vec::new();
+
     // Install missing plugins (known build failures are suppressed inside install)
     for id in &plan.to_install {
-        plugin::install(cfg, lock, paths, Some(id.as_str()), true).await?;
+        if let Err(e) = plugin::install(cfg, lock, paths, Some(id.as_str()), true).await {
+            failures.push(format!("{e}"));
+        }
     }
 
     // Restore plugins whose installed commit has drifted from the lock
     for id in &plan.to_restore {
-        plugin::restore(cfg, lock, paths, Some(id.as_str())).await?;
+        if let Err(e) = plugin::restore(cfg, lock, paths, Some(id.as_str())).await {
+            failures.push(format!("{e}"));
+        }
     }
 
     // Clean undeclared
@@ -153,6 +159,13 @@ async fn run_init_write(
         plugin::clean(cfg, paths)?;
     }
 
+    if !failures.is_empty() {
+        anyhow::bail!(
+            "init encountered {} failure(s):\n  {}",
+            failures.len(),
+            failures.join("\n  ")
+        );
+    }
     Ok(())
 }
 
