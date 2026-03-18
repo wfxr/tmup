@@ -6,4 +6,5 @@ pub mod model;
 pub mod planner;
 pub mod plugin;
 pub mod state;
+pub mod sync;
 pub mod tmux;

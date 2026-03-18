@@ -157,9 +157,10 @@ async fn restore_same_commit_preserves_build_artifacts() {
     let mut lock = LockFile::new();
     lock.plugins
         .insert("example.com/test/plugin".into(), LockEntry {
-            source:   "test/plugin".into(),
-            tracking: TrackingRecord { kind: "branch".into(), value: "main".into() },
-            commit:   commit.clone(),
+            source:      "test/plugin".into(),
+            tracking:    TrackingRecord { kind: "branch".into(), value: "main".into() },
+            commit:      commit.clone(),
+            config_hash: None,
         });
 
     // First restore: installs from scratch, build runs and creates marker.
@@ -198,9 +199,10 @@ async fn restore_build_failure_returns_error() {
     let mut lock = LockFile::new();
     lock.plugins
         .insert("example.com/test/plugin".into(), LockEntry {
-            source:   "test/plugin".into(),
-            tracking: TrackingRecord { kind: "branch".into(), value: "main".into() },
-            commit:   commit.clone(),
+            source:      "test/plugin".into(),
+            tracking:    TrackingRecord { kind: "branch".into(), value: "main".into() },
+            commit:      commit.clone(),
+            config_hash: None,
         });
 
     let result = plugin::restore(&cfg, &lock, &paths, None).await;
@@ -415,7 +417,7 @@ async fn install_repairs_healthy_repo_when_default_branch_head_is_on_other_branc
 
     let entry = lock.plugins.get("example.com/test/plugin").unwrap();
     assert_eq!(entry.commit, main_commit);
-    assert_eq!(entry.tracking.kind, "branch");
+    assert_eq!(entry.tracking.kind, "default-branch");
     assert_eq!(entry.tracking.value, "main");
     assert_eq!(git(&["rev-parse", "HEAD"], &target), main_commit);
 }

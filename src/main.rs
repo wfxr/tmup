@@ -8,6 +8,7 @@ use lazytmux::{
     planner,
     plugin,
     state::{OperationLock, Paths},
+    sync::{self, SyncPolicy},
     tmux,
 };
 
@@ -25,6 +26,11 @@ enum Commands {
     /// Install missing remote plugins
     Install {
         /// Plugin id to install (all if omitted)
+        id: Option<String>,
+    },
+    /// Reconcile lock metadata and declared remote plugins with config
+    Sync {
+        /// Plugin id to sync (all if omitted)
         id: Option<String>,
     },
     /// Update remote plugins (the only command that advances lock)
@@ -52,9 +58,10 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Init => run_init().await,
         Commands::Install { id } => run_install(id).await,
+        Commands::Sync { id } => run_sync(id).await,
         Commands::Update { id } => run_update(id).await,
         Commands::Restore { id } => run_restore(id).await,
-        Commands::Clean => run_clean(),
+        Commands::Clean => run_clean().await,
         Commands::List => run_list(),
         Commands::Migrate => {
             eprintln!("migrate not yet implemented");
@@ -116,9 +123,17 @@ async fn run_init() -> Result<()> {
     // Hold the lock for the entire init: plan, mutate, and load.
     let _guard = OperationLock::acquire(&paths.lock_path)?;
 
+    let mut lock = load_lockfile(&paths)?;
+    sync::run_and_write(
+        &cfg,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::init(cfg.options.auto_install),
+    )
+    .await?;
     let managed_ids = planner::scan_managed_plugin_ids(&paths.plugin_root);
     let health_map = build_health_map(&cfg, &paths);
-    let mut lock = load_lockfile(&paths)?;
     let plan = planner::plan_init(&cfg, &lock, &health_map, &managed_ids);
 
     let write_failures = if let Some(write_plan) = plan {
@@ -182,7 +197,17 @@ async fn run_install(id: Option<String>) -> Result<()> {
         .context("another lazytmux operation is in progress")?;
     let cfg = load_config(&paths)?;
     let mut lock = load_lockfile(&paths)?;
+    sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::INSTALL).await?;
     plugin::install(&cfg, &mut lock, &paths, id.as_deref(), false).await
+}
+
+async fn run_sync(id: Option<String>) -> Result<()> {
+    let paths = Paths::resolve()?;
+    let _guard = OperationLock::try_acquire(&paths.lock_path)?
+        .context("another lazytmux operation is in progress")?;
+    let cfg = load_config(&paths)?;
+    let mut lock = load_lockfile(&paths)?;
+    sync::run_and_write(&cfg, &mut lock, &paths, id.as_deref(), SyncPolicy::SYNC).await
 }
 
 async fn run_update(id: Option<String>) -> Result<()> {
@@ -191,6 +216,7 @@ async fn run_update(id: Option<String>) -> Result<()> {
         .context("another lazytmux operation is in progress")?;
     let cfg = load_config(&paths)?;
     let mut lock = load_lockfile(&paths)?;
+    sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::UPDATE).await?;
     plugin::update(&cfg, &mut lock, &paths, id.as_deref()).await
 }
 
@@ -199,15 +225,18 @@ async fn run_restore(id: Option<String>) -> Result<()> {
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another lazytmux operation is in progress")?;
     let cfg = load_config(&paths)?;
-    let lock = load_lockfile(&paths)?;
+    let mut lock = load_lockfile(&paths)?;
+    sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::RESTORE).await?;
     plugin::restore(&cfg, &lock, &paths, id.as_deref()).await
 }
 
-fn run_clean() -> Result<()> {
+async fn run_clean() -> Result<()> {
     let paths = Paths::resolve()?;
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another lazytmux operation is in progress")?;
     let cfg = load_config(&paths)?;
+    let mut lock = load_lockfile(&paths)?;
+    sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::CLEAN).await?;
     plugin::clean(&cfg, &paths)
 }
 
@@ -216,6 +245,10 @@ fn run_list() -> Result<()> {
     let cfg = load_config(&paths)?;
     let lock = load_lockfile(&paths)?;
     let statuses = plugin::list(&cfg, &lock, &paths)?;
+
+    if sync::lock_is_stale(&cfg, &lock) {
+        println!("warning: lock metadata is stale relative to config; run `lazytmux sync`");
+    }
 
     // Print header
     println!(
