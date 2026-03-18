@@ -3,7 +3,14 @@ use std::collections::HashSet;
 
 use crate::{
     git,
-    lockfile::{LockEntry, LockFile, TrackingRecord, write_lockfile_atomic},
+    lockfile::{
+        LockEntry,
+        LockFile,
+        TrackingRecord,
+        config_fingerprint,
+        remote_plugin_config_hash,
+        write_lockfile_atomic,
+    },
     model::{Config, PluginSource, Tracking},
     planner::{self, PluginStatus, collect_failed_builds},
     state::{self, FailureKey, FailureMarker, Paths, build_command_hash},
@@ -86,6 +93,7 @@ pub async fn install(
                 continue;
             }
         };
+        let config_hash = remote_plugin_config_hash(spec);
 
         // Check known failure suppression (for init auto-install)
         if skip_known_failures
@@ -114,6 +122,7 @@ pub async fn install(
                     source: raw.clone(),
                     tracking: tracking_record,
                     commit,
+                    config_hash,
                 });
                 // Clear failure markers on success
                 state::clear_failure_markers(&paths.failures_root, id)?;
@@ -141,6 +150,7 @@ pub async fn install(
         }
     }
 
+    lock.config_fingerprint = Some(config_fingerprint(config));
     write_lockfile_atomic(&paths.lockfile_path, lock)?;
     if !failures.is_empty() {
         anyhow::bail!(
@@ -189,6 +199,7 @@ pub async fn update(
 
         let target_dir = paths.plugin_dir(id);
         let staging = paths.staging_dir(id);
+        let config_hash = remote_plugin_config_hash(spec);
 
         // Git preparation — failures are per-plugin, not fatal.
         let prep = async {
@@ -223,9 +234,10 @@ pub async fn update(
         if !revision_changed && target_dir.exists() {
             let _ = std::fs::remove_dir_all(&staging);
             lock.plugins.insert(id.clone(), LockEntry {
-                source:   raw.clone(),
-                tracking: tracking_record,
-                commit:   new_commit,
+                source:      raw.clone(),
+                tracking:    tracking_record,
+                commit:      new_commit,
+                config_hash: config_hash.clone(),
             });
             // A no-op update is still a successful operation — clear any
             // stale failure markers so `list` doesn't show build-failed.
@@ -247,9 +259,10 @@ pub async fn update(
         match result {
             Ok(()) => {
                 lock.plugins.insert(id.clone(), LockEntry {
-                    source:   raw.clone(),
+                    source: raw.clone(),
                     tracking: tracking_record,
-                    commit:   new_commit,
+                    commit: new_commit,
+                    config_hash,
                 });
                 state::clear_failure_markers(&paths.failures_root, id)?;
             }
@@ -274,6 +287,7 @@ pub async fn update(
         }
     }
 
+    lock.config_fingerprint = Some(config_fingerprint(config));
     write_lockfile_atomic(&paths.lockfile_path, lock)?;
     if !failures.is_empty() {
         anyhow::bail!(
@@ -455,7 +469,7 @@ pub fn is_known_failure(
     state::has_failure_marker(&paths.failures_root, &key)
 }
 
-async fn resolve_tracking(
+pub(crate) async fn resolve_tracking(
     repo: &std::path::Path,
     tracking: &Tracking,
 ) -> Result<(String, TrackingRecord)> {
@@ -483,7 +497,7 @@ async fn resolve_tracking(
             let branch = git::default_branch(repo).await?;
             let commit = git::resolve_remote_branch(repo, &branch).await?;
             Ok((commit, TrackingRecord {
-                kind:  "branch".into(),
+                kind:  "default-branch".into(),
                 value: branch,
             }))
         }

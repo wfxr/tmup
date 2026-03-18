@@ -10,6 +10,7 @@ fn help_lists_core_commands() {
         .success()
         .stdout(predicate::str::contains("init"))
         .stdout(predicate::str::contains("install"))
+        .stdout(predicate::str::contains("sync"))
         .stdout(predicate::str::contains("update"))
         .stdout(predicate::str::contains("restore"))
         .stdout(predicate::str::contains("clean"))

@@ -2,12 +2,80 @@ use std::collections::{HashMap, HashSet};
 
 use lazytmux::{
     config::parse_config,
-    lockfile::{LockEntry, LockFile},
+    lockfile::{LockEntry, LockFile, config_fingerprint, read_lockfile, remote_plugin_config_hash},
+    model::{Config, Options, PluginSource, PluginSpec, Tracking},
     planner,
     planner::RepoHealth,
     state::{OperationLock, Paths, build_command_hash},
+    sync,
 };
 use tempfile::tempdir;
+
+fn git(args: &[&str], dir: &std::path::Path) -> String {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("HOME", dir)
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@test")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@test")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn make_bare_repo(root: &std::path::Path) -> (std::path::PathBuf, String) {
+    let work = root.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+
+    git(&["init", "-b", "main"], &work);
+    std::fs::write(work.join("init.tmux"), "#!/bin/sh\n").unwrap();
+    git(&["add", "."], &work);
+    git(&["commit", "-m", "init"], &work);
+
+    let commit = git(&["rev-parse", "HEAD"], &work);
+
+    let bare = root.join("bare.git");
+    git(
+        &[
+            "clone",
+            "--bare",
+            work.to_str().unwrap(),
+            bare.to_str().unwrap(),
+        ],
+        root,
+    );
+
+    (bare, commit)
+}
+
+fn make_plugin(clone_url: &str, tracking: Tracking, build: Option<&str>) -> PluginSpec {
+    PluginSpec {
+        source: PluginSource::Remote {
+            raw:       "test/plugin".into(),
+            id:        "example.com/test/plugin".into(),
+            clone_url: clone_url.into(),
+        },
+        name: "plugin".into(),
+        opt_prefix: String::new(),
+        tracking,
+        build: build.map(String::from),
+        opts: vec![],
+    }
+}
+
+fn make_config_from_plugin(plugin: PluginSpec) -> Config {
+    Config { options: Options::default(), plugins: vec![plugin] }
+}
 
 #[test]
 fn init_read_only_path_detected_when_aligned() {
@@ -143,4 +211,43 @@ fn operation_lock_blocks_concurrent_init() {
 
     // Second process cannot acquire
     assert!(OperationLock::try_acquire(&lock_path).unwrap().is_none());
+}
+
+#[tokio::test]
+async fn init_preflight_sync_failure_preserves_previous_lock_snapshot() {
+    let dir = tempdir().unwrap();
+    let (bare, commit) = make_bare_repo(&dir.path().join("repo"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let old_plugin = make_plugin(&clone_url, Tracking::DefaultBranch, Some("touch built-v1"));
+    let new_plugin = make_plugin(
+        &clone_url,
+        Tracking::DefaultBranch,
+        Some("touch built-v2; exit 1"),
+    );
+
+    let mut lock = LockFile::new();
+    let mut entry = LockEntry::default_branch("test/plugin", "main", &commit);
+    entry.config_hash = remote_plugin_config_hash(&old_plugin);
+    lock.plugins.insert("example.com/test/plugin".into(), entry);
+    lock.config_fingerprint = Some(config_fingerprint(&make_config_from_plugin(old_plugin)));
+
+    let cfg = make_config_from_plugin(new_plugin);
+    let result =
+        sync::run_and_write(&cfg, &mut lock, &paths, None, sync::SyncPolicy::init(true)).await;
+    assert!(
+        result.is_err(),
+        "init preflight should abort on sync failure"
+    );
+
+    let persisted = read_lockfile(&paths.lockfile_path).unwrap();
+    let entry = persisted.plugins.get("example.com/test/plugin").unwrap();
+    assert_eq!(entry.commit, commit);
+    assert_eq!(entry.tracking.kind, "default-branch");
+    assert_eq!(
+        entry.config_hash,
+        lock.plugins["example.com/test/plugin"].config_hash
+    );
 }

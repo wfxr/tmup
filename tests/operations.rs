@@ -1,9 +1,11 @@
 use lazytmux::{
     config::parse_config,
-    lockfile::{LockEntry, LockFile},
+    lockfile::{LockEntry, LockFile, read_lockfile},
+    model::{Config, Options, PluginSource, PluginSpec, Tracking},
     planner,
     plugin,
     state::{Paths, build_command_hash},
+    sync::{self, SyncPolicy},
 };
 use std::path::Path;
 use tempfile::tempdir;
@@ -46,6 +48,114 @@ fn init_git_repo(path: &Path) -> String {
         .output()
         .unwrap();
     String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+fn git(args: &[&str], dir: &Path) -> String {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("HOME", dir)
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@test")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@test")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+fn make_bare_repo(root: &Path) -> (std::path::PathBuf, String) {
+    let work = root.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+
+    git(&["init", "-b", "main"], &work);
+    std::fs::write(work.join("init.tmux"), "#!/bin/sh\n").unwrap();
+    git(&["add", "."], &work);
+    git(&["commit", "-m", "init"], &work);
+
+    let commit = git(&["rev-parse", "HEAD"], &work);
+
+    let bare = root.join("bare.git");
+    git(
+        &[
+            "clone",
+            "--bare",
+            work.to_str().unwrap(),
+            bare.to_str().unwrap(),
+        ],
+        root,
+    );
+
+    (bare, commit)
+}
+
+fn push_commit(bare: &Path, message: &str) -> String {
+    let tmp = bare.parent().unwrap().join(format!("_push_{message}_tmp"));
+    let _ = std::fs::remove_dir_all(&tmp);
+    git(
+        &["clone", bare.to_str().unwrap(), tmp.to_str().unwrap()],
+        bare.parent().unwrap(),
+    );
+    std::fs::write(tmp.join(format!("{message}.txt")), message).unwrap();
+    git(&["add", "."], &tmp);
+    git(&["commit", "-m", message], &tmp);
+    git(&["push"], &tmp);
+    let hash = git(&["rev-parse", "HEAD"], &tmp);
+    std::fs::remove_dir_all(&tmp).unwrap();
+    hash
+}
+
+fn push_tag(bare: &Path, tag: &str, commit: &str) {
+    let tmp = bare.parent().unwrap().join("_tag_tmp");
+    let _ = std::fs::remove_dir_all(&tmp);
+    git(
+        &["clone", bare.to_str().unwrap(), tmp.to_str().unwrap()],
+        bare.parent().unwrap(),
+    );
+    git(&["tag", tag, commit], &tmp);
+    git(&["push", "origin", tag], &tmp);
+    std::fs::remove_dir_all(&tmp).unwrap();
+}
+
+fn clone_to_target(source: &Path, target: &Path) {
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    git(
+        &["clone", source.to_str().unwrap(), target.to_str().unwrap()],
+        target.parent().unwrap(),
+    );
+}
+
+fn make_plugin(
+    raw: &str,
+    id: &str,
+    clone_url: &str,
+    tracking: Tracking,
+    build: Option<&str>,
+) -> PluginSpec {
+    PluginSpec {
+        source: PluginSource::Remote {
+            raw:       raw.into(),
+            id:        id.into(),
+            clone_url: clone_url.into(),
+        },
+        name: raw.rsplit('/').next().unwrap_or(raw).into(),
+        opt_prefix: String::new(),
+        tracking,
+        build: build.map(String::from),
+        opts: vec![],
+    }
+}
+
+fn make_config(plugins: Vec<PluginSpec>) -> Config {
+    Config { options: Options::default(), plugins }
 }
 
 #[test]
@@ -249,4 +359,252 @@ fn list_shows_both_state_and_last_result_for_build_failure() {
     let statuses = plugin::list(&config, &lock, &paths).unwrap();
     assert_eq!(statuses[0].state, planner::PluginState::Installed);
     assert_eq!(statuses[0].last_result, planner::LastResult::BuildFailed);
+}
+
+#[test]
+fn stale_lock_detection_catches_missing_and_mismatched_sync_metadata() {
+    let config = parse_config(r#"plugin "user/repo" build="make install""#).unwrap();
+
+    let mut stale_lock = LockFile::new();
+    stale_lock.plugins.insert(
+        "github.com/user/repo".into(),
+        LockEntry::branch("user/repo", "main", "abc123"),
+    );
+    stale_lock.config_fingerprint = None;
+    assert!(sync::lock_is_stale(&config, &stale_lock));
+
+    let mut aligned_lock = LockFile::new();
+    let mut entry = LockEntry::branch("user/repo", "main", "abc123");
+    entry.config_hash = lazytmux::lockfile::remote_plugin_config_hash(&config.plugins[0]);
+    aligned_lock
+        .plugins
+        .insert("github.com/user/repo".into(), entry);
+    aligned_lock.config_fingerprint = Some(lazytmux::lockfile::config_fingerprint(&config));
+    assert!(!sync::lock_is_stale(&config, &aligned_lock));
+
+    aligned_lock.config_fingerprint = Some("stale-top-level".into());
+    assert!(sync::lock_is_stale(&config, &aligned_lock));
+}
+
+#[tokio::test]
+async fn install_uses_post_sync_lock_snapshot() {
+    let dir = tempdir().unwrap();
+    let (bare, commit_a) = make_bare_repo(&dir.path().join("repo"));
+    let commit_b = push_commit(&bare, "second");
+    push_tag(&bare, "v1.0.0", &commit_a);
+
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let cfg = make_config(vec![make_plugin(
+        "test/plugin",
+        "example.com/test/plugin",
+        &clone_url,
+        Tracking::Tag("v1.0.0".into()),
+        None,
+    )]);
+
+    let mut lock = LockFile::new();
+    lock.plugins.insert(
+        "example.com/test/plugin".into(),
+        LockEntry::branch("test/plugin", "main", &commit_b),
+    );
+
+    sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::INSTALL)
+        .await
+        .unwrap();
+
+    let mut persisted = read_lockfile(&paths.lockfile_path).unwrap();
+    plugin::install(&cfg, &mut persisted, &paths, None, false)
+        .await
+        .unwrap();
+
+    let target = paths.plugin_dir("example.com/test/plugin");
+    assert_eq!(git(&["rev-parse", "HEAD"], &target), commit_a);
+    assert_eq!(
+        persisted.plugins["example.com/test/plugin"].tracking.kind,
+        "tag"
+    );
+}
+
+#[tokio::test]
+async fn restore_uses_post_sync_lock_snapshot() {
+    let dir = tempdir().unwrap();
+    let (bare, commit_a) = make_bare_repo(&dir.path().join("repo"));
+    let commit_b = push_commit(&bare, "second");
+
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let target = paths.plugin_dir("example.com/test/plugin");
+    clone_to_target(&bare, &target);
+    assert_eq!(git(&["rev-parse", "HEAD"], &target), commit_b);
+
+    let clone_url = format!("file://{}", bare.display());
+    let cfg = make_config(vec![make_plugin(
+        "test/plugin",
+        "example.com/test/plugin",
+        &clone_url,
+        Tracking::Commit(commit_b.clone()),
+        None,
+    )]);
+
+    let mut lock = LockFile::new();
+    lock.plugins.insert(
+        "example.com/test/plugin".into(),
+        LockEntry::branch("test/plugin", "main", &commit_a),
+    );
+
+    sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::RESTORE)
+        .await
+        .unwrap();
+
+    let persisted = read_lockfile(&paths.lockfile_path).unwrap();
+    plugin::restore(&cfg, &persisted, &paths, None)
+        .await
+        .unwrap();
+    assert_eq!(git(&["rev-parse", "HEAD"], &target), commit_b);
+    assert_eq!(
+        persisted.plugins["example.com/test/plugin"].commit,
+        commit_b
+    );
+}
+
+#[tokio::test]
+async fn update_runs_sync_first_then_only_advances_unchanged_floating_plugins() {
+    let dir = tempdir().unwrap();
+    let (bare_a, commit_a1) = make_bare_repo(&dir.path().join("repo-a"));
+    let commit_a2 = push_commit(&bare_a, "second-a");
+    push_tag(&bare_a, "v1.0.0", &commit_a1);
+
+    let (bare_b, commit_b1) = make_bare_repo(&dir.path().join("repo-b"));
+    let commit_b2 = push_commit(&bare_b, "second-b");
+
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let target_a = paths.plugin_dir("example.com/test/plugin-a");
+    let target_b = paths.plugin_dir("example.com/test/plugin-b");
+    clone_to_target(&bare_a, &target_a);
+    clone_to_target(&bare_b, &target_b);
+    git(&["checkout", &commit_a1], &target_a);
+    git(&["checkout", &commit_b1], &target_b);
+
+    let clone_a = format!("file://{}", bare_a.display());
+    let clone_b = format!("file://{}", bare_b.display());
+    let cfg = make_config(vec![
+        make_plugin(
+            "test/plugin-a",
+            "example.com/test/plugin-a",
+            &clone_a,
+            Tracking::Tag("v1.0.0".into()),
+            None,
+        ),
+        make_plugin(
+            "test/plugin-b",
+            "example.com/test/plugin-b",
+            &clone_b,
+            Tracking::Branch("main".into()),
+            None,
+        ),
+    ]);
+
+    let mut lock = LockFile::new();
+    lock.plugins.insert(
+        "example.com/test/plugin-a".into(),
+        LockEntry::branch("test/plugin-a", "main", &commit_a1),
+    );
+    lock.plugins.insert(
+        "example.com/test/plugin-b".into(),
+        LockEntry::branch("test/plugin-b", "main", &commit_b1),
+    );
+
+    sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::UPDATE)
+        .await
+        .unwrap();
+
+    let mut persisted = read_lockfile(&paths.lockfile_path).unwrap();
+    plugin::update(&cfg, &mut persisted, &paths, None)
+        .await
+        .unwrap();
+
+    assert_eq!(git(&["rev-parse", "HEAD"], &target_a), commit_a1);
+    assert_eq!(git(&["rev-parse", "HEAD"], &target_b), commit_b2);
+    assert_eq!(
+        persisted.plugins["example.com/test/plugin-a"].tracking.kind,
+        "tag"
+    );
+    assert_eq!(
+        persisted.plugins["example.com/test/plugin-a"].commit,
+        commit_a1
+    );
+    assert_eq!(
+        persisted.plugins["example.com/test/plugin-b"].commit,
+        commit_b2
+    );
+    assert_ne!(commit_a1, commit_a2);
+}
+
+#[tokio::test]
+async fn clean_prunes_removed_lock_entries_without_rebuilding_declared_plugins() {
+    let dir = tempdir().unwrap();
+    let (bare_a, _commit_a) = make_bare_repo(&dir.path().join("repo-a"));
+    let (bare_b, _commit_b) = make_bare_repo(&dir.path().join("repo-b"));
+
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_a = format!("file://{}", bare_a.display());
+    let clone_b = format!("file://{}", bare_b.display());
+    let initial_cfg = make_config(vec![
+        make_plugin(
+            "test/plugin-a",
+            "example.com/test/plugin-a",
+            &clone_a,
+            Tracking::DefaultBranch,
+            Some("touch built-v1.marker"),
+        ),
+        make_plugin(
+            "test/plugin-b",
+            "example.com/test/plugin-b",
+            &clone_b,
+            Tracking::DefaultBranch,
+            None,
+        ),
+    ]);
+
+    let mut lock = LockFile::new();
+    sync::run_and_write(&initial_cfg, &mut lock, &paths, None, SyncPolicy::SYNC)
+        .await
+        .unwrap();
+
+    let plugin_a = paths.plugin_dir("example.com/test/plugin-a");
+    let plugin_b = paths.plugin_dir("example.com/test/plugin-b");
+    assert!(plugin_a.join("built-v1.marker").exists());
+    assert!(plugin_b.exists());
+
+    let clean_cfg = make_config(vec![make_plugin(
+        "test/plugin-a",
+        "example.com/test/plugin-a",
+        &clone_a,
+        Tracking::DefaultBranch,
+        Some("touch built-v2.marker"),
+    )]);
+
+    sync::run_and_write(&clean_cfg, &mut lock, &paths, None, SyncPolicy::CLEAN)
+        .await
+        .unwrap();
+    plugin::clean(&clean_cfg, &paths).unwrap();
+
+    let persisted = read_lockfile(&paths.lockfile_path).unwrap();
+    assert!(plugin_a.exists());
+    assert!(plugin_a.join("built-v1.marker").exists());
+    assert!(!plugin_a.join("built-v2.marker").exists());
+    assert!(
+        !plugin_b.exists(),
+        "clean should still remove undeclared repos"
+    );
+    assert!(persisted.plugins.contains_key("example.com/test/plugin-a"));
+    assert!(!persisted.plugins.contains_key("example.com/test/plugin-b"));
 }
