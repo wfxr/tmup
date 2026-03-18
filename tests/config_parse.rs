@@ -118,3 +118,16 @@ fn rejects_wrong_type_build() {
     let err = parse_config(r#"plugin "user/repo" build=42"#).unwrap_err();
     assert!(err.to_string().contains("build must be a string"), "{err}");
 }
+
+#[test]
+fn rejects_local_with_remote_style_path() {
+    let err = parse_config(r#"plugin "user/repo" local=#true"#).unwrap_err();
+    assert!(err.to_string().contains("requires a local path"), "{err}");
+}
+
+#[test]
+fn accepts_local_with_valid_paths() {
+    parse_config(r#"plugin "~/dev/my-plugin" local=#true"#).unwrap();
+    parse_config(r#"plugin "/opt/plugins/foo" local=#true"#).unwrap();
+    parse_config(r#"plugin "./local-plugin" local=#true"#).unwrap();
+}

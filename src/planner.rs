@@ -250,10 +250,13 @@ pub fn plan_init(
                     to_install.push(id.to_string());
                 },
             RepoHealth::Healthy { ref commit } =>
-                if let Some(lock_entry) = lock.plugins.get(id)
-                    && commit != &lock_entry.commit
-                {
-                    to_restore.push(id.to_string());
+                if let Some(lock_entry) = lock.plugins.get(id) {
+                    if commit != &lock_entry.commit {
+                        to_restore.push(id.to_string());
+                    }
+                } else {
+                    // Healthy but no lock entry — needs adopt via install
+                    to_install.push(id.to_string());
                 },
         }
     }

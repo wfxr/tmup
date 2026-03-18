@@ -48,7 +48,17 @@ pub async fn install(
 
         let target_dir = paths.plugin_dir(id);
         let health = planner::inspect_plugin_dir(&target_dir);
-        if matches!(health, planner::RepoHealth::Healthy { .. }) {
+        if let planner::RepoHealth::Healthy { ref commit } = health {
+            if lock.plugins.contains_key(id.as_str()) {
+                continue;
+            }
+            // Healthy but no lock entry — adopt current state into lockfile.
+            let record = tracking_record_from_spec(&target_dir, &spec.tracking).await;
+            lock.plugins.insert(id.clone(), LockEntry {
+                source:   raw.clone(),
+                tracking: record,
+                commit:   commit.clone(),
+            });
             continue;
         }
 
@@ -446,6 +456,22 @@ pub fn is_known_failure(
     let bh = build_command_hash(build_cmd);
     let key = FailureKey::new(plugin_id, commit, &bh);
     state::has_failure_marker(&paths.failures_root, &key)
+}
+
+/// Build a TrackingRecord from a config spec for an already-installed repo.
+/// Used to adopt existing installations into the lockfile without re-cloning.
+async fn tracking_record_from_spec(repo: &std::path::Path, tracking: &Tracking) -> TrackingRecord {
+    match tracking {
+        Tracking::Branch(b) => TrackingRecord { kind: "branch".into(), value: b.clone() },
+        Tracking::Tag(t) => TrackingRecord { kind: "tag".into(), value: t.clone() },
+        Tracking::Commit(c) => TrackingRecord { kind: "commit".into(), value: c.clone() },
+        Tracking::DefaultBranch => {
+            let branch = git::default_branch(repo)
+                .await
+                .unwrap_or_else(|_| "main".into());
+            TrackingRecord { kind: "branch".into(), value: branch }
+        }
+    }
 }
 
 async fn resolve_tracking(
