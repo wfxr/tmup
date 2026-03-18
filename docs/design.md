@@ -11,7 +11,7 @@ philosophy: concise configuration, concurrent operations, reproducible
 environments, and safe publish/rollback semantics.
 
 The project focuses exclusively on CLI-driven workflows. The core value is
-lock-first state management, safe publish and rollback, writer-aware init, and
+lock-first state management, safe publish and rollback, lock-through-load init, and
 script-friendly behavior with reliable exit codes.
 
 ---
@@ -647,7 +647,7 @@ lazytmux/
 - [x] KDL configuration parsing and validation
 - [x] URL -> ID path derivation
 - [x] Planner: config + lock + installed state -> target state
-- [x] Preflight + replan init path
+- [x] Init planner: config + lock + disk -> write plan
 - [x] Staging + publish protocol with rollback
 - [x] Lock file generation, reading, and atomic update
 - [x] Global operation lock
@@ -656,7 +656,7 @@ lazytmux/
 
 ### Phase 2: tmux Integration (done)
 
-- [x] `init` command with writer-aware flow
+- [x] `init` command with lock-through-load flow
 - [x] Option application (`set -g @...`)
 - [x] `*.tmux` loading in declaration order
 - [x] `TMUX_PLUGIN_MANAGER_PATH` setup

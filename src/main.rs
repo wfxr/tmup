@@ -102,11 +102,9 @@ fn load_lockfile(paths: &Paths) -> Result<lockfile::LockFile> {
     }
 }
 
-/// Init flow: acquire the global lock upfront and hold it through loading.
-///
-/// This avoids TOCTOU races between preflight and lock acquisition. The lock
-/// is held from the start until plugin loading completes, so no concurrent
-/// writer can modify plugin state during init.
+/// Init flow: acquire the global lock, plan, mutate if needed, then load.
+/// The lock is held from start to finish so no concurrent writer can modify
+/// plugin state during init.
 async fn run_init() -> Result<()> {
     let paths = Paths::resolve()?;
     paths.ensure_dirs()?;

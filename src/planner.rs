@@ -19,7 +19,6 @@ pub enum PluginState {
     Outdated,
     PinnedTag,
     PinnedCommit,
-    Unmanaged,
     Local,
 }
 
@@ -31,7 +30,6 @@ impl fmt::Display for PluginState {
             Self::Outdated => write!(f, "outdated"),
             Self::PinnedTag => write!(f, "pinned-tag"),
             Self::PinnedCommit => write!(f, "pinned-commit"),
-            Self::Unmanaged => write!(f, "unmanaged"),
             Self::Local => write!(f, "local"),
         }
     }
@@ -55,7 +53,7 @@ impl fmt::Display for LastResult {
     }
 }
 
-/// A row of plugin status for list/TUI display.
+/// A row of plugin status for list display.
 #[derive(Debug, Clone)]
 pub struct PluginStatus {
     pub id:             String,
