@@ -42,18 +42,30 @@ pub async fn install(
         let staging = paths.staging_dir(id);
         let target_dir = paths.plugin_dir(id);
 
-        // Determine target commit
-        let (commit, tracking_record) = if let Some(entry) = lock.plugins.get(id.as_str()) {
-            // Lock entry exists: install exact commit
-            git::clone_repo(clone_url, &staging).await?;
-            git::checkout(&staging, &entry.commit).await?;
-            (entry.commit.clone(), entry.tracking.clone())
-        } else {
-            // No lock entry: resolve from config
-            git::clone_repo(clone_url, &staging).await?;
-            let (commit, record) = resolve_tracking(&staging, &spec.tracking).await?;
-            git::checkout(&staging, &commit).await?;
-            (commit, record)
+        // Determine target commit — git failures are per-plugin, not fatal.
+        let prep: Result<_> = async {
+            if let Some(entry) = lock.plugins.get(id.as_str()) {
+                git::clone_repo(clone_url, &staging).await?;
+                git::checkout(&staging, &entry.commit).await?;
+                Ok((entry.commit.clone(), entry.tracking.clone()))
+            } else {
+                git::clone_repo(clone_url, &staging).await?;
+                let (commit, record) = resolve_tracking(&staging, &spec.tracking).await?;
+                git::checkout(&staging, &commit).await?;
+                Ok((commit, record))
+            }
+        }
+        .await;
+
+        let (commit, tracking_record) = match prep {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&staging);
+                let msg = format!("{id}: {e}");
+                eprintln!("failed to install {msg}");
+                failures.push(msg);
+                continue;
+            }
         };
 
         // Check known failure suppression (for init auto-install)
@@ -153,17 +165,38 @@ pub async fn update(
         let target_dir = paths.plugin_dir(id);
         let staging = paths.staging_dir(id);
 
-        // Clone or fetch into staging
-        git::clone_repo(clone_url, &staging).await?;
-        git::fetch(&staging).await?;
+        // Git preparation — failures are per-plugin, not fatal.
+        let prep = async {
+            git::clone_repo(clone_url, &staging).await?;
+            git::fetch(&staging).await?;
+            let (new_commit, record) = resolve_tracking(&staging, &spec.tracking).await?;
+            git::checkout(&staging, &new_commit).await?;
+            Ok::<_, anyhow::Error>((new_commit, record))
+        }
+        .await;
 
-        // Resolve new commit
-        let (new_commit, tracking_record) = resolve_tracking(&staging, &spec.tracking).await?;
-        git::checkout(&staging, &new_commit).await?;
+        let (new_commit, tracking_record) = match prep {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&staging);
+                let msg = format!("{id}: {e}");
+                eprintln!("failed to update {msg}");
+                failures.push(msg);
+                continue;
+            }
+        };
 
-        // Check if revision actually changed
-        let old_commit = lock.plugins.get(id.as_str()).map(|e| e.commit.as_str());
-        let revision_changed = old_commit != Some(new_commit.as_str());
+        // Decide whether to run build: check if the *disk* HEAD differs from
+        // new_commit, or the target directory is missing entirely.  Using the
+        // disk rather than the lock avoids skipping the build when the directory
+        // was manually changed or deleted while the lock already records the
+        // same commit.
+        let disk_commit = if target_dir.exists() {
+            git::head_commit(&target_dir).await.ok()
+        } else {
+            None
+        };
+        let revision_changed = disk_commit.as_deref() != Some(new_commit.as_str());
 
         let build = if revision_changed {
             spec.build.as_deref()
@@ -263,9 +296,21 @@ pub async fn restore(
 
         let staging = paths.staging_dir(id);
 
-        // Clone into staging and checkout lock commit
-        git::clone_repo(clone_url, &staging).await?;
-        git::checkout(&staging, &entry.commit).await?;
+        // Clone into staging and checkout lock commit — per-plugin failure.
+        let prep: Result<()> = async {
+            git::clone_repo(clone_url, &staging).await?;
+            git::checkout(&staging, &entry.commit).await?;
+            Ok(())
+        }
+        .await;
+
+        if let Err(e) = prep {
+            let _ = std::fs::remove_dir_all(&staging);
+            let msg = format!("{id}: {e}");
+            eprintln!("failed to restore {msg}");
+            failures.push(msg);
+            continue;
+        }
 
         // Revision changed (or missing), so run build if declared
         let build = spec.build.as_deref();
