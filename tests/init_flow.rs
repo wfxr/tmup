@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use lazytmux::{
     config::parse_config,
     lockfile::{LockEntry, LockFile},
     planner,
+    planner::RepoHealth,
     state::{OperationLock, Paths, build_command_hash},
 };
 use tempfile::tempdir;
@@ -16,10 +17,13 @@ fn init_read_only_path_detected_when_aligned() {
         "github.com/user/repo".into(),
         LockEntry::branch("user/repo", "main", "abc123"),
     );
-    let installed: HashMap<String, Option<String>> =
-        [("github.com/user/repo".into(), Some("abc123".into()))].into();
+    let health: HashMap<String, RepoHealth> =
+        [("github.com/user/repo".into(), RepoHealth::Healthy {
+            commit: "abc123".into(),
+        })]
+        .into();
 
-    let plan = planner::plan_init(&config, &lock, &installed);
+    let plan = planner::plan_init(&config, &lock, &health, &HashSet::new());
     assert!(plan.is_none());
 }
 
@@ -33,9 +37,9 @@ plugin "user/repo"
     )
     .unwrap();
     let lock = LockFile::new();
-    let installed = HashMap::new();
+    let health: HashMap<String, RepoHealth> = HashMap::new();
 
-    let plan = planner::plan_init(&config, &lock, &installed);
+    let plan = planner::plan_init(&config, &lock, &health, &HashSet::new());
     let plan = plan.expect("expected Some(WritePlan)");
     assert!(
         plan.to_install
@@ -60,10 +64,13 @@ plugin "user/repo"
         LockEntry::branch("user/repo", "main", "abc123"),
     );
     // Between preflight and lock acquisition, plugin was installed
-    let installed: HashMap<String, Option<String>> =
-        [("github.com/user/repo".into(), Some("abc123".into()))].into();
+    let health: HashMap<String, RepoHealth> =
+        [("github.com/user/repo".into(), RepoHealth::Healthy {
+            commit: "abc123".into(),
+        })]
+        .into();
 
-    let plan = planner::plan_init(&config, &lock, &installed);
+    let plan = planner::plan_init(&config, &lock, &health, &HashSet::new());
     assert!(plan.is_none());
 }
 

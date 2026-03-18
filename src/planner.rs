@@ -122,11 +122,11 @@ pub fn collect_failed_builds(markers: &[crate::state::FailureMarker]) -> FailedB
         .collect()
 }
 
-/// Compute plugin statuses from config, lock, installed state, and failure markers.
+/// Compute plugin statuses from config, lock, repo health, and failure markers.
 pub fn compute_statuses(
     config: &Config,
     lock: &LockFile,
-    installed_plugins: &HashMap<String, Option<String>>,
+    health_map: &HashMap<String, RepoHealth>,
     failed_builds: &FailedBuilds,
 ) -> Vec<PluginStatus> {
     let mut statuses = Vec::new();
@@ -134,35 +134,36 @@ pub fn compute_statuses(
     for spec in &config.plugins {
         match &spec.source {
             PluginSource::Remote { raw, id, .. } => {
-                let installed_entry = installed_plugins.get(id.as_str());
-                let is_installed = installed_entry.is_some();
-                let current_commit = installed_entry.and_then(|c| c.clone());
+                let health = health_map
+                    .get(id.as_str())
+                    .cloned()
+                    .unwrap_or(RepoHealth::Missing);
 
                 let lock_entry = lock.plugins.get(id.as_str());
-                let lock_commit_str = lock_entry.map(|e| e.commit.as_str());
 
-                let state = if !is_installed {
-                    PluginState::Missing
-                } else {
-                    match &spec.tracking {
-                        Tracking::Tag(_) => PluginState::PinnedTag,
-                        Tracking::Commit(_) => PluginState::PinnedCommit,
-                        _ => {
-                            // Check if installed commit has drifted from lock
-                            if let (Some(cur), Some(locked)) =
-                                (current_commit.as_deref(), lock_commit_str)
-                            {
-                                if cur != locked {
-                                    PluginState::Outdated
+                let (state, current_commit) = match &health {
+                    RepoHealth::Missing => (PluginState::Missing, None),
+                    RepoHealth::Broken => (PluginState::Broken, None),
+                    RepoHealth::Healthy { commit } => {
+                        let st = match &spec.tracking {
+                            Tracking::Tag(_) => PluginState::PinnedTag,
+                            Tracking::Commit(_) => PluginState::PinnedCommit,
+                            _ =>
+                                if let Some(locked) = lock_entry.map(|e| e.commit.as_str()) {
+                                    if commit != locked {
+                                        PluginState::Outdated
+                                    } else {
+                                        PluginState::Installed
+                                    }
                                 } else {
                                     PluginState::Installed
-                                }
-                            } else {
-                                PluginState::Installed
-                            }
-                        }
+                                },
+                        };
+                        (st, Some(commit.clone()))
                     }
                 };
+
+                let is_healthy = matches!(health, RepoHealth::Healthy { .. });
 
                 // last-result: any uncleared failure marker for this plugin + build
                 // means the last operation failed. Success always clears markers.
@@ -170,12 +171,12 @@ pub fn compute_statuses(
                     let bh = build_command_hash(build_cmd);
                     if failed_builds.contains(&(id.clone(), bh)) {
                         LastResult::BuildFailed
-                    } else if is_installed {
+                    } else if is_healthy {
                         LastResult::Ok
                     } else {
                         LastResult::None
                     }
-                } else if is_installed {
+                } else if is_healthy {
                     LastResult::Ok
                 } else {
                     LastResult::None
@@ -217,7 +218,8 @@ pub fn compute_statuses(
 pub fn plan_init(
     config: &Config,
     lock: &LockFile,
-    installed_plugins: &HashMap<String, Option<String>>,
+    health_map: &HashMap<String, RepoHealth>,
+    managed_ids: &HashSet<String>,
 ) -> Option<WritePlan> {
     let declared_ids: HashSet<&str> = config
         .plugins
@@ -225,48 +227,48 @@ pub fn plan_init(
         .filter_map(|p| p.remote_id())
         .collect();
 
-    // Check what needs installing (missing from disk)
-    let to_install: Vec<String> = if config.options.auto_install {
-        declared_ids
+    let mut to_install = Vec::new();
+    let mut to_restore = Vec::new();
+
+    // Iterate in config declaration order for deterministic output
+    for spec in &config.plugins {
+        let Some(id) = spec.remote_id() else {
+            continue;
+        };
+
+        let health = health_map.get(id).cloned().unwrap_or(RepoHealth::Missing);
+
+        match health {
+            RepoHealth::Missing =>
+                if config.options.auto_install {
+                    to_install.push(id.to_string());
+                },
+            RepoHealth::Broken =>
+                if lock.plugins.contains_key(id) {
+                    to_restore.push(id.to_string());
+                } else if config.options.auto_install {
+                    to_install.push(id.to_string());
+                },
+            RepoHealth::Healthy { ref commit } =>
+                if let Some(lock_entry) = lock.plugins.get(id)
+                    && commit != &lock_entry.commit
+                {
+                    to_restore.push(id.to_string());
+                },
+        }
+    }
+
+    // Check what needs cleaning — use managed_ids (disk), sorted for determinism
+    let mut to_clean: Vec<String> = if config.options.auto_clean {
+        managed_ids
             .iter()
-            .filter(|id| !installed_plugins.contains_key(**id))
-            .map(|id| id.to_string())
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    // Check what needs restoring (installed but at wrong commit vs lock)
-    let to_restore: Vec<String> = declared_ids
-        .iter()
-        .filter(|id| {
-            if let Some(installed_commit) = installed_plugins.get(**id) {
-                if let Some(lock_entry) = lock.plugins.get(**id) {
-                    // Installed commit differs from locked commit
-                    match installed_commit {
-                        Some(c) => c != &lock_entry.commit,
-                        None => true, // couldn't read HEAD, treat as needing restore
-                    }
-                } else {
-                    false // no lock entry, nothing to restore to
-                }
-            } else {
-                false // not installed, handled by to_install
-            }
-        })
-        .map(|id| id.to_string())
-        .collect();
-
-    // Check what needs cleaning
-    let to_clean: Vec<String> = if config.options.auto_clean {
-        installed_plugins
-            .keys()
             .filter(|id| !declared_ids.contains(id.as_str()))
             .cloned()
             .collect()
     } else {
         Vec::new()
     };
+    to_clean.sort();
 
     let needs_write = !to_install.is_empty() || !to_restore.is_empty() || !to_clean.is_empty();
 

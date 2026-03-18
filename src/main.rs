@@ -116,9 +116,10 @@ async fn run_init() -> Result<()> {
     // Hold the lock for the entire init: plan, mutate, and load.
     let _guard = OperationLock::acquire(&paths.lock_path)?;
 
-    let installed = planner::scan_installed_plugins(&paths.plugin_root);
+    let managed_ids = planner::scan_managed_plugin_ids(&paths.plugin_root);
+    let health_map = build_health_map(&cfg, &paths);
     let mut lock = load_lockfile(&paths)?;
-    let plan = planner::plan_init(&cfg, &lock, &installed);
+    let plan = planner::plan_init(&cfg, &lock, &health_map, &managed_ids);
 
     if let Some(write_plan) = plan {
         run_init_write(&cfg, &mut lock, &paths, &write_plan).await?;
@@ -222,6 +223,20 @@ fn run_list() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn build_health_map(
+    cfg: &lazytmux::model::Config,
+    paths: &Paths,
+) -> std::collections::HashMap<String, lazytmux::planner::RepoHealth> {
+    cfg.plugins
+        .iter()
+        .filter_map(|spec| {
+            let id = spec.remote_id()?;
+            let health = lazytmux::planner::inspect_plugin_dir(&paths.plugin_dir(id));
+            Some((id.to_string(), health))
+        })
+        .collect()
 }
 
 fn dirs_home() -> std::path::PathBuf {

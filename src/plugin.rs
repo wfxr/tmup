@@ -406,14 +406,23 @@ pub fn clean(config: &Config, paths: &Paths) -> Result<()> {
 
 /// List plugin statuses.
 pub fn list(config: &Config, lock: &LockFile, paths: &Paths) -> Result<Vec<PluginStatus>> {
-    let installed = planner::scan_installed_plugins(&paths.plugin_root);
+    // Build health map from declared plugins
+    let health_map: std::collections::HashMap<String, planner::RepoHealth> = config
+        .plugins
+        .iter()
+        .filter_map(|spec| {
+            let id = spec.remote_id()?;
+            let health = planner::inspect_plugin_dir(&paths.plugin_dir(id));
+            Some((id.to_string(), health))
+        })
+        .collect();
     let markers = state::read_failure_markers(&paths.failures_root)?;
     let failed_builds = collect_failed_builds(&markers);
 
     Ok(planner::compute_statuses(
         config,
         lock,
-        &installed,
+        &health_map,
         &failed_builds,
     ))
 }
