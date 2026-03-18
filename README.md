@@ -27,7 +27,7 @@ lazy.nvim's design philosophy to tmux:
 
 - **Declarative config** — a single `lazy.kdl` file describes everything.
 - **Lock file** — `lazylock.json` pins exact commits for reproducible setups.
-- **Concurrent operations** — installs and updates run in parallel.
+- **Concurrent operations** — installs and updates run in parallel (planned).
 - **Safe publish protocol** — staging + atomic rename + rollback on build failure.
 - **Script-friendly CLI** — clear exit codes, partial-failure reporting, predictable semantics.
 
@@ -146,7 +146,7 @@ plugin "~/dev/my-tmux-plugin" local=#true name="my-plugin-dev"
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `concurrency` | int | `8` | Max parallel git operations |
+| `concurrency` | int | `8` | Max parallel git operations (planned, currently serial) |
 | `auto-install` | bool | `#true` | Install missing plugins during `init` |
 | `auto-clean` | bool | `#false` | Remove undeclared plugins during `init` |
 
