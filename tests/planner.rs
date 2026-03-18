@@ -43,10 +43,13 @@ fn read_only_init_plan_when_all_installed() {
         "github.com/user/repo".into(),
         LockEntry::branch("user/repo", "main", "abc123"),
     );
-    let installed: HashMap<String, Option<String>> =
-        [("github.com/user/repo".into(), Some("abc123".into()))].into();
+    let health: HashMap<String, RepoHealth> =
+        [("github.com/user/repo".into(), RepoHealth::Healthy {
+            commit: "abc123".into(),
+        })]
+        .into();
 
-    let plan = plan_init(&config, &lock, &installed);
+    let plan = plan_init(&config, &lock, &health, &HashSet::new());
     assert!(plan.is_none());
 }
 
@@ -59,9 +62,9 @@ plugin "user/repo"
     "#,
     );
     let lock = LockFile::new();
-    let installed: HashMap<String, Option<String>> = HashMap::new();
+    let health: HashMap<String, RepoHealth> = HashMap::new();
 
-    let plan = plan_init(&config, &lock, &installed);
+    let plan = plan_init(&config, &lock, &health, &HashSet::new());
     let plan = plan.expect("expected Some(WritePlan)");
     assert_eq!(plan.to_install, vec!["github.com/user/repo"]);
     assert!(plan.to_restore.is_empty());
@@ -81,13 +84,17 @@ plugin "user/repo"
         "github.com/user/repo".into(),
         LockEntry::branch("user/repo", "main", "abc123"),
     );
-    let installed: HashMap<String, Option<String>> = [
-        ("github.com/user/repo".into(), Some("abc123".into())),
-        ("github.com/old/removed".into(), Some("def456".into())),
-    ]
-    .into();
+    let health: HashMap<String, RepoHealth> =
+        [("github.com/user/repo".into(), RepoHealth::Healthy {
+            commit: "abc123".into(),
+        })]
+        .into();
+    let managed_ids: HashSet<String> = ["github.com/user/repo", "github.com/old/removed"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
 
-    let plan = plan_init(&config, &lock, &installed);
+    let plan = plan_init(&config, &lock, &health, &managed_ids);
     let plan = plan.expect("expected Some(WritePlan)");
     assert!(plan.to_install.is_empty());
     assert!(plan.to_restore.is_empty());
@@ -103,10 +110,13 @@ fn restore_plan_when_installed_commit_drifted() {
         LockEntry::branch("user/repo", "main", "abc123"),
     );
     // Installed at a different commit than the lock
-    let installed: HashMap<String, Option<String>> =
-        [("github.com/user/repo".into(), Some("def456".into()))].into();
+    let health: HashMap<String, RepoHealth> =
+        [("github.com/user/repo".into(), RepoHealth::Healthy {
+            commit: "def456".into(),
+        })]
+        .into();
 
-    let plan = plan_init(&config, &lock, &installed);
+    let plan = plan_init(&config, &lock, &health, &HashSet::new());
     let plan = plan.expect("expected Some(WritePlan) with to_restore");
     assert!(plan.to_install.is_empty());
     assert_eq!(plan.to_restore, vec!["github.com/user/repo"]);
@@ -121,8 +131,11 @@ fn build_failure_keeps_state_and_result_separate() {
         "github.com/user/repo".into(),
         LockEntry::branch("user/repo", "main", "abc123"),
     );
-    let installed: HashMap<String, Option<String>> =
-        [("github.com/user/repo".into(), Some("abc123".into()))].into();
+    let health: HashMap<String, RepoHealth> =
+        [("github.com/user/repo".into(), RepoHealth::Healthy {
+            commit: "abc123".into(),
+        })]
+        .into();
 
     let bh = build_command_hash("make");
     let marker = FailureMarker {
@@ -135,7 +148,7 @@ fn build_failure_keeps_state_and_result_separate() {
     };
     let failed_builds = collect_failed_builds(&[marker]);
 
-    let statuses = compute_statuses(&config, &lock, &installed, &failed_builds);
+    let statuses = compute_statuses(&config, &lock, &health, &failed_builds);
     assert_eq!(statuses.len(), 1);
     assert_eq!(statuses[0].state, PluginState::Installed);
     assert_eq!(statuses[0].last_result, LastResult::BuildFailed);
@@ -149,7 +162,7 @@ fn missing_plugin_with_build_failure_shows_missing_and_failed() {
         "github.com/user/repo".into(),
         LockEntry::branch("user/repo", "main", "abc123"),
     );
-    let installed: HashMap<String, Option<String>> = HashMap::new();
+    let health: HashMap<String, RepoHealth> = HashMap::new();
 
     let bh = build_command_hash("make");
     let marker = FailureMarker {
@@ -162,7 +175,7 @@ fn missing_plugin_with_build_failure_shows_missing_and_failed() {
     };
     let failed_builds = collect_failed_builds(&[marker]);
 
-    let statuses = compute_statuses(&config, &lock, &installed, &failed_builds);
+    let statuses = compute_statuses(&config, &lock, &health, &failed_builds);
     assert_eq!(statuses[0].state, PluginState::Missing);
     assert_eq!(statuses[0].last_result, LastResult::BuildFailed);
 }
@@ -171,10 +184,10 @@ fn missing_plugin_with_build_failure_shows_missing_and_failed() {
 fn local_plugin_status() {
     let config = make_config(r#"plugin "~/dev/my-plugin" local=#true"#);
     let lock = LockFile::new();
-    let installed = HashMap::new();
+    let health = HashMap::new();
     let failed_builds = HashSet::new();
 
-    let statuses = compute_statuses(&config, &lock, &installed, &failed_builds);
+    let statuses = compute_statuses(&config, &lock, &health, &failed_builds);
     assert_eq!(statuses.len(), 1);
     assert_eq!(statuses[0].state, PluginState::Local);
     assert_eq!(statuses[0].kind, "local");
@@ -188,11 +201,14 @@ fn pinned_tag_status() {
         "github.com/user/repo".into(),
         LockEntry::tag("user/repo", "v1.0", "abc123"),
     );
-    let installed: HashMap<String, Option<String>> =
-        [("github.com/user/repo".into(), Some("abc123".into()))].into();
+    let health: HashMap<String, RepoHealth> =
+        [("github.com/user/repo".into(), RepoHealth::Healthy {
+            commit: "abc123".into(),
+        })]
+        .into();
     let failed_builds = HashSet::new();
 
-    let statuses = compute_statuses(&config, &lock, &installed, &failed_builds);
+    let statuses = compute_statuses(&config, &lock, &health, &failed_builds);
     assert_eq!(statuses[0].state, PluginState::PinnedTag);
 }
 
@@ -204,11 +220,14 @@ fn outdated_state_when_installed_commit_differs_from_lock() {
         "github.com/user/repo".into(),
         LockEntry::branch("user/repo", "main", "abc123"),
     );
-    let installed: HashMap<String, Option<String>> =
-        [("github.com/user/repo".into(), Some("def456".into()))].into();
+    let health: HashMap<String, RepoHealth> =
+        [("github.com/user/repo".into(), RepoHealth::Healthy {
+            commit: "def456".into(),
+        })]
+        .into();
     let failed_builds = HashSet::new();
 
-    let statuses = compute_statuses(&config, &lock, &installed, &failed_builds);
+    let statuses = compute_statuses(&config, &lock, &health, &failed_builds);
     assert_eq!(statuses[0].state, PluginState::Outdated);
     assert_eq!(statuses[0].current_commit.as_deref(), Some("def456"));
     assert_eq!(statuses[0].lock_commit.as_deref(), Some("abc123"));
@@ -294,4 +313,74 @@ fn scan_managed_finds_git_dirs() {
 #[test]
 fn broken_state_display_string() {
     assert_eq!(lazytmux::planner::PluginState::Broken.to_string(), "broken");
+}
+
+#[test]
+fn broken_repo_shows_broken_in_list() {
+    let config = make_config(r#"plugin "user/repo""#);
+    let mut lock = LockFile::new();
+    lock.plugins.insert(
+        "github.com/user/repo".into(),
+        LockEntry::branch("user/repo", "main", "abc123"),
+    );
+    let health: HashMap<String, RepoHealth> =
+        [("github.com/user/repo".into(), RepoHealth::Broken)].into();
+    let failed_builds = HashSet::new();
+    let statuses = compute_statuses(&config, &lock, &health, &failed_builds);
+    assert_eq!(statuses[0].state, PluginState::Broken);
+    assert_eq!(statuses[0].last_result, LastResult::None);
+}
+
+#[test]
+fn init_plans_restore_for_broken_plugin_with_lock() {
+    let config = make_config(r#"plugin "user/repo""#);
+    let mut lock = LockFile::new();
+    lock.plugins.insert(
+        "github.com/user/repo".into(),
+        LockEntry::branch("user/repo", "main", "abc123"),
+    );
+    let health: HashMap<String, RepoHealth> =
+        [("github.com/user/repo".into(), RepoHealth::Broken)].into();
+    let plan = plan_init(&config, &lock, &health, &HashSet::new());
+    let plan = plan.expect("expected WritePlan");
+    assert!(plan.to_install.is_empty());
+    assert_eq!(plan.to_restore, vec!["github.com/user/repo"]);
+}
+
+#[test]
+fn init_plans_install_for_broken_plugin_without_lock() {
+    let config = make_config(
+        r#"
+options { auto-install #true }
+plugin "user/repo"
+    "#,
+    );
+    let lock = LockFile::new();
+    let health: HashMap<String, RepoHealth> =
+        [("github.com/user/repo".into(), RepoHealth::Broken)].into();
+    let plan = plan_init(&config, &lock, &health, &HashSet::new());
+    let plan = plan.expect("expected WritePlan");
+    assert_eq!(plan.to_install, vec!["github.com/user/repo"]);
+    assert!(plan.to_restore.is_empty());
+}
+
+#[test]
+fn init_plan_follows_config_declaration_order() {
+    let config = make_config(
+        r#"
+options { auto-install #true }
+plugin "user/alpha"
+plugin "user/beta"
+plugin "user/gamma"
+    "#,
+    );
+    let lock = LockFile::new();
+    let health: HashMap<String, RepoHealth> = HashMap::new();
+    let plan = plan_init(&config, &lock, &health, &HashSet::new());
+    let plan = plan.expect("expected WritePlan");
+    assert_eq!(plan.to_install, vec![
+        "github.com/user/alpha",
+        "github.com/user/beta",
+        "github.com/user/gamma",
+    ]);
 }

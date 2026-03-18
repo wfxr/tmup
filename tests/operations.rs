@@ -5,7 +5,48 @@ use lazytmux::{
     plugin,
     state::{Paths, build_command_hash},
 };
+use std::path::Path;
 use tempfile::tempdir;
+
+/// Create a minimal but real git repo at `path` with one commit, returning
+/// the HEAD commit hash.
+fn init_git_repo(path: &Path) -> String {
+    std::fs::create_dir_all(path).unwrap();
+    std::process::Command::new("git")
+        .args(["init", "-b", "main"])
+        .current_dir(path)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    std::fs::write(path.join("init.tmux"), "#!/bin/sh\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(path)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(path)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@test")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@test")
+        .output()
+        .unwrap();
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(path)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
 
 #[test]
 fn list_returns_state_and_last_result() {
@@ -31,9 +72,15 @@ plugin "user/repo-b" build="make"
         LockEntry::branch("user/repo-b", "main", "bbb222"),
     );
 
-    // Simulate repo-a installed, repo-b missing
+    // Simulate repo-a installed (real git repo), repo-b missing
     let plugin_a = paths.plugin_dir("github.com/user/repo-a");
-    std::fs::create_dir_all(plugin_a.join(".git")).unwrap();
+    let commit_a = init_git_repo(&plugin_a);
+
+    // Update lock to match the real commit so state is Installed, not Outdated
+    lock.plugins.insert(
+        "github.com/user/repo-a".into(),
+        LockEntry::branch("user/repo-a", "main", &commit_a),
+    );
 
     let statuses = plugin::list(&config, &lock, &paths).unwrap();
     assert_eq!(statuses.len(), 2);
@@ -140,13 +187,19 @@ fn list_shows_both_state_and_last_result_for_build_failure() {
         LockEntry::branch("user/repo", "main", "abc123"),
     );
 
-    // Plugin is installed but has a build failure marker
+    // Plugin is installed (real git repo) but has a build failure marker
     let plugin_dir = paths.plugin_dir("github.com/user/repo");
-    std::fs::create_dir_all(plugin_dir.join(".git")).unwrap();
+    let commit = init_git_repo(&plugin_dir);
+
+    // Update lock to match the real commit
+    lock.plugins.insert(
+        "github.com/user/repo".into(),
+        LockEntry::branch("user/repo", "main", &commit),
+    );
 
     let marker = lazytmux::state::FailureMarker {
         plugin_id:      "github.com/user/repo".into(),
-        commit:         "abc123".into(),
+        commit:         commit.clone(),
         build_hash:     build_command_hash("make"),
         build_command:  "make".into(),
         failed_at:      "now".into(),
