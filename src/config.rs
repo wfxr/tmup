@@ -125,6 +125,10 @@ fn parse_plugin(node: &kdl::KdlNode) -> Result<PluginSpec> {
 
     let source = if is_local {
         ensure!(
+            raw.starts_with('/') || raw.starts_with('~') || raw.starts_with('.'),
+            "plugin \"{raw}\": local=#true requires a local path (absolute, ~, or ./ prefix)"
+        );
+        ensure!(
             matches!(tracking, Tracking::DefaultBranch),
             "local plugin \"{raw}\": branch/tag/commit not allowed for local plugins"
         );

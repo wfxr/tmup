@@ -365,6 +365,21 @@ plugin "user/repo"
 }
 
 #[test]
+fn init_plans_adopt_for_healthy_plugin_without_lock() {
+    let config = make_config(r#"plugin "user/repo""#);
+    let lock = LockFile::new();
+    let health: HashMap<String, RepoHealth> =
+        [("github.com/user/repo".into(), RepoHealth::Healthy {
+            commit: "abc123".into(),
+        })]
+        .into();
+    let plan = plan_init(&config, &lock, &health, &HashSet::new());
+    let plan = plan.expect("expected WritePlan — Healthy+no-lock needs adopt");
+    assert_eq!(plan.to_install, vec!["github.com/user/repo"]);
+    assert!(plan.to_restore.is_empty());
+}
+
+#[test]
 fn init_plan_follows_config_declaration_order() {
     let config = make_config(
         r#"
