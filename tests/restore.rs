@@ -182,6 +182,53 @@ async fn restore_build_failure_returns_error() {
 }
 
 // ---------------------------------------------------------------------------
+// Regression: failed restore → same-commit restore clears markers
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn restore_same_commit_noop_clears_failure_markers() {
+    let dir = tempdir().unwrap();
+    let (bare, commit) = make_bare_repo(&dir.path().join("repo"));
+
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+
+    // Step 1: install at commit with a succeeding build.
+    let cfg_ok = make_config(&clone_url, Some("touch built.marker"));
+    let mut lock = LockFile::new();
+    plugin::install(&cfg_ok, &mut lock, &paths, None, false)
+        .await
+        .unwrap();
+    let target = paths.plugin_dir("example.com/test/plugin");
+    assert!(target.exists());
+
+    // Step 2: write a failure marker manually (simulating a prior failed operation).
+    let marker = lazytmux::state::FailureMarker {
+        plugin_id:      "example.com/test/plugin".into(),
+        commit:         commit.clone(),
+        build_hash:     "fakehash".into(),
+        build_command:  "exit 1".into(),
+        failed_at:      "2024-01-01T00:00:00Z".into(),
+        stderr_summary: String::new(),
+    };
+    lazytmux::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
+    let markers = lazytmux::state::read_failure_markers(&paths.failures_root).unwrap();
+    assert_eq!(markers.len(), 1, "failure marker should be present");
+
+    // Step 3: restore — disk HEAD already equals lock commit, so this is a no-op.
+    // It should still clear the stale failure marker.
+    plugin::restore(&cfg_ok, &lock, &paths, None).await.unwrap();
+
+    let markers = lazytmux::state::read_failure_markers(&paths.failures_root).unwrap();
+    assert!(
+        markers.is_empty(),
+        "failure markers should be cleared after same-commit restore no-op"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Regression: failed update → remote rollback → same-commit update clears markers
 // ---------------------------------------------------------------------------
 
