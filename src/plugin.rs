@@ -33,7 +33,6 @@ pub async fn install(
 ) -> Result<()> {
     validate_target_id(config, target_id)?;
     paths.ensure_dirs()?;
-    let installed = planner::scan_installed_plugins(&paths.plugin_root);
     let mut failures: Vec<String> = Vec::new();
 
     for spec in &config.plugins {
@@ -47,12 +46,18 @@ pub async fn install(
             continue;
         }
 
-        if installed.contains_key(id.as_str()) {
+        let target_dir = paths.plugin_dir(id);
+        let health = planner::inspect_plugin_dir(&target_dir);
+        if matches!(health, planner::RepoHealth::Healthy { .. }) {
             continue;
         }
 
+        // If Broken, remove the broken dir before proceeding
+        if matches!(health, planner::RepoHealth::Broken) {
+            let _ = std::fs::remove_dir_all(&target_dir);
+        }
+
         let staging = paths.staging_dir(id);
-        let target_dir = paths.plugin_dir(id);
 
         // Determine target commit — git failures are per-plugin, not fatal.
         let prep: Result<_> = async {
@@ -383,22 +388,26 @@ pub async fn restore(
 
 /// Remove undeclared managed remote plugins.
 pub fn clean(config: &Config, paths: &Paths) -> Result<()> {
-    let installed = planner::scan_installed_plugins(&paths.plugin_root);
+    let managed_ids = planner::scan_managed_plugin_ids(&paths.plugin_root);
     let declared_ids: HashSet<&str> = config
         .plugins
         .iter()
         .filter_map(|p| p.remote_id())
         .collect();
 
-    for id in installed.keys() {
-        if !declared_ids.contains(id.as_str()) {
-            let dir = paths.plugin_dir(id);
-            eprintln!("removing undeclared plugin: {id}");
-            std::fs::remove_dir_all(&dir)
-                .with_context(|| format!("failed to remove {}", dir.display()))?;
-            // Clean up empty parent directories
-            cleanup_empty_parents(&dir, &paths.plugin_root);
-        }
+    let mut undeclared: Vec<&str> = managed_ids
+        .iter()
+        .filter(|id| !declared_ids.contains(id.as_str()))
+        .map(|s| s.as_str())
+        .collect();
+    undeclared.sort();
+    for id in undeclared {
+        let dir = paths.plugin_dir(id);
+        eprintln!("removing undeclared plugin: {id}");
+        std::fs::remove_dir_all(&dir)
+            .with_context(|| format!("failed to remove {}", dir.display()))?;
+        // Clean up empty parent directories
+        cleanup_empty_parents(&dir, &paths.plugin_root);
     }
 
     Ok(())
