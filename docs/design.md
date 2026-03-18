@@ -200,7 +200,7 @@ Rules:
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `concurrency` | int | `8` | Max parallel git operations |
+| `concurrency` | int | `8` | Max parallel git operations (planned, currently serial) |
 | `auto-install` | bool | `true` | Install missing plugins during `init` |
 | `auto-clean` | bool | `false` | Remove undeclared plugins during `init` |
 
