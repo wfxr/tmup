@@ -158,6 +158,45 @@ fn is_known_failure_detects_matching_key() {
 }
 
 #[test]
+fn list_shows_broken_for_dir_without_git() {
+    let dir = tempdir().unwrap();
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let config = parse_config(r#"plugin "user/repo""#).unwrap();
+    let mut lock = LockFile::new();
+    lock.plugins.insert(
+        "github.com/user/repo".into(),
+        LockEntry::branch("user/repo", "main", "abc123"),
+    );
+
+    // Create target dir but no .git — simulates a broken/corrupt install
+    let plugin_dir = paths.plugin_dir("github.com/user/repo");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+
+    let statuses = plugin::list(&config, &lock, &paths).unwrap();
+    assert_eq!(statuses[0].state, planner::PluginState::Broken);
+    assert_eq!(statuses[0].last_result, planner::LastResult::None);
+}
+
+#[test]
+fn list_shows_broken_for_empty_dotgit() {
+    let dir = tempdir().unwrap();
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let config = parse_config(r#"plugin "user/repo""#).unwrap();
+    let lock = LockFile::new();
+
+    // Create target dir with empty .git/ — HEAD unreadable
+    let plugin_dir = paths.plugin_dir("github.com/user/repo");
+    std::fs::create_dir_all(plugin_dir.join(".git")).unwrap();
+
+    let statuses = plugin::list(&config, &lock, &paths).unwrap();
+    assert_eq!(statuses[0].state, planner::PluginState::Broken);
+}
+
+#[test]
 fn update_skips_pinned_tag() {
     let config = parse_config(r#"plugin "user/repo" tag="v1.0""#).unwrap();
     let spec = &config.plugins[0];
