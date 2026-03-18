@@ -52,14 +52,18 @@ pub async fn install(
             if lock.plugins.contains_key(id.as_str()) {
                 continue;
             }
-            // Healthy but no lock entry — adopt current state into lockfile.
-            let record = tracking_record_from_spec(&target_dir, &spec.tracking).await;
-            lock.plugins.insert(id.clone(), LockEntry {
-                source:   raw.clone(),
-                tracking: record,
-                commit:   commit.clone(),
-            });
-            continue;
+            // Healthy but no lock entry — adopt current state when it is
+            // compatible with the config, otherwise fall through and repair it.
+            if let Some(record) =
+                tracking_record_for_adopt(&target_dir, &spec.tracking, commit).await?
+            {
+                lock.plugins.insert(id.clone(), LockEntry {
+                    source:   raw.clone(),
+                    tracking: record,
+                    commit:   commit.clone(),
+                });
+                continue;
+            }
         }
 
         // If Broken, remove the broken dir before proceeding
@@ -109,7 +113,12 @@ pub async fn install(
         }
 
         // Publish
-        let result = git::publish_fresh_install(&staging, &target_dir, spec.build.as_deref());
+        let result = if target_dir.exists() {
+            let backup = paths.backup_dir(id);
+            git::publish_replace(&staging, &target_dir, &backup, spec.build.as_deref())
+        } else {
+            git::publish_fresh_install(&staging, &target_dir, spec.build.as_deref())
+        };
         match result {
             Ok(()) => {
                 // Update lock
@@ -458,18 +467,42 @@ pub fn is_known_failure(
     state::has_failure_marker(&paths.failures_root, &key)
 }
 
-/// Build a TrackingRecord from a config spec for an already-installed repo.
-/// Used to adopt existing installations into the lockfile without re-cloning.
-async fn tracking_record_from_spec(repo: &std::path::Path, tracking: &Tracking) -> TrackingRecord {
+/// Build a TrackingRecord for adopting an already-installed repo into the
+/// lockfile. Returns None when the installed revision is incompatible with the
+/// config and should be repaired instead of adopted.
+async fn tracking_record_for_adopt(
+    repo: &std::path::Path,
+    tracking: &Tracking,
+    current_commit: &str,
+) -> Result<Option<TrackingRecord>> {
     match tracking {
-        Tracking::Branch(b) => TrackingRecord { kind: "branch".into(), value: b.clone() },
-        Tracking::Tag(t) => TrackingRecord { kind: "tag".into(), value: t.clone() },
-        Tracking::Commit(c) => TrackingRecord { kind: "commit".into(), value: c.clone() },
+        Tracking::Branch(b) => Ok(Some(TrackingRecord {
+            kind:  "branch".into(),
+            value: b.clone(),
+        })),
+        Tracking::Tag(t) => match git::resolve_commit(repo, t).await {
+            Ok(tag_commit) if tag_commit == current_commit => Ok(Some(TrackingRecord {
+                kind:  "tag".into(),
+                value: t.clone(),
+            })),
+            Ok(_) => Ok(None),
+            Err(_) => Ok(None),
+        },
+        Tracking::Commit(c) =>
+            if c == current_commit {
+                Ok(Some(TrackingRecord {
+                    kind:  "commit".into(),
+                    value: c.clone(),
+                }))
+            } else {
+                Ok(None)
+            },
         Tracking::DefaultBranch => {
-            let branch = git::default_branch(repo)
-                .await
-                .unwrap_or_else(|_| "main".into());
-            TrackingRecord { kind: "branch".into(), value: branch }
+            let branch = git::default_branch(repo).await?;
+            Ok(Some(TrackingRecord {
+                kind:  "branch".into(),
+                value: branch,
+            }))
         }
     }
 }
