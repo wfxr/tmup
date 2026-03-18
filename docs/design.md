@@ -315,7 +315,7 @@ Columns:
 | `id` | Canonical remote plugin ID or local path |
 | `name` | Display name |
 | `kind` | `remote` / `local` |
-| `state` | `installed` / `missing` / `outdated` / `pinned-tag` / `pinned-commit` / `local` |
+| `state` | `installed` / `missing` / `outdated` / `broken` / `pinned-tag` / `pinned-commit` / `local` |
 | `last-result` | `ok` / `build-failed` / `none` |
 | `current` | Installed HEAD commit (short hash or `-`) |
 | `lock` | Lock-recorded commit (short hash or `-`) |

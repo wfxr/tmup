@@ -217,6 +217,7 @@ Outputs a table with separated **state** and **last-result** columns:
 | `installed` | Plugin present and matches lock |
 | `missing` | Declared but not on disk |
 | `outdated` | Installed but HEAD differs from lock |
+| `broken` | Directory exists but is not a valid git repo or HEAD is unreadable |
 | `pinned-tag` | Installed, pinned to a tag |
 | `pinned-commit` | Installed, pinned to a commit |
 
