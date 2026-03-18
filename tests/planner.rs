@@ -3,9 +3,17 @@ use std::collections::{HashMap, HashSet};
 use lazytmux::{
     lockfile::{LockEntry, LockFile},
     model::Config,
-    planner::{LastResult, PluginState, collect_failed_builds, compute_statuses, plan_init},
+    planner::{
+        LastResult,
+        PluginState,
+        RepoHealth,
+        collect_failed_builds,
+        compute_statuses,
+        plan_init,
+    },
     state::{FailureMarker, build_command_hash},
 };
+use tempfile::tempdir;
 
 fn make_config(kdl: &str) -> Config {
     lazytmux::config::parse_config(kdl).unwrap()
@@ -204,4 +212,86 @@ fn outdated_state_when_installed_commit_differs_from_lock() {
     assert_eq!(statuses[0].state, PluginState::Outdated);
     assert_eq!(statuses[0].current_commit.as_deref(), Some("def456"));
     assert_eq!(statuses[0].lock_commit.as_deref(), Some("abc123"));
+}
+
+#[test]
+fn inspect_missing_dir() {
+    let dir = tempdir().unwrap();
+    let health = lazytmux::planner::inspect_plugin_dir(&dir.path().join("nonexistent"));
+    assert!(matches!(health, RepoHealth::Missing));
+}
+
+#[test]
+fn inspect_healthy_git_repo() {
+    let dir = tempdir().unwrap();
+    let repo = dir.path().join("plugin");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::process::Command::new("git")
+        .args(["init", "-b", "main"])
+        .current_dir(&repo)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    std::fs::write(repo.join("init.tmux"), "#!/bin/sh\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(&repo)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(&repo)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@test")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@test")
+        .output()
+        .unwrap();
+    let health = lazytmux::planner::inspect_plugin_dir(&repo);
+    assert!(matches!(health, RepoHealth::Healthy { .. }));
+    if let RepoHealth::Healthy { commit } = health {
+        assert_eq!(commit.len(), 40);
+    }
+}
+
+#[test]
+fn inspect_dir_exists_no_git() {
+    let dir = tempdir().unwrap();
+    let repo = dir.path().join("plugin");
+    std::fs::create_dir_all(&repo).unwrap();
+    let health = lazytmux::planner::inspect_plugin_dir(&repo);
+    assert!(matches!(health, RepoHealth::Broken));
+}
+
+#[test]
+fn inspect_dir_with_empty_dotgit() {
+    let dir = tempdir().unwrap();
+    let repo = dir.path().join("plugin");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    let health = lazytmux::planner::inspect_plugin_dir(&repo);
+    assert!(matches!(health, RepoHealth::Broken));
+}
+
+#[test]
+fn scan_managed_finds_git_dirs() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().join("plugins");
+    std::fs::create_dir_all(root.join("github.com/user/repo-a/.git")).unwrap();
+    std::fs::create_dir_all(root.join("github.com/user/repo-b/.git")).unwrap();
+    std::fs::create_dir_all(root.join("github.com/user/not-a-repo")).unwrap();
+    let ids = lazytmux::planner::scan_managed_plugin_ids(&root);
+    assert!(ids.contains("github.com/user/repo-a"));
+    assert!(ids.contains("github.com/user/repo-b"));
+    assert!(!ids.contains("github.com/user/not-a-repo"));
+    assert_eq!(ids.len(), 2);
+}
+
+#[test]
+fn broken_state_display_string() {
+    assert_eq!(lazytmux::planner::PluginState::Broken.to_string(), "broken");
 }

@@ -11,6 +11,36 @@ use crate::{
     state::build_command_hash,
 };
 
+/// Health of a declared plugin's target directory on disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RepoHealth {
+    /// Target directory does not exist.
+    Missing,
+    /// Valid git repo with readable HEAD.
+    Healthy { commit: String },
+    /// Directory exists but is not a valid git repo or HEAD is unreadable.
+    Broken,
+}
+
+/// Inspect a declared plugin's target directory.
+///
+/// Unlike `scan_managed_plugin_ids` which discovers unknown directories,
+/// this checks a known path — so it correctly detects "directory exists
+/// but is not a git repo" as `Broken` rather than invisible.
+pub fn inspect_plugin_dir(path: &Path) -> RepoHealth {
+    if !path.exists() {
+        return RepoHealth::Missing;
+    }
+    if path.join(".git").exists() {
+        match git::head_commit_sync(path) {
+            Ok(commit) => RepoHealth::Healthy { commit },
+            Err(_) => RepoHealth::Broken,
+        }
+    } else {
+        RepoHealth::Broken
+    }
+}
+
 /// Current availability state of a plugin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginState {
@@ -20,6 +50,7 @@ pub enum PluginState {
     PinnedTag,
     PinnedCommit,
     Local,
+    Broken,
 }
 
 impl fmt::Display for PluginState {
@@ -31,6 +62,7 @@ impl fmt::Display for PluginState {
             Self::PinnedTag => write!(f, "pinned-tag"),
             Self::PinnedCommit => write!(f, "pinned-commit"),
             Self::Local => write!(f, "local"),
+            Self::Broken => write!(f, "broken"),
         }
     }
 }
@@ -245,7 +277,39 @@ pub fn plan_init(
     }
 }
 
+/// Discover managed plugin IDs on disk (directories containing `.git`).
+///
+/// Used by `clean` to find undeclared plugins. For declared plugins, use
+/// `inspect_plugin_dir` instead — it correctly detects broken directories.
+pub fn scan_managed_plugin_ids(plugin_root: &Path) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    scan_recursive_ids(plugin_root, plugin_root, &mut ids);
+    ids
+}
+
+fn scan_recursive_ids(root: &Path, current: &Path, ids: &mut HashSet<String>) {
+    let Ok(entries) = std::fs::read_dir(current) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if path.join(".git").exists() {
+            if let Ok(rel) = path.strip_prefix(root) {
+                ids.insert(rel.to_string_lossy().to_string());
+            }
+        } else {
+            scan_recursive_ids(root, &path, ids);
+        }
+    }
+}
+
 /// Scan the plugin root for installed remote plugin ids and their HEAD commits.
+#[deprecated(
+    note = "use inspect_plugin_dir for declared plugins, scan_managed_plugin_ids for clean"
+)]
 pub fn scan_installed_plugins(plugin_root: &Path) -> HashMap<String, Option<String>> {
     let mut installed = HashMap::new();
     scan_recursive(plugin_root, plugin_root, &mut installed);
