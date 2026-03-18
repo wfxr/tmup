@@ -115,7 +115,7 @@ pub async fn install(
                         commit:         commit.clone(),
                         build_hash:     bh,
                         build_command:  build_cmd.clone(),
-                        failed_at:      chrono_now(),
+                        failed_at:      timestamp_now(),
                         stderr_summary: format!("{e}"),
                     };
                     let _ = state::write_failure_marker(&paths.failures_root, &marker);
@@ -215,6 +215,9 @@ pub async fn update(
                 tracking: tracking_record,
                 commit:   new_commit,
             });
+            // A no-op update is still a successful operation — clear any
+            // stale failure markers so `list` doesn't show build-failed.
+            state::clear_failure_markers(&paths.failures_root, id)?;
             continue;
         }
 
@@ -246,7 +249,7 @@ pub async fn update(
                         commit:         new_commit.clone(),
                         build_hash:     bh,
                         build_command:  build_cmd.clone(),
-                        failed_at:      chrono_now(),
+                        failed_at:      timestamp_now(),
                         stderr_summary: format!("{e}"),
                     };
                     let _ = state::write_failure_marker(&paths.failures_root, &marker);
@@ -352,7 +355,7 @@ pub async fn restore(
                         commit:         entry.commit.clone(),
                         build_hash:     bh,
                         build_command:  build_cmd.clone(),
-                        failed_at:      chrono_now(),
+                        failed_at:      timestamp_now(),
                         stderr_summary: format!("{e}"),
                     };
                     let _ = state::write_failure_marker(&paths.failures_root, &marker);
@@ -477,8 +480,7 @@ fn cleanup_empty_parents(path: &std::path::Path, stop_at: &std::path::Path) {
     }
 }
 
-fn chrono_now() -> String {
-    // Simple ISO-ish timestamp without chrono dependency
+fn timestamp_now() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();

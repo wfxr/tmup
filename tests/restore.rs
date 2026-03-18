@@ -11,38 +11,15 @@ fn make_bare_repo(root: &std::path::Path) -> (std::path::PathBuf, String) {
     let work = root.join("work");
     std::fs::create_dir_all(&work).unwrap();
 
-    let run = |args: &[&str], dir: &std::path::Path| {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            // Hermetic: ignore system/global config, GPG signing, and hooks.
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("HOME", dir)
-            .env("GIT_AUTHOR_NAME", "test")
-            .env("GIT_AUTHOR_EMAIL", "test@test")
-            .env("GIT_COMMITTER_NAME", "test")
-            .env("GIT_COMMITTER_EMAIL", "test@test")
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    };
-
-    run(&["init", "-b", "main"], &work);
+    git(&["init", "-b", "main"], &work);
     std::fs::write(work.join("init.tmux"), "#!/bin/sh\n").unwrap();
-    run(&["add", "."], &work);
-    run(&["commit", "-m", "init"], &work);
+    git(&["add", "."], &work);
+    git(&["commit", "-m", "init"], &work);
 
-    let commit = run(&["rev-parse", "HEAD"], &work);
+    let commit = git(&["rev-parse", "HEAD"], &work);
 
     let bare = root.join("bare.git");
-    run(
+    git(
         &[
             "clone",
             "--bare",
@@ -53,6 +30,53 @@ fn make_bare_repo(root: &std::path::Path) -> (std::path::PathBuf, String) {
     );
 
     (bare, commit)
+}
+
+/// Run a hermetic git command in the given directory.
+fn git(args: &[&str], dir: &std::path::Path) -> String {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("HOME", dir)
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@test")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@test")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Add a commit to the work tree behind a bare repo and push it.
+/// Returns the new commit hash.
+fn push_commit(bare: &std::path::Path, message: &str) -> String {
+    // Clone bare into a temp work tree, commit, push, return hash.
+    let tmp = bare.parent().unwrap().join("_push_tmp");
+    let _ = std::fs::remove_dir_all(&tmp);
+    git(
+        &["clone", bare.to_str().unwrap(), tmp.to_str().unwrap()],
+        bare.parent().unwrap(),
+    );
+    std::fs::write(tmp.join(format!("{message}.txt")), message).unwrap();
+    git(&["add", "."], &tmp);
+    git(&["commit", "-m", message], &tmp);
+    git(&["push"], &tmp);
+    let hash = git(&["rev-parse", "HEAD"], &tmp);
+    std::fs::remove_dir_all(&tmp).unwrap();
+    hash
+}
+
+/// Reset the bare repo's main branch to a given commit.
+fn reset_bare(bare: &std::path::Path, commit: &str) {
+    git(&["update-ref", "refs/heads/main", commit], bare);
 }
 
 /// Build a Config with a single remote plugin pointing at a local bare repo.
@@ -155,4 +179,57 @@ async fn restore_build_failure_returns_error() {
     let markers = lazytmux::state::read_failure_markers(&paths.failures_root).unwrap();
     assert_eq!(markers.len(), 1);
     assert_eq!(markers[0].plugin_id, "example.com/test/plugin");
+}
+
+// ---------------------------------------------------------------------------
+// Regression: failed update → remote rollback → same-commit update clears markers
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn update_same_commit_noop_clears_failure_markers() {
+    let dir = tempdir().unwrap();
+    let (bare, commit_a) = make_bare_repo(&dir.path().join("repo"));
+
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    // Build that always fails — used to produce a failure marker.
+    let cfg_fail = make_config(&clone_url, Some("exit 1"));
+
+    // Step 1: install at commit_a with a succeeding build, so the plugin is on disk.
+    let cfg_ok = make_config(&clone_url, Some("touch built.marker"));
+    let mut lock = LockFile::new();
+    plugin::install(&cfg_ok, &mut lock, &paths, None, false)
+        .await
+        .unwrap();
+    let target = paths.plugin_dir("example.com/test/plugin");
+    assert!(target.exists());
+
+    // Step 2: push a new commit (commit_b) and attempt update with failing build.
+    let commit_b = push_commit(&bare, "second");
+    assert_ne!(commit_a, commit_b);
+
+    let result = plugin::update(&cfg_fail, &mut lock, &paths, None).await;
+    assert!(result.is_err(), "update with failing build should error");
+
+    // Failure marker should exist.
+    let markers = lazytmux::state::read_failure_markers(&paths.failures_root).unwrap();
+    assert!(!markers.is_empty(), "failure marker should be recorded");
+
+    // Step 3: remote resets main back to commit_a (simulating upstream rollback).
+    reset_bare(&bare, &commit_a);
+
+    // Step 4: update again — remote now resolves to commit_a which is already
+    // installed, so this is a same-commit no-op. It should succeed AND clear markers.
+    let cfg_ok2 = make_config(&clone_url, Some("touch built.marker"));
+    let result = plugin::update(&cfg_ok2, &mut lock, &paths, None).await;
+    assert!(result.is_ok(), "same-commit update should succeed");
+
+    // Failure markers should now be cleared.
+    let markers = lazytmux::state::read_failure_markers(&paths.failures_root).unwrap();
+    assert!(
+        markers.is_empty(),
+        "failure markers should be cleared after successful same-commit update"
+    );
 }
