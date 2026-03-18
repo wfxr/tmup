@@ -121,23 +121,35 @@ async fn run_init() -> Result<()> {
     let mut lock = load_lockfile(&paths)?;
     let plan = planner::plan_init(&cfg, &lock, &health_map, &managed_ids);
 
-    if let Some(write_plan) = plan {
-        run_init_write(&cfg, &mut lock, &paths, &write_plan).await?;
-    }
+    let write_failures = if let Some(write_plan) = plan {
+        run_init_write(&cfg, &mut lock, &paths, &write_plan).await
+    } else {
+        Vec::new()
+    };
 
-    // Load plugins into tmux (still under lock)
+    // Always load plugins into tmux — partial write failures must not
+    // prevent loading plugins that are already available on disk.
     let load_plan = loader::build_load_plan(&cfg, &paths.plugin_root);
     tmux::execute_plan(&load_plan)?;
 
+    if !write_failures.is_empty() {
+        anyhow::bail!(
+            "init encountered {} failure(s):\n  {}",
+            write_failures.len(),
+            write_failures.join("\n  ")
+        );
+    }
     Ok(())
 }
 
+/// Run install/restore/clean writes. Returns a list of non-fatal failure
+/// messages — the caller should still proceed with loading plugins.
 async fn run_init_write(
     cfg: &lazytmux::model::Config,
     lock: &mut lockfile::LockFile,
     paths: &Paths,
     plan: &planner::WritePlan,
-) -> Result<()> {
+) -> Vec<String> {
     let mut failures: Vec<String> = Vec::new();
 
     // Install missing plugins (known build failures are suppressed inside install)
@@ -155,18 +167,13 @@ async fn run_init_write(
     }
 
     // Clean undeclared
-    if !plan.to_clean.is_empty() {
-        plugin::clean(cfg, paths)?;
+    if !plan.to_clean.is_empty()
+        && let Err(e) = plugin::clean(cfg, paths)
+    {
+        failures.push(format!("{e}"));
     }
 
-    if !failures.is_empty() {
-        anyhow::bail!(
-            "init encountered {} failure(s):\n  {}",
-            failures.len(),
-            failures.join("\n  ")
-        );
-    }
-    Ok(())
+    failures
 }
 
 async fn run_install(id: Option<String>) -> Result<()> {
