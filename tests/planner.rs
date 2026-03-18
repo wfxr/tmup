@@ -407,7 +407,7 @@ plugin "user/repo"
 }
 
 #[test]
-fn init_plans_adopt_for_healthy_plugin_without_lock() {
+fn init_plans_install_for_healthy_plugin_without_lock() {
     let config = make_config(r#"plugin "user/repo""#);
     let lock = LockFile::new();
     let health: HashMap<String, RepoHealth> =
@@ -416,7 +416,7 @@ fn init_plans_adopt_for_healthy_plugin_without_lock() {
         })]
         .into();
     let plan = plan_init(&config, &lock, &health, &HashSet::new());
-    let plan = plan.expect("expected WritePlan — Healthy+no-lock needs adopt");
+    let plan = plan.expect("expected WritePlan — Healthy+no-lock needs install");
     assert_eq!(plan.to_install, vec!["github.com/user/repo"]);
     assert!(plan.to_restore.is_empty());
 }

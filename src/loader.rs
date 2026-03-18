@@ -29,10 +29,7 @@ pub fn build_load_plan(config: &Config, plugin_root: &Path) -> Vec<TmuxCommand> 
         // Determine plugin directory
         let plugin_dir = match &spec.source {
             PluginSource::Remote { id, .. } => plugin_root.join(id),
-            PluginSource::Local { path } => {
-                let expanded = shellexpand_tilde(path);
-                std::path::PathBuf::from(expanded)
-            }
+            PluginSource::Local { path } => std::path::PathBuf::from(path),
         };
 
         // Find and sort *.tmux files
@@ -61,13 +58,4 @@ pub fn find_tmux_scripts(dir: &Path) -> Vec<std::path::PathBuf> {
     }
     scripts.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
     scripts
-}
-
-fn shellexpand_tilde(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("~/")
-        && let Ok(home) = std::env::var("HOME")
-    {
-        return format!("{home}/{rest}");
-    }
-    path.to_string()
 }

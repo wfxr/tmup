@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail, ensure};
 use kdl::KdlDocument;
-use std::collections::HashSet;
+use std::{collections::HashSet, path::Path};
 
 use crate::model::{Config, Options, PluginSource, PluginSpec, Tracking};
 
@@ -124,22 +124,23 @@ fn parse_plugin(node: &kdl::KdlNode) -> Result<PluginSpec> {
     });
 
     let source = if is_local {
-        ensure!(
-            raw.starts_with('/') || raw.starts_with('~') || raw.starts_with('.'),
-            "plugin \"{raw}\": local=#true requires a local path (absolute, ~, or ./ prefix)"
-        );
+        let expanded_path = expand_local_path(&raw)?;
         ensure!(
             matches!(tracking, Tracking::DefaultBranch),
             "local plugin \"{raw}\": branch/tag/commit not allowed for local plugins"
         );
+        ensure!(
+            Path::new(&expanded_path).is_absolute(),
+            "plugin \"{raw}\": local path must expand to an absolute path (got {expanded_path})"
+        );
         let name = explicit_name.unwrap_or_else(|| {
-            std::path::Path::new(&raw)
+            Path::new(&expanded_path)
                 .file_name()
                 .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| raw.clone())
+                .unwrap_or_else(|| expanded_path.clone())
         });
         PluginSpec {
-            source: PluginSource::Local { path: raw },
+            source: PluginSource::Local { path: expanded_path },
             name,
             opt_prefix,
             tracking,
@@ -236,4 +237,11 @@ fn get_bool(node: &kdl::KdlNode, plugin: &str, key: &str) -> Result<Option<bool>
             None => bail!("plugin \"{plugin}\": {key} must be a bool"),
         },
     }
+}
+
+fn expand_local_path(raw: &str) -> Result<String> {
+    let expanded = shellexpand::full(raw)
+        .with_context(|| format!("failed to expand local path: {raw}"))?
+        .into_owned();
+    Ok(expanded)
 }

@@ -258,7 +258,7 @@ pub fn plan_init(
                         to_restore.push(id.to_string());
                     }
                 } else {
-                    // Healthy but no lock entry — needs adopt via install
+                    // Healthy but no lock entry — needs a full install to create lock state
                     to_install.push(id.to_string());
                 },
         }
