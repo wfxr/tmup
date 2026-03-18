@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use lazytmux::{
     config::parse_config,
     lockfile::{LockEntry, LockFile},
-    planner::{self, InitDecision},
+    planner,
     state::{OperationLock, Paths, build_command_hash},
 };
 use tempfile::tempdir;
@@ -19,23 +19,8 @@ fn init_read_only_path_detected_when_aligned() {
     let installed: HashMap<String, Option<String>> =
         [("github.com/user/repo".into(), Some("abc123".into()))].into();
 
-    let decision = planner::plan_init(&config, &lock, &installed, false);
-    assert_eq!(decision, InitDecision::ReadOnly);
-}
-
-#[test]
-fn init_waits_for_writer_before_read_only_load() {
-    let config = parse_config(r#"plugin "user/repo""#).unwrap();
-    let mut lock = LockFile::new();
-    lock.plugins.insert(
-        "github.com/user/repo".into(),
-        LockEntry::branch("user/repo", "main", "abc123"),
-    );
-    let installed: HashMap<String, Option<String>> =
-        [("github.com/user/repo".into(), Some("abc123".into()))].into();
-
-    let decision = planner::plan_init(&config, &lock, &installed, true);
-    assert_eq!(decision, InitDecision::WaitForWriter);
+    let plan = planner::plan_init(&config, &lock, &installed);
+    assert!(plan.is_none());
 }
 
 #[test]
@@ -50,22 +35,18 @@ plugin "user/repo"
     let lock = LockFile::new();
     let installed = HashMap::new();
 
-    let decision = planner::plan_init(&config, &lock, &installed, false);
-    match decision {
-        InitDecision::Write(plan) => {
-            assert!(
-                plan.to_install
-                    .contains(&"github.com/user/repo".to_string())
-            );
-        }
-        other => panic!("expected Write, got {other:?}"),
-    }
+    let plan = planner::plan_init(&config, &lock, &installed);
+    let plan = plan.expect("expected Some(WritePlan)");
+    assert!(
+        plan.to_install
+            .contains(&"github.com/user/repo".to_string())
+    );
 }
 
 #[test]
 fn init_replans_inside_lock_before_mutation() {
     // Simulates: preflight says "need install", but by the time we get the lock,
-    // another process already installed it. Replan should detect ReadOnly.
+    // another process already installed it. Replan should detect no writes needed.
     let config = parse_config(
         r#"
 options { auto-install #true }
@@ -82,8 +63,8 @@ plugin "user/repo"
     let installed: HashMap<String, Option<String>> =
         [("github.com/user/repo".into(), Some("abc123".into()))].into();
 
-    let decision = planner::plan_init(&config, &lock, &installed, false);
-    assert_eq!(decision, InitDecision::ReadOnly);
+    let plan = planner::plan_init(&config, &lock, &installed);
+    assert!(plan.is_none());
 }
 
 #[test]

@@ -59,7 +59,7 @@ script-friendly behavior with reliable exit codes.
 | Zero magic options | `opt-prefix` defaults to empty. No automatic prefix inference or separator insertion. |
 | Compatibility by contract | Explicitly declare which TPM behaviors are supported and which are not. |
 | Safe publish | New revisions are prepared in a staging directory, then atomically published with rollback capability. |
-| Writer-aware reads | Read-only init never loads plugins while a writer is active. Write-path init holds the lock through loading. |
+| Lock-through-load | `init` holds the global lock from entry through loading, so no concurrent writer can modify state mid-init. |
 | Partial failure is an error | Commands that encounter per-plugin failures still publish successful results but return a non-zero exit code. |
 
 ---
@@ -233,26 +233,17 @@ only. Local plugins do not participate in `install` / `update` / `restore`.
 
 ### 5.2 `init` (tmux startup path)
 
-Must be both fast and safe.
+Must be both fast and safe. The global operation lock is held for the entire
+init (from scan through loading), eliminating TOCTOU races between preflight
+and mutation.
 
 ```text
-1. Read-only preflight:
-   - Locate and parse lazy.kdl
-   - Read lazylock.json (if it exists)
-   - Validate configuration
-   - Scan installed remote plugin directories and their HEAD commits
-   - Compute whether writes are needed (missing plugins, drifted commits,
-     undeclared plugins)
-   - Check whether a writer is currently active
-
-2. If plan is read-only:
-   - If a writer is active: wait for it, then restart from step 1
-   - Otherwise: load plugins directly (no lock acquisition needed)
-
-3. If plan requires writes:
-   - Acquire the global operation lock
-   - Replan inside the lock (another writer may have finished between
-     preflight and lock acquisition)
+1. Acquire the global operation lock (blocking).
+2. Parse lazy.kdl, read lazylock.json, validate configuration.
+3. Scan installed remote plugin directories and their HEAD commits.
+4. Compute whether writes are needed (missing plugins, drifted commits,
+   undeclared plugins).
+5. If writes are needed:
    - If auto-install=true: install missing remote plugins
      - With lock entry: install the locked commit
      - Without lock entry: resolve from config, install, create lock entry
@@ -260,15 +251,14 @@ Must be both fast and safe.
        matches a known build failure marker
    - If installed commit has drifted from lock: restore to locked commit
    - If auto-clean=true: remove undeclared managed remote plugins
-   - Load plugins into tmux (still under the write lock)
-   - Release the lock
+6. Load plugins into tmux (set options, source *.tmux files).
+7. Release the lock.
 ```
 
 Key constraints:
 
 - `init` **never updates** installed plugins to newer versions.
 - `init` **never rewrites** existing lock entries due to remote HEAD changes.
-- `init` **never loads plugins** while a writer is active without the lock.
 - `init` **does not retry** a known-failed `(plugin-id, commit, build-command-hash)` tuple.
 - When all plugins are installed and lock is unchanged, init performs no git
   network access.
@@ -432,10 +422,10 @@ $XDG_STATE_HOME/lazytmux/operations.lock
 The lock uses OS-level `flock(LOCK_EX)` and is released when the file
 descriptor is closed.
 
-**Init lock scope**: when init acquires the write lock, it holds it through
-plugin loading and tmux option application, not just through the mutation
-phase. This prevents another writer from modifying plugin directories while
-init is loading them.
+**Init lock scope**: `init` acquires the lock at entry (blocking) and holds it
+through scanning, mutation, and plugin loading. This eliminates TOCTOU races
+and prevents another writer from modifying plugin directories while init is
+loading them.
 
 ### 7.2 Staging
 
@@ -636,7 +626,7 @@ lazytmux/
 |   +-- example_config.rs    # Real example config round-trip
 |   +-- source_normalization.rs  # URL -> ID derivation
 |   +-- planner.rs           # Init decision, status computation, failure detection
-|   +-- init_flow.rs         # Writer-aware init, lock contention, failure suppression
+|   +-- init_flow.rs         # Init planning, lock contention, failure suppression
 |   +-- operations.rs        # install/update/restore/clean behavior
 |   +-- lockfile.rs          # Lock file round-trip and error handling
 |   +-- loader.rs            # Load plan generation and ordering
