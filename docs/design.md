@@ -11,7 +11,7 @@ philosophy: concise configuration, concurrent operations, reproducible
 environments, and safe publish/rollback semantics.
 
 The project focuses exclusively on CLI-driven workflows. The core value is
-lock-first state management, safe publish and rollback, lock-through-load init, and
+config-driven sync, safe publish and rollback, lock-through-load init, and
 script-friendly behavior with reliable exit codes.
 
 ---
@@ -20,8 +20,8 @@ script-friendly behavior with reliable exit codes.
 
 ### Goals
 
-1. **Reproducible**: the same `lazy.kdl` + `lazylock.json` produces identical
-   plugin versions on any machine.
+1. **Reproducible**: the same `lazy.kdl` + `lazylock.json` snapshot produces
+   identical plugin versions on any machine.
 2. **Compatible with common TPM plugins**: supports plugins that work through
    `*.tmux` entry scripts and `@option` settings.
 3. **Fast startup**: `init` in the "all installed, lock unchanged" case is
@@ -53,7 +53,7 @@ script-friendly behavior with reliable exit codes.
 
 | Principle | Description |
 |-----------|-------------|
-| Lock-first | When a lock file exists, install and restore use it as the source of truth. Only `update` advances versions. |
+| Config-driven sync | `lazy.kdl` is the desired state for remote plugins; `lazylock.json` is the resolved snapshot that mutating commands sync first. |
 | Install concurrent, load serial | Git operations may run concurrently. Tmux option setting and plugin loading execute serially in declaration order. |
 | URL-derived identity | Remote plugin IDs are derived from canonical source URLs, avoiding conflicts and manual naming. |
 | Zero magic options | `opt-prefix` defaults to empty. No automatic prefix inference or separator insertion. |
@@ -106,8 +106,8 @@ Directory layout:
 
 ### 3.2 Local Plugins
 
-Local plugins are not cloned, not written to the lock file, and do not
-participate in `install` / `update` / `restore`.
+Local plugins are not cloned, not written to the lock snapshot, and do not
+participate in `sync` / `install` / `update` / `restore`.
 
 - Source must be a local path.
 - `~`, `$VAR`, and `${VAR}` are expanded before validation.
@@ -162,7 +162,7 @@ plugin "catppuccin/tmux" opt-prefix="catppuccin_" {
 // Non-GitHub source
 plugin "https://gitlab.com/user/my-plugin.git"
 
-// Local plugin: loaded in-place, not managed by lock
+// Local plugin: loaded in-place, not managed by the lock snapshot
 plugin "~/dev/my-tmux-plugin" local=#true name="my-plugin-dev"
 
 // Disable a plugin with KDL slashdash
@@ -211,8 +211,20 @@ Rules:
 1. Remote plugin IDs must be unique; duplicates cause an error.
 2. `branch`, `tag`, `commit` are mutually exclusive.
 3. `local=true` requires a path that expands to an absolute local path.
-4. Remote plugins always enter the lock file; local plugins never do.
+4. Remote plugins always enter the lock snapshot after successful sync; local plugins never do.
 5. Local plugins cannot declare `branch` / `tag` / `commit`.
+
+### 4.5 Lock-Affecting Inputs
+
+Sync fingerprints only the remote plugin inputs that affect the resolved lock
+snapshot:
+
+- canonical remote plugin source
+- tracking selector kind/value (`default-branch`, `branch`, `tag`, `commit`)
+- `build`
+
+The raw KDL text is not hashed. Comments, formatting, `name`, `opt`,
+`opt-prefix`, and local-plugin-only changes must not trigger sync.
 
 ---
 
@@ -222,8 +234,9 @@ Rules:
 
 ```text
 lazytmux init               # tmux startup: install missing, apply opts, load plugins
-lazytmux install [id]       # install all/specified missing remote plugins
-lazytmux update [id]        # update all/specified remote plugins (only command that advances lock)
+lazytmux sync [id]          # reconcile config into the lock snapshot
+lazytmux install [id]       # install all/specified missing remote plugins after sync
+lazytmux update [id]        # update unchanged floating selectors after sync
 lazytmux restore [id]       # restore plugins to lock-recorded commits
 lazytmux clean              # remove undeclared managed remote plugins
 lazytmux list               # list plugin status
@@ -231,7 +244,7 @@ lazytmux migrate            # migrate from .tmux.conf TPM declarations (planned)
 ```
 
 The CLI target selector is the **remote plugin ID**. `name` is for display
-only. Local plugins do not participate in `install` / `update` / `restore`.
+only. Local plugins do not participate in `sync` / `install` / `update` / `restore`.
 
 ### 5.2 `init` (tmux startup path)
 
@@ -242,43 +255,53 @@ and mutation.
 ```text
 1. Acquire the global operation lock (blocking).
 2. Parse lazy.kdl, read lazylock.json, validate configuration.
-3. Scan installed remote plugin directories and their HEAD commits.
-4. Compute whether writes are needed (missing plugins, drifted commits,
-   undeclared plugins).
-5. If writes are needed:
-   - If auto-install=true: install missing remote plugins
-     - With lock entry: install the locked commit
-     - Without lock entry: resolve from config, install, create lock entry
-     - Skip plugins whose resolved (plugin-id, commit, build-command-hash)
-       matches a known build failure marker
-   - If installed commit has drifted from lock: restore to locked commit
-   - If auto-clean=true: remove undeclared managed remote plugins
-6. Load plugins into tmux (set options, source *.tmux files).
-7. Release the lock.
+3. Run implicit incremental sync.
+   - Reconcile changed existing declared plugins immediately.
+   - Install newly declared remote plugins only when auto-install=true.
+   - Drop removed remote plugins from the lock snapshot immediately.
+   - Do not delete undeclared plugin directories here; that remains the job of
+     `clean` / `auto-clean`.
+   - Abort init if sync fails.
+4. Scan installed remote plugin directories and their HEAD commits.
+5. Compute whether additional lock-vs-disk writes are needed.
+6. If writes are needed:
+   - If auto-install=true: install missing remote plugins from the synced lock snapshot
+   - If installed commit has drifted from lock: restore to the synced lock commit
+   - If auto-clean=true: remove undeclared managed remote plugins from disk
+7. Load plugins into tmux (set options, source *.tmux files).
+8. Release the lock.
 ```
 
 Key constraints:
 
-- `init` **never updates** installed plugins to newer versions.
-- `init` **never rewrites** existing lock entries due to remote HEAD changes.
+- `init` **never advances** unchanged floating selectors beyond what config declares.
 - `init` **does not retry** a known-failed `(plugin-id, commit, build-command-hash)` tuple.
 - When all plugins are installed and lock is unchanged, init performs no git
   network access.
 
-### 5.3 `install [id]`
+### 5.3 `sync [id]`
 
-- Installs missing remote plugins without modifying already-installed versions.
-- With lock entry: installs the locked revision.
-- Without lock entry: resolves from config, installs, writes lock entry.
-- Already-installed plugins are skipped only when they are already tracked in the lock file.
+- Public command that reconciles remote plugin config into `lazylock.json`.
+- Uses canonical remote plugin IDs as selectors.
+- Applies source / selector / `build` changes incrementally by plugin ID.
+- Removed remote plugins lose their lock entries immediately.
+- Does not delete undeclared plugin directories from disk.
+- On per-plugin failure, the previous lock entry for that plugin is preserved.
+
+### 5.4 `install [id]`
+
+- Runs implicit sync first and then installs missing remote plugins from the
+  post-sync lock snapshot.
+- Already-installed plugins are skipped only when they are already tracked in the lock snapshot.
 - Explicit `install` does **not** suppress known-failure retries (unlike
   `init`).
 - Returns a non-zero exit code if any plugin fails, after publishing
-  successful ones and writing the lock file.
+  successful ones and writing the lock snapshot.
 
-### 5.4 `update [id]`
+### 5.5 `update [id]`
 
-`update` is the **only command that advances the lock**.
+`update` runs after implicit sync. Selector or `build` changes are handled by
+sync; `update` is responsible only for advancing unchanged floating selectors.
 
 Revision policy:
 
@@ -289,11 +312,12 @@ Revision policy:
 - `commit`: fixed version; skipped with a message.
 
 Returns a non-zero exit code if any plugin fails, after publishing successful
-ones and writing the lock file.
+ones and writing the lock snapshot.
 
-### 5.5 `restore [id]`
+### 5.6 `restore [id]`
 
-- Checks out remote plugins to the commit recorded in the lock file.
+- Runs implicit sync first and then checks out remote plugins to the commit
+  recorded in the post-sync lock snapshot.
 - Requires a lock entry; plugins without one are skipped.
 - Missing plugins are re-installed from the lock.
 - If the revision actually changes and the plugin declares a `build`, the
@@ -301,14 +325,17 @@ ones and writing the lock file.
 - Build failures during restore write failure markers, matching the semantics
   of install and update.
 
-### 5.6 `clean`
+### 5.7 `clean`
 
+- Runs a prune-only implicit sync first.
 - Removes installed but undeclared remote plugins from the managed directory.
 - Only cleans lazy.tmux-managed remote directories.
 - Does not remove local plugin sources.
+- Must not install, rebuild, replace, or otherwise mutate declared plugin
+  directories as a side effect.
 - Cleans up empty intermediate parent directories after removal.
 
-### 5.7 `list`
+### 5.8 `list`
 
 Columns:
 
@@ -342,7 +369,10 @@ Examples:
 - Update build failure with rollback: `state=installed`, `last-result=build-failed`
 - Fresh install build failure: `state=missing`, `last-result=build-failed`
 
-### 5.8 `migrate` (planned)
+`list` is read-only. If the lock snapshot is stale relative to `lazy.kdl`,
+it prints a warning before the table and does not mutate `lazylock.json`.
+
+### 5.9 `migrate` (planned)
 
 - Extracts `set -g @plugin` and related `set -g @xxx` options from
   `.tmux.conf`.
@@ -358,17 +388,20 @@ Examples:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
+  "config_fingerprint": "b4a0d7c2...",
   "plugins": {
     "github.com/tmux-plugins/tmux-sensible": {
       "source": "tmux-plugins/tmux-sensible",
-      "tracking": { "type": "branch", "value": "main" },
-      "commit": "abc1234567890abcdef1234567890abcdef1234"
+      "tracking": { "type": "default-branch", "value": "main" },
+      "commit": "abc1234567890abcdef1234567890abcdef1234",
+      "config_hash": "c78128e1..."
     },
     "github.com/tmux-plugins/tmux-resurrect": {
       "source": "tmux-plugins/tmux-resurrect",
       "tracking": { "type": "branch", "value": "master" },
-      "commit": "def5678901234567890abcdef1234567890abcd"
+      "commit": "def5678901234567890abcdef1234567890abcd",
+      "config_hash": "89ce7bd4..."
     }
   }
 }
@@ -377,12 +410,17 @@ Examples:
 ### 6.2 Semantics
 
 - Lock key = remote plugin ID.
-- `init` / `install`: with lock entry, install the locked commit; without,
-  resolve and create a new entry.
-- `update`: the only operation that advances lock entries.
+- `config_fingerprint` hashes the sorted remote plugin desired-state inputs.
+- Each `config_hash` hashes one remote plugin's lock-affecting config input.
+- `tracking.type = "default-branch"` preserves declared selector semantics,
+  while `tracking.value` stores the resolved branch name.
+- `sync` resolves config into lock entries; `update` only advances unchanged
+  floating selectors after sync.
 - `restore`: strictly targets the lock-recorded commit.
-- Local plugins are never in the lock. Remote plugins always are (after first
-  successful install).
+- Local plugins are never in the lock snapshot. Remote plugins always are
+  after first successful sync/install.
+- Removed remote plugins lose their lock entries immediately, but `sync` does
+  not delete their on-disk repositories.
 - On partial failure: successfully published plugins update the lock; failed
   ones retain their previous entries.
 
@@ -391,7 +429,8 @@ Examples:
 1. Serialize to `lazylock.json.tmp`.
 2. `fsync`.
 3. `rename` to `lazylock.json`.
-4. Written only after all successful publishes complete.
+4. Explicit sync and implicit sync preflights may still write updated metadata
+   even when some plugins fail, preserving previous entries for failed plugins.
 
 ### 6.4 Read Error Handling
 
@@ -405,9 +444,10 @@ doing so could overwrite a valid lock with freshly resolved commits.
 
 ### 7.1 Global Operation Lock
 
-All write operations require the global exclusive lock:
+All mutating operations require the global exclusive lock:
 
 - `init` (when writes are needed)
+- `sync`
 - `install`
 - `update`
 - `restore`
@@ -567,7 +607,7 @@ setup, option application, and plugin loading within the `init` command.
 
 ```text
 ~/.config/tmux/lazy.kdl                 # user configuration
-~/.config/tmux/lazylock.json            # lock file (check into version control)
+~/.config/tmux/lazylock.json            # resolved lock snapshot (check into version control)
 
 ~/.local/share/lazytmux/
   +-- plugins/                          # installed plugin checkouts
@@ -596,7 +636,7 @@ Config file search order:
 | Component | Choice | Crate |
 |-----------|--------|-------|
 | Configuration | KDL | `kdl` |
-| Lock file | JSON | `serde_json` |
+| Lock snapshot | JSON | `serde_json` |
 | CLI | clap derive | `clap` |
 | Async runtime | tokio | `tokio` |
 | Git operations | shell out | `tokio::process::Command` (async), `std::process::Command` (sync for scan) |
@@ -613,14 +653,15 @@ Config file search order:
 lazytmux/
 +-- Cargo.toml
 +-- src/
-|   +-- main.rs              # CLI entry: dispatch to init/install/update/restore/clean/list
+|   +-- main.rs              # CLI entry: dispatch to init/sync/install/update/restore/clean/list
 |   +-- config.rs            # KDL configuration parsing and validation
 |   +-- model.rs             # Config, Options, PluginSpec, PluginSource, Tracking
 |   +-- planner.rs           # Compute init decision, plugin statuses, scan installed state
 |   +-- plugin.rs            # install/update/restore/clean/list core workflows
+|   +-- sync.rs              # Config-driven sync diffing, policies, reconcile engine
 |   +-- git.rs               # clone/fetch/checkout/publish (async + sync)
 |   +-- loader.rs            # Build tmux load plan: set-environment, set-option, run-shell
-|   +-- lockfile.rs          # lazylock.json read/write (atomic write via rename)
+|   +-- lockfile.rs          # lazylock.json read/write and fingerprint helpers
 |   +-- state.rs             # Paths, OperationLock, failure markers
 |   +-- tmux.rs              # TmuxCommand enum and execution
 +-- tests/
@@ -629,13 +670,16 @@ lazytmux/
 |   +-- source_normalization.rs  # URL -> ID derivation
 |   +-- planner.rs           # Init decision, status computation, failure detection
 |   +-- init_flow.rs         # Init planning, lock contention, failure suppression
-|   +-- operations.rs        # install/update/restore/clean behavior
-|   +-- lockfile.rs          # Lock file round-trip and error handling
+|   +-- operations.rs        # install/update/restore/clean/list behavior
+|   +-- lockfile.rs          # Lock snapshot round-trip and compatibility
+|   +-- sync.rs              # Incremental sync behavior
+|   +-- sync_fingerprint.rs  # Lock-affecting config fingerprinting
 |   +-- loader.rs            # Load plan generation and ordering
 |   +-- publish.rs           # Publish protocol: fresh install, replace, rollback
 |   +-- state.rs             # Failure markers, operation lock, paths
 |   +-- cli_help.rs          # CLI help output
 |   +-- cli_list.rs          # CLI list output formatting
+|   +-- cli_sync.rs          # Sync CLI behavior
 +-- examples/
     +-- lazy.kdl             # Example configuration
 ```
