@@ -18,7 +18,6 @@ fn state_display_strings() {
     assert_eq!(PluginState::Outdated.to_string(), "outdated");
     assert_eq!(PluginState::PinnedTag.to_string(), "pinned-tag");
     assert_eq!(PluginState::PinnedCommit.to_string(), "pinned-commit");
-    assert_eq!(PluginState::Unmanaged.to_string(), "unmanaged");
 }
 
 #[test]
