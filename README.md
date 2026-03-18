@@ -37,9 +37,8 @@ lazy.nvim's design philosophy to tmux:
   advances versions; `init`, `install`, and `restore` always respect the lock.
 - **Safe publish** — every revision change goes through a staging directory
   first. Build failures trigger automatic rollback to the previous version.
-- **Writer-aware init** — `init` does a read-only preflight. If another writer
-  is active, it waits rather than reading a half-written plugin directory.
-  When writes are needed, the lock is held through plugin loading.
+- **Safe init** — `init` holds the global lock from start through plugin
+  loading, preventing concurrent writers from modifying state mid-init.
 - **Build failure memory** — failed builds are recorded as
   `(plugin, commit, build-command-hash)` tuples. `init` won't auto-retry the
   same failure. Change the build command or run `install` explicitly to retry.
@@ -187,17 +186,14 @@ lazytmux migrate            # Migrate from TPM declarations (planned)
 
 ### `init` — startup path
 
-Designed for `run-shell "lazytmux init"` in `.tmux.conf`. Optimized for speed:
+Designed for `run-shell "lazytmux init"` in `.tmux.conf`.
 
-1. **Read-only preflight** — parse config, read lock, scan installed plugins
-   and their HEAD commits.
-2. **If everything is aligned** — skip locking, just set options and source
-   `*.tmux` files. Near-zero overhead.
-3. **If plugins are missing or drifted from lock** — acquire exclusive lock,
-   replan (another process may have already installed), then install/restore
-   and load.
-4. **If a writer is active** — wait for it to finish, then acquire lock and
-   re-preflight.
+1. **Acquire global lock** — held from start through plugin loading, preventing
+   concurrent writers from modifying plugin state during init.
+2. **Scan** — parse config, read lock, scan installed plugins and their HEAD
+   commits.
+3. **If everything is aligned** — set options and source `*.tmux` files.
+4. **If plugins are missing or drifted from lock** — install/restore, then load.
 
 `init` never updates existing plugins, never changes existing lock entries,
 and never retries a known build failure automatically.

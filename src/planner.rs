@@ -68,17 +68,6 @@ pub struct PluginStatus {
     pub lock_commit:    Option<String>,
 }
 
-/// Decision for the init path.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InitDecision {
-    /// No writes needed: just load plugins.
-    ReadOnly,
-    /// A writer is active: wait, then re-preflight.
-    WaitForWriter,
-    /// Write operations needed before loading.
-    Write(WritePlan),
-}
-
 /// Plan for write operations during init.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WritePlan {
@@ -192,12 +181,14 @@ pub fn compute_statuses(
 }
 
 /// Plan the init decision based on config, lock, and filesystem state.
+///
+/// Returns `Some(plan)` when writes are needed, `None` when everything is
+/// aligned and plugins can be loaded directly.
 pub fn plan_init(
     config: &Config,
     lock: &LockFile,
     installed_plugins: &HashMap<String, Option<String>>,
-    writer_active: bool,
-) -> InitDecision {
+) -> Option<WritePlan> {
     let declared_ids: HashSet<&str> = config
         .plugins
         .iter()
@@ -249,14 +240,10 @@ pub fn plan_init(
 
     let needs_write = !to_install.is_empty() || !to_restore.is_empty() || !to_clean.is_empty();
 
-    if !needs_write {
-        if writer_active {
-            InitDecision::WaitForWriter
-        } else {
-            InitDecision::ReadOnly
-        }
+    if needs_write {
+        Some(WritePlan { to_install, to_restore, to_clean })
     } else {
-        InitDecision::Write(WritePlan { to_install, to_restore, to_clean })
+        None
     }
 }
 

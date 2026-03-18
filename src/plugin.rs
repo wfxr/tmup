@@ -9,6 +9,17 @@ use crate::{
     state::{self, FailureKey, FailureMarker, Paths, build_command_hash},
 };
 
+/// Validate that a target id matches at least one remote plugin in config.
+fn validate_target_id(config: &Config, target_id: Option<&str>) -> Result<()> {
+    if let Some(target) = target_id {
+        let exists = config.plugins.iter().any(|p| p.remote_id() == Some(target));
+        if !exists {
+            anyhow::bail!("unknown plugin id: \"{target}\"");
+        }
+    }
+    Ok(())
+}
+
 /// Install missing remote plugins. Lock-first: uses lock entry if present.
 ///
 /// When `skip_known_failures` is true (used by init auto-install), plugins whose
@@ -20,6 +31,7 @@ pub async fn install(
     target_id: Option<&str>,
     skip_known_failures: bool,
 ) -> Result<()> {
+    validate_target_id(config, target_id)?;
     paths.ensure_dirs()?;
     let installed = planner::scan_installed_plugins(&paths.plugin_root);
     let mut failures: Vec<String> = Vec::new();
@@ -135,6 +147,7 @@ pub async fn update(
     paths: &Paths,
     target_id: Option<&str>,
 ) -> Result<()> {
+    validate_target_id(config, target_id)?;
     paths.ensure_dirs()?;
     let mut failures: Vec<String> = Vec::new();
 
@@ -186,11 +199,7 @@ pub async fn update(
             }
         };
 
-        // Decide whether to run build: check if the *disk* HEAD differs from
-        // new_commit, or the target directory is missing entirely.  Using the
-        // disk rather than the lock avoids skipping the build when the directory
-        // was manually changed or deleted while the lock already records the
-        // same commit.
+        // Check if the disk HEAD already matches new_commit.
         let disk_commit = if target_dir.exists() {
             git::head_commit(&target_dir).await.ok()
         } else {
@@ -198,11 +207,19 @@ pub async fn update(
         };
         let revision_changed = disk_commit.as_deref() != Some(new_commit.as_str());
 
-        let build = if revision_changed {
-            spec.build.as_deref()
-        } else {
-            None
-        };
+        // Already at the target commit — just update the lock, skip publish.
+        if !revision_changed && target_dir.exists() {
+            let _ = std::fs::remove_dir_all(&staging);
+            lock.plugins.insert(id.clone(), LockEntry {
+                source:   raw.clone(),
+                tracking: tracking_record,
+                commit:   new_commit,
+            });
+            continue;
+        }
+
+        // Revision changed or target missing — always run build if declared.
+        let build = spec.build.as_deref();
 
         // Publish
         let result = if target_dir.exists() {
@@ -260,6 +277,7 @@ pub async fn restore(
     paths: &Paths,
     target_id: Option<&str>,
 ) -> Result<()> {
+    validate_target_id(config, target_id)?;
     paths.ensure_dirs()?;
     let mut failures: Vec<String> = Vec::new();
 
