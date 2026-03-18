@@ -7,7 +7,7 @@ use lazytmux::{
     lockfile,
     planner,
     plugin,
-    state::{OperationLock, OperationLockGuard, Paths},
+    state::{OperationLock, Paths},
     tmux,
 };
 
@@ -102,69 +102,30 @@ fn load_lockfile(paths: &Paths) -> Result<lockfile::LockFile> {
     }
 }
 
-/// Acquire lock, replan, execute writes if needed. Returns the guard
-/// so the caller can hold it through plugin loading.
-async fn acquire_replan_write(
-    cfg: &lazytmux::model::Config,
-    paths: &Paths,
-) -> Result<OperationLockGuard> {
-    let guard = OperationLock::try_acquire(&paths.lock_path)?
-        .context("failed to acquire operation lock")?;
-    let installed = planner::scan_installed_plugins(&paths.plugin_root);
-    let mut lock = load_lockfile(paths)?;
-    let decision = planner::plan_init(cfg, &lock, &installed, false);
-    if let planner::InitDecision::Write(plan) = decision {
-        run_init_write(cfg, &mut lock, paths, &plan).await?;
-    }
-    Ok(guard)
-}
-
-/// Writer-aware init flow (v5 design §5.2)
+/// Init flow: acquire the global lock upfront and hold it through loading.
 ///
-/// The write lock is held from before mutations through plugin loading
-/// and tmux binding, ensuring no other writer can modify plugin state
-/// while this init is loading.
+/// This avoids TOCTOU races between preflight and lock acquisition. The lock
+/// is held from the start until plugin loading completes, so no concurrent
+/// writer can modify plugin state during init.
 async fn run_init() -> Result<()> {
     let paths = Paths::resolve()?;
     paths.ensure_dirs()?;
     let cfg = load_config(&paths)?;
-    let lock = load_lockfile(&paths)?;
 
-    // Step 1: Read-only preflight
+    // Hold the lock for the entire init: plan, mutate, and load.
+    let _guard = OperationLock::acquire(&paths.lock_path)?;
+
     let installed = planner::scan_installed_plugins(&paths.plugin_root);
-    let writer_active = OperationLock::is_writer_active(&paths.lock_path)?;
-    let decision = planner::plan_init(&cfg, &lock, &installed, writer_active);
+    let mut lock = load_lockfile(&paths)?;
+    let plan = planner::plan_init(&cfg, &lock, &installed);
 
-    // Hold the write lock (if acquired) through loading and binding.
-    // The guard is dropped at function exit, after tmux loading completes.
-    let _guard = match decision {
-        planner::InitDecision::ReadOnly => None,
-        planner::InitDecision::WaitForWriter => {
-            eprintln!("lazytmux: waiting for active writer to finish...");
-            wait_for_writer(&paths).await?;
-            Some(acquire_replan_write(&cfg, &paths).await?)
-        }
-        planner::InitDecision::Write(_) => match OperationLock::try_acquire(&paths.lock_path)? {
-            None => {
-                eprintln!("lazytmux: lock contention, waiting...");
-                wait_for_writer(&paths).await?;
-                Some(acquire_replan_write(&cfg, &paths).await?)
-            }
-            Some(guard) => {
-                let installed = planner::scan_installed_plugins(&paths.plugin_root);
-                let mut lock = load_lockfile(&paths)?;
-                let decision = planner::plan_init(&cfg, &lock, &installed, false);
-                if let planner::InitDecision::Write(plan) = decision {
-                    run_init_write(&cfg, &mut lock, &paths, &plan).await?;
-                }
-                Some(guard)
-            }
-        },
-    };
+    if let Some(write_plan) = plan {
+        run_init_write(&cfg, &mut lock, &paths, &write_plan).await?;
+    }
 
-    // Load plugins into tmux (still under lock if we wrote)
-    let plan = loader::build_load_plan(&cfg, &paths.plugin_root);
-    tmux::execute_plan(&plan)?;
+    // Load plugins into tmux (still under lock)
+    let load_plan = loader::build_load_plan(&cfg, &paths.plugin_root);
+    tmux::execute_plan(&load_plan)?;
 
     Ok(())
 }
@@ -260,16 +221,6 @@ fn run_list() -> Result<()> {
     }
 
     Ok(())
-}
-
-async fn wait_for_writer(paths: &Paths) -> Result<()> {
-    for _ in 0..300 {
-        if !OperationLock::is_writer_active(&paths.lock_path)? {
-            return Ok(());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    anyhow::bail!("timed out waiting for writer lock")
 }
 
 fn dirs_home() -> std::path::PathBuf {

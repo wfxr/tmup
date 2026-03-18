@@ -207,26 +207,41 @@ pub fn has_failure_marker(failures_root: &Path, key: &FailureKey) -> Result<bool
 pub struct OperationLock;
 
 impl OperationLock {
-    /// Try to acquire the exclusive write lock. Returns None if already held.
-    pub fn try_acquire(lock_path: &Path) -> Result<Option<OperationLockGuard>> {
+    fn open_lock_file(lock_path: &Path) -> Result<fs::File> {
         if let Some(parent) = lock_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let file = fs::OpenOptions::new()
+        fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
             .open(lock_path)
-            .with_context(|| format!("failed to open lock file: {}", lock_path.display()))?;
+            .with_context(|| format!("failed to open lock file: {}", lock_path.display()))
+    }
+
+    /// Acquire the exclusive write lock, blocking until available.
+    pub fn acquire(lock_path: &Path) -> Result<OperationLockGuard> {
+        let file = Self::open_lock_file(lock_path)?;
+        let mut lock = fd_lock::RwLock::new(file);
+        let guard = lock
+            .write()
+            .map_err(|e| anyhow::anyhow!("failed to acquire lock: {e}"))?;
+        // Forget the guard so LOCK_UN is not called on drop.
+        // The OS-level flock remains held via the fd inside `lock`.
+        // Dropping `lock` later closes the fd and releases the flock.
+        std::mem::forget(guard);
+        Ok(OperationLockGuard { _lock: lock })
+    }
+
+    /// Try to acquire the exclusive write lock. Returns None if already held.
+    pub fn try_acquire(lock_path: &Path) -> Result<Option<OperationLockGuard>> {
+        let file = Self::open_lock_file(lock_path)?;
         let mut lock = fd_lock::RwLock::new(file);
         // Scope the borrow so we can move `lock` afterwards.
         let acquired = {
             let result = lock.try_write();
             if let Ok(guard) = result {
-                // Forget the guard so LOCK_UN is not called on drop.
-                // The OS-level flock remains held via the fd inside `lock`.
-                // Dropping `lock` later closes the fd and releases the flock.
                 std::mem::forget(guard);
                 true
             } else {
@@ -245,12 +260,12 @@ impl OperationLock {
         if !lock_path.exists() {
             return Ok(false);
         }
-        let file = fs::OpenOptions::new()
+        let file = match fs::OpenOptions::new()
             .create(false)
             .read(true)
             .write(true)
-            .open(lock_path);
-        let file = match file {
+            .open(lock_path)
+        {
             Ok(f) => f,
             Err(_) => return Ok(false),
         };
