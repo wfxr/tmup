@@ -1,7 +1,7 @@
 <h1 align="center">lazytmux</h1>
 
 <p align="center">
-  A modern, lock-first tmux plugin manager — inspired by <a href="https://github.com/folke/lazy.nvim">lazy.nvim</a>.
+  A modern, config-driven tmux plugin manager — inspired by <a href="https://github.com/folke/lazy.nvim">lazy.nvim</a>.
 </p>
 
 <p align="center">
@@ -26,22 +26,24 @@ lazytmux is a ground-up rewrite in Rust that brings the convenience of
 lazy.nvim's design philosophy to tmux:
 
 - **Declarative config** — a single `lazy.kdl` file describes everything.
-- **Lock file** — `lazylock.json` pins exact commits for reproducible setups.
+- **Resolved lock snapshot** — `lazylock.json` records the commits selected from config.
 - **Concurrent operations** — installs and updates run in parallel (planned).
 - **Safe publish protocol** — staging + atomic rename + rollback on build failure.
 - **Script-friendly CLI** — clear exit codes, partial-failure reporting, predictable semantics.
 
 ## Features
 
-- **Lock-first** — `lazylock.json` is the source of truth. Only `update`
-  advances versions; `init`, `install`, and `restore` always respect the lock.
+- **Config-driven sync** — `lazy.kdl` is the desired state for remote plugins;
+  `lazylock.json` is the resolved snapshot that mutating commands reconcile first.
 - **Safe publish** — every revision change goes through a staging directory
   first. Build failures trigger automatic rollback to the previous version.
 - **Safe init** — `init` holds the global lock from start through plugin
   loading, preventing concurrent writers from modifying state mid-init.
+- **Incremental reconcile** — changing one remote plugin's source, selector, or
+  `build` only syncs that plugin.
 - **Build failure memory** — failed builds are recorded as
   `(plugin, commit, build-command-hash)` tuples. `init` won't auto-retry the
-  same failure. Change the build command or run `install` explicitly to retry.
+  same failure. Change the build command or run `sync`/`install` explicitly to retry.
 - **Partial failure reporting** — commands like `install` and `update` publish
   successful plugins and write the lock, but return a non-zero exit code if
   any plugin fails.
@@ -92,7 +94,7 @@ tmux source-file ~/.tmux.conf
 ```
 
 lazytmux will auto-install missing plugins on the first `init` and generate
-`lazylock.json`. Commit the lock file to version control for reproducible
+`lazylock.json`. Commit the lock snapshot to version control for reproducible
 setups across machines.
 
 ## Configuration
@@ -134,7 +136,7 @@ plugin "catppuccin/tmux" opt-prefix="catppuccin_" {
 // Non-GitHub source
 plugin "https://gitlab.com/user/my-plugin.git"
 
-// Local plugin — loaded in-place, not in lock file
+// Local plugin — loaded in-place, not in the lock snapshot
 plugin "~/dev/my-tmux-plugin" local=#true name="my-plugin-dev"
 
 // Disable with KDL slashdash
@@ -160,12 +162,16 @@ plugin "~/dev/my-tmux-plugin" local=#true name="my-plugin-dev"
 | `tag` | string | — | Pin to a tag (update skips) |
 | `commit` | string | — | Pin to a commit (update skips) |
 | `local` | bool | `#false` | Treat source as a local path; after expansion it must be absolute |
-| `build` | string | — | Shell command to run after install/update |
+| `build` | string | — | Shell command to run after sync/update/restore publishes a revision |
 
 > `branch`, `tag`, and `commit` are mutually exclusive.
 >
 > Local paths support `~`, `$VAR`, and `${VAR}` expansion. After expansion, the
 > path must be absolute.
+>
+> Sync hashes only remote plugin source, tracking selector, and `build`.
+> Comments, formatting, `name`, `opt`, `opt-prefix`, and local-plugin-only
+> changes do not trigger sync.
 
 ### Option mechanism
 
@@ -179,8 +185,9 @@ tmux set -g @{opt-prefix}{key} "{value}"
 
 ```
 lazytmux init               # Startup path: install missing, apply opts, load plugins
+lazytmux sync [id]          # Reconcile config into lazylock.json and plugin dirs
 lazytmux install [id]       # Install missing remote plugins
-lazytmux update [id]        # Update remote plugins (only command that advances lock)
+lazytmux update [id]        # Advance unchanged floating selectors after sync
 lazytmux restore [id]       # Restore to lock-recorded commits
 lazytmux clean              # Remove undeclared managed plugins
 lazytmux list               # Print plugin status table
@@ -193,17 +200,31 @@ Designed for `run-shell "lazytmux init"` in `.tmux.conf`.
 
 1. **Acquire global lock** — held from start through plugin loading, preventing
    concurrent writers from modifying plugin state during init.
-2. **Scan** — parse config, read lock, scan installed plugins and their HEAD
-   commits.
-3. **If everything is aligned** — set options and source `*.tmux` files.
-4. **If plugins are missing or drifted from lock** — install/restore, then load.
+2. **Implicit sync** — reconcile `lazy.kdl` into `lazylock.json` before any
+   mutating work. Existing declared plugins may be repaired; removed plugins
+   drop lock entries immediately.
+3. **Respect init policy** — newly declared remote plugins are installed only
+   when `auto-install=true`; on-disk deletion remains controlled by
+   `auto-clean`.
+4. **Load tmux state** — set options and source `*.tmux` files after sync.
 
-`init` never updates existing plugins, never changes existing lock entries,
-and never retries a known build failure automatically.
+`init` never advances floating selectors beyond what config declares, and never
+retries a known build failure automatically.
 
-### `update` — advance versions
+### `sync` — reconcile config into the lock snapshot
 
-The **only** command that writes new commits to the lock file.
+`sync [id]` resolves remote plugins from `lazy.kdl`, updates `lazylock.json`,
+and applies only the changed plugin directories.
+
+- Changing `branch`, `tag`, `commit`, source URL, or `build` is handled by `sync`.
+- Removed remote plugins drop their lock entries immediately.
+- `sync` does not delete undeclared plugin directories; `clean` handles that.
+- Mutating commands run this same sync engine first and abort if it fails.
+
+### `update` — advance floating selectors
+
+`update` runs after implicit sync, so selector and build changes are already
+applied. Its job is only to advance unchanged floating selectors.
 
 | Tracking | Behavior |
 |----------|----------|
@@ -230,12 +251,15 @@ Outputs a table with separated **state** and **last-result** columns:
 | `build-failed` | Build command failed (marker recorded) |
 | `none` | No operation attempted yet |
 
+If the lock snapshot is stale relative to `lazy.kdl`, `list` prints a warning
+before the table without mutating anything.
+
 ## Directory Layout
 
 ```
 ~/.config/tmux/
   ├── lazy.kdl                          # configuration
-  └── lazylock.json                     # lock file (commit to VCS)
+  └── lazylock.json                     # resolved snapshot (commit to VCS)
 
 ~/.local/share/lazytmux/
   ├── plugins/                          # installed plugins
@@ -277,7 +301,7 @@ This boundary is intentional, not an oversight.
 
 1. Create `~/.config/tmux/lazy.kdl` based on your `set -g @plugin` lines.
 2. Replace the TPM `run` line in `.tmux.conf` with `run-shell "lazytmux init"`.
-3. Restart tmux. lazytmux will clone all plugins fresh and generate the lock file.
+3. Restart tmux. lazytmux will clone all plugins fresh and generate the lock snapshot.
 4. Commit `lazy.kdl` and `lazylock.json` to your dotfiles repo.
 5. Remove the old `~/.tmux/plugins/` directory when satisfied.
 
