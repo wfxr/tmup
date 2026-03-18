@@ -476,10 +476,14 @@ async fn tracking_record_for_adopt(
     current_commit: &str,
 ) -> Result<Option<TrackingRecord>> {
     match tracking {
-        Tracking::Branch(b) => Ok(Some(TrackingRecord {
-            kind:  "branch".into(),
-            value: b.clone(),
-        })),
+        Tracking::Branch(b) => match git::resolve_remote_branch(repo, b).await {
+            Ok(branch_commit) if branch_commit == current_commit => Ok(Some(TrackingRecord {
+                kind:  "branch".into(),
+                value: b.clone(),
+            })),
+            Ok(_) => Ok(None),
+            Err(_) => Ok(None),
+        },
         Tracking::Tag(t) => match git::resolve_commit(repo, t).await {
             Ok(tag_commit) if tag_commit == current_commit => Ok(Some(TrackingRecord {
                 kind:  "tag".into(),
@@ -497,13 +501,17 @@ async fn tracking_record_for_adopt(
             } else {
                 Ok(None)
             },
-        Tracking::DefaultBranch => {
-            let branch = git::default_branch(repo).await?;
-            Ok(Some(TrackingRecord {
-                kind:  "branch".into(),
-                value: branch,
-            }))
-        }
+        Tracking::DefaultBranch => match git::default_branch(repo).await {
+            Ok(branch) => match git::resolve_remote_branch(repo, &branch).await {
+                Ok(branch_commit) if branch_commit == current_commit => Ok(Some(TrackingRecord {
+                    kind:  "branch".into(),
+                    value: branch,
+                })),
+                Ok(_) => Ok(None),
+                Err(_) => Ok(None),
+            },
+            Err(_) => Ok(None),
+        },
     }
 }
 
