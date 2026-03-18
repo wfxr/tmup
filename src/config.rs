@@ -52,36 +52,17 @@ fn parse_plugin(node: &kdl::KdlNode) -> Result<PluginSpec> {
         .context("plugin requires a source string as first argument")?
         .to_string();
 
-    let is_local = node.get("local").and_then(|v| v.as_bool()).unwrap_or(false);
+    let is_local = get_bool(node, &raw, "local")?.unwrap_or(false);
 
-    let explicit_name = node
-        .get("name")
-        .and_then(|v| v.as_string())
-        .map(String::from);
+    let explicit_name = get_string(node, &raw, "name")?;
 
-    let opt_prefix = node
-        .get("opt-prefix")
-        .and_then(|v| v.as_string())
-        .unwrap_or("")
-        .to_string();
+    let opt_prefix = get_string(node, &raw, "opt-prefix")?.unwrap_or_default();
 
-    let branch = node
-        .get("branch")
-        .and_then(|v| v.as_string())
-        .map(String::from);
-    let tag = node
-        .get("tag")
-        .and_then(|v| v.as_string())
-        .map(String::from);
-    let commit = node
-        .get("commit")
-        .and_then(|v| v.as_string())
-        .map(String::from);
+    let branch = get_string(node, &raw, "branch")?;
+    let tag = get_string(node, &raw, "tag")?;
+    let commit = get_string(node, &raw, "commit")?;
 
-    let build = node
-        .get("build")
-        .and_then(|v| v.as_string())
-        .map(String::from);
+    let build = get_string(node, &raw, "build")?;
 
     // Parse tracking selector
     let selector_count = [&branch, &tag, &commit]
@@ -229,4 +210,26 @@ fn validate_unique_ids(plugins: &[PluginSpec]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Extract an optional string property, erroring if the property exists but is not a string.
+fn get_string(node: &kdl::KdlNode, plugin: &str, key: &str) -> Result<Option<String>> {
+    match node.get(key) {
+        None => Ok(None),
+        Some(v) => match v.as_string() {
+            Some(s) => Ok(Some(s.to_string())),
+            None => bail!("plugin \"{plugin}\": {key} must be a string"),
+        },
+    }
+}
+
+/// Extract an optional bool property, erroring if the property exists but is not a bool.
+fn get_bool(node: &kdl::KdlNode, plugin: &str, key: &str) -> Result<Option<bool>> {
+    match node.get(key) {
+        None => Ok(None),
+        Some(v) => match v.as_bool() {
+            Some(b) => Ok(Some(b)),
+            None => bail!("plugin \"{plugin}\": {key} must be a bool"),
+        },
+    }
 }
