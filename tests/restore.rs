@@ -81,21 +81,45 @@ fn reset_bare(bare: &std::path::Path, commit: &str) {
 
 /// Build a Config with a single remote plugin pointing at a local bare repo.
 fn make_config(clone_url: &str, build: Option<&str>) -> Config {
+    make_config_with_tracking(clone_url, Tracking::DefaultBranch, build)
+}
+
+fn make_config_with_tracking(clone_url: &str, tracking: Tracking, build: Option<&str>) -> Config {
     Config {
         options: Options::default(),
         plugins: vec![PluginSpec {
-            source:     PluginSource::Remote {
+            source: PluginSource::Remote {
                 raw:       "test/plugin".into(),
                 id:        "example.com/test/plugin".into(),
                 clone_url: clone_url.into(),
             },
-            name:       "plugin".into(),
+            name: "plugin".into(),
             opt_prefix: String::new(),
-            tracking:   Tracking::DefaultBranch,
-            build:      build.map(String::from),
-            opts:       vec![],
+            tracking,
+            build: build.map(String::from),
+            opts: vec![],
         }],
     }
+}
+
+fn clone_to_target(source: &std::path::Path, target: &std::path::Path) {
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    git(
+        &["clone", source.to_str().unwrap(), target.to_str().unwrap()],
+        target.parent().unwrap(),
+    );
+}
+
+fn push_tag(bare: &std::path::Path, tag: &str, commit: &str) {
+    let tmp = bare.parent().unwrap().join("_tag_tmp");
+    let _ = std::fs::remove_dir_all(&tmp);
+    git(
+        &["clone", bare.to_str().unwrap(), tmp.to_str().unwrap()],
+        bare.parent().unwrap(),
+    );
+    git(&["tag", tag, commit], &tmp);
+    git(&["push", "origin", tag], &tmp);
+    std::fs::remove_dir_all(&tmp).unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -279,4 +303,101 @@ async fn update_same_commit_noop_clears_failure_markers() {
         markers.is_empty(),
         "failure markers should be cleared after successful same-commit update"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Regression: healthy + no lock should adopt branch-tracked repos as-is
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn install_adopts_healthy_branch_repo_without_lock() {
+    let dir = tempdir().unwrap();
+    let (bare, _commit_a) = make_bare_repo(&dir.path().join("repo"));
+    let commit_b = push_commit(&bare, "second");
+
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let target = paths.plugin_dir("example.com/test/plugin");
+    clone_to_target(&bare, &target);
+    assert_eq!(git(&["rev-parse", "HEAD"], &target), commit_b);
+
+    let clone_url = format!("file://{}", bare.display());
+    let cfg = make_config_with_tracking(&clone_url, Tracking::Branch("main".into()), None);
+
+    let mut lock = LockFile::new();
+    plugin::install(&cfg, &mut lock, &paths, None, false)
+        .await
+        .unwrap();
+
+    let entry = lock.plugins.get("example.com/test/plugin").unwrap();
+    assert_eq!(entry.commit, commit_b);
+    assert_eq!(entry.tracking.kind, "branch");
+    assert_eq!(entry.tracking.value, "main");
+    assert_eq!(git(&["rev-parse", "HEAD"], &target), entry.commit);
+}
+
+// ---------------------------------------------------------------------------
+// Regression: healthy + no lock + pinned commit must replace mismatched repo
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn install_repairs_healthy_repo_when_pinned_commit_differs() {
+    let dir = tempdir().unwrap();
+    let (bare, commit_a) = make_bare_repo(&dir.path().join("repo"));
+    let commit_b = push_commit(&bare, "second");
+
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let target = paths.plugin_dir("example.com/test/plugin");
+    clone_to_target(&bare, &target);
+    assert_eq!(git(&["rev-parse", "HEAD"], &target), commit_b);
+
+    let clone_url = format!("file://{}", bare.display());
+    let cfg = make_config_with_tracking(&clone_url, Tracking::Commit(commit_a.clone()), None);
+
+    let mut lock = LockFile::new();
+    plugin::install(&cfg, &mut lock, &paths, None, false)
+        .await
+        .unwrap();
+
+    let entry = lock.plugins.get("example.com/test/plugin").unwrap();
+    assert_eq!(entry.commit, commit_a);
+    assert_eq!(entry.tracking.kind, "commit");
+    assert_eq!(entry.tracking.value, entry.commit);
+    assert_eq!(git(&["rev-parse", "HEAD"], &target), entry.commit);
+}
+
+// ---------------------------------------------------------------------------
+// Regression: healthy + no lock + pinned tag must replace mismatched repo
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn install_repairs_healthy_repo_when_pinned_tag_differs() {
+    let dir = tempdir().unwrap();
+    let (bare, commit_a) = make_bare_repo(&dir.path().join("repo"));
+    push_tag(&bare, "v1.0.0", &commit_a);
+    let commit_b = push_commit(&bare, "second");
+
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let target = paths.plugin_dir("example.com/test/plugin");
+    clone_to_target(&bare, &target);
+    assert_eq!(git(&["rev-parse", "HEAD"], &target), commit_b);
+
+    let clone_url = format!("file://{}", bare.display());
+    let cfg = make_config_with_tracking(&clone_url, Tracking::Tag("v1.0.0".into()), None);
+
+    let mut lock = LockFile::new();
+    plugin::install(&cfg, &mut lock, &paths, None, false)
+        .await
+        .unwrap();
+
+    let entry = lock.plugins.get("example.com/test/plugin").unwrap();
+    assert_eq!(entry.commit, commit_a);
+    assert_eq!(entry.tracking.kind, "tag");
+    assert_eq!(entry.tracking.value, "v1.0.0");
+    assert_eq!(git(&["rev-parse", "HEAD"], &target), entry.commit);
 }

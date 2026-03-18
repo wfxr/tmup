@@ -89,6 +89,24 @@ pub async fn head_commit(repo: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Resolve any revision specifier to a commit hash without changing HEAD.
+pub async fn resolve_commit(repo: &Path, rev: &str) -> Result<String> {
+    let revspec = format!("{rev}^{{commit}}");
+    let output = Command::new("git")
+        .args(["rev-parse", &revspec])
+        .current_dir(repo)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .with_context(|| format!("failed to run git rev-parse {revspec}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git rev-parse {revspec} failed: {stderr}");
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 /// Resolve the remote tracking branch to a commit.
 pub async fn resolve_remote_branch(repo: &Path, branch: &str) -> Result<String> {
     let remote_ref = format!("origin/{branch}");
