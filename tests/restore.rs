@@ -323,11 +323,11 @@ async fn update_same_commit_noop_clears_failure_markers() {
 }
 
 // ---------------------------------------------------------------------------
-// Regression: healthy + no lock should adopt branch-tracked repos as-is
+// Regression: healthy + no lock should still run the full install path
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn install_adopts_healthy_branch_repo_without_lock() {
+async fn install_reinstalls_healthy_branch_repo_without_lock() {
     let dir = tempdir().unwrap();
     let (bare, _commit_a) = make_bare_repo(&dir.path().join("repo"));
     let commit_b = push_commit(&bare, "second");
@@ -340,7 +340,11 @@ async fn install_adopts_healthy_branch_repo_without_lock() {
     assert_eq!(git(&["rev-parse", "HEAD"], &target), commit_b);
 
     let clone_url = format!("file://{}", bare.display());
-    let cfg = make_config_with_tracking(&clone_url, Tracking::Branch("main".into()), None);
+    let cfg = make_config_with_tracking(
+        &clone_url,
+        Tracking::Branch("main".into()),
+        Some("touch built.marker"),
+    );
 
     let mut lock = LockFile::new();
     plugin::install(&cfg, &mut lock, &paths, None, false)
@@ -352,6 +356,10 @@ async fn install_adopts_healthy_branch_repo_without_lock() {
     assert_eq!(entry.tracking.kind, "branch");
     assert_eq!(entry.tracking.value, "main");
     assert_eq!(git(&["rev-parse", "HEAD"], &target), entry.commit);
+    assert!(
+        target.join("built.marker").exists(),
+        "install should run the build even when the repo is already present"
+    );
 }
 
 #[tokio::test]

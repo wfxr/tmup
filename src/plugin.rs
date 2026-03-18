@@ -48,22 +48,10 @@ pub async fn install(
 
         let target_dir = paths.plugin_dir(id);
         let health = planner::inspect_plugin_dir(&target_dir);
-        if let planner::RepoHealth::Healthy { ref commit } = health {
-            if lock.plugins.contains_key(id.as_str()) {
-                continue;
-            }
-            // Healthy but no lock entry — adopt current state when it is
-            // compatible with the config, otherwise fall through and repair it.
-            if let Some(record) =
-                tracking_record_for_adopt(&target_dir, &spec.tracking, commit).await?
-            {
-                lock.plugins.insert(id.clone(), LockEntry {
-                    source:   raw.clone(),
-                    tracking: record,
-                    commit:   commit.clone(),
-                });
-                continue;
-            }
+        if matches!(health, planner::RepoHealth::Healthy { .. })
+            && lock.plugins.contains_key(id.as_str())
+        {
+            continue;
         }
 
         // If Broken, remove the broken dir before proceeding
@@ -465,54 +453,6 @@ pub fn is_known_failure(
     let bh = build_command_hash(build_cmd);
     let key = FailureKey::new(plugin_id, commit, &bh);
     state::has_failure_marker(&paths.failures_root, &key)
-}
-
-/// Build a TrackingRecord for adopting an already-installed repo into the
-/// lockfile. Returns None when the installed revision is incompatible with the
-/// config and should be repaired instead of adopted.
-async fn tracking_record_for_adopt(
-    repo: &std::path::Path,
-    tracking: &Tracking,
-    current_commit: &str,
-) -> Result<Option<TrackingRecord>> {
-    match tracking {
-        Tracking::Branch(b) => match git::resolve_remote_branch(repo, b).await {
-            Ok(branch_commit) if branch_commit == current_commit => Ok(Some(TrackingRecord {
-                kind:  "branch".into(),
-                value: b.clone(),
-            })),
-            Ok(_) => Ok(None),
-            Err(_) => Ok(None),
-        },
-        Tracking::Tag(t) => match git::resolve_commit(repo, t).await {
-            Ok(tag_commit) if tag_commit == current_commit => Ok(Some(TrackingRecord {
-                kind:  "tag".into(),
-                value: t.clone(),
-            })),
-            Ok(_) => Ok(None),
-            Err(_) => Ok(None),
-        },
-        Tracking::Commit(c) =>
-            if c == current_commit {
-                Ok(Some(TrackingRecord {
-                    kind:  "commit".into(),
-                    value: c.clone(),
-                }))
-            } else {
-                Ok(None)
-            },
-        Tracking::DefaultBranch => match git::default_branch(repo).await {
-            Ok(branch) => match git::resolve_remote_branch(repo, &branch).await {
-                Ok(branch_commit) if branch_commit == current_commit => Ok(Some(TrackingRecord {
-                    kind:  "branch".into(),
-                    value: branch,
-                })),
-                Ok(_) => Ok(None),
-                Err(_) => Ok(None),
-            },
-            Err(_) => Ok(None),
-        },
-    }
 }
 
 async fn resolve_tracking(

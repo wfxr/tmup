@@ -2,6 +2,7 @@ use lazytmux::config::parse_config;
 
 #[test]
 fn parses_remote_and_local_plugins() {
+    let home = std::env::var("HOME").unwrap();
     let input = r#"
 options {
     auto-install #true
@@ -15,6 +16,12 @@ plugin "~/dev/my-plugin" local=#true name="my-plugin-dev"
     assert!(cfg.plugins[0].is_remote());
     assert!(cfg.plugins[1].is_local());
     assert_eq!(cfg.plugins[1].name, "my-plugin-dev");
+    match &cfg.plugins[1].source {
+        lazytmux::model::PluginSource::Local { path } => {
+            assert_eq!(path, &format!("{home}/dev/my-plugin"));
+        }
+        other => panic!("expected local plugin, got {other:?}"),
+    }
 }
 
 #[test]
@@ -122,12 +129,35 @@ fn rejects_wrong_type_build() {
 #[test]
 fn rejects_local_with_remote_style_path() {
     let err = parse_config(r#"plugin "user/repo" local=#true"#).unwrap_err();
-    assert!(err.to_string().contains("requires a local path"), "{err}");
+    assert!(
+        err.to_string().contains("must expand to an absolute path"),
+        "{err}"
+    );
 }
 
 #[test]
 fn accepts_local_with_valid_paths() {
     parse_config(r#"plugin "~/dev/my-plugin" local=#true"#).unwrap();
     parse_config(r#"plugin "/opt/plugins/foo" local=#true"#).unwrap();
-    parse_config(r#"plugin "./local-plugin" local=#true"#).unwrap();
+}
+
+#[test]
+fn expands_env_var_local_paths() {
+    let home = std::env::var("HOME").unwrap();
+    let cfg = parse_config(r#"plugin "$HOME/dev/my-plugin" local=#true"#).unwrap();
+    match &cfg.plugins[0].source {
+        lazytmux::model::PluginSource::Local { path } => {
+            assert_eq!(path, &format!("{home}/dev/my-plugin"));
+        }
+        other => panic!("expected local plugin, got {other:?}"),
+    }
+}
+
+#[test]
+fn rejects_relative_local_paths_after_expansion() {
+    let err = parse_config(r#"plugin "./local-plugin" local=#true"#).unwrap_err();
+    assert!(
+        err.to_string().contains("must expand to an absolute path"),
+        "{err}"
+    );
 }

@@ -159,10 +159,13 @@ plugin "~/dev/my-tmux-plugin" local=#true name="my-plugin-dev"
 | `branch` | string | — | Track a specific branch |
 | `tag` | string | — | Pin to a tag (update skips) |
 | `commit` | string | — | Pin to a commit (update skips) |
-| `local` | bool | `#false` | Treat source as a local path |
+| `local` | bool | `#false` | Treat source as a local path; after expansion it must be absolute |
 | `build` | string | — | Shell command to run after install/update |
 
 > `branch`, `tag`, and `commit` are mutually exclusive.
+>
+> Local paths support `~`, `$VAR`, and `${VAR}` expansion. After expansion, the
+> path must be absolute.
 
 ### Option mechanism
 

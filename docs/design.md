@@ -110,6 +110,8 @@ Local plugins are not cloned, not written to the lock file, and do not
 participate in `install` / `update` / `restore`.
 
 - Source must be a local path.
+- `~`, `$VAR`, and `${VAR}` are expanded before validation.
+- After expansion, the source must be an absolute path.
 - Loaded in-place by lazy.tmux.
 - `name` is for display only.
 - `clean` never removes local plugin sources.
@@ -208,7 +210,7 @@ Rules:
 
 1. Remote plugin IDs must be unique; duplicates cause an error.
 2. `branch`, `tag`, `commit` are mutually exclusive.
-3. `local=true` requires a local path source.
+3. `local=true` requires a path that expands to an absolute local path.
 4. Remote plugins always enter the lock file; local plugins never do.
 5. Local plugins cannot declare `branch` / `tag` / `commit`.
 
@@ -268,7 +270,7 @@ Key constraints:
 - Installs missing remote plugins without modifying already-installed versions.
 - With lock entry: installs the locked revision.
 - Without lock entry: resolves from config, installs, writes lock entry.
-- Already-installed plugins are skipped.
+- Already-installed plugins are skipped only when they are already tracked in the lock file.
 - Explicit `install` does **not** suppress known-failure retries (unlike
   `init`).
 - Returns a non-zero exit code if any plugin fails, after publishing
