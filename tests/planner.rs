@@ -213,6 +213,48 @@ fn pinned_tag_status() {
 }
 
 #[test]
+fn pinned_tag_with_drifted_head_shows_outdated() {
+    let config = make_config(r#"plugin "user/repo" tag="v1.0""#);
+    let mut lock = LockFile::new();
+    lock.plugins.insert(
+        "github.com/user/repo".into(),
+        LockEntry::tag("user/repo", "v1.0", "abc123"),
+    );
+    let health: HashMap<String, RepoHealth> =
+        [("github.com/user/repo".into(), RepoHealth::Healthy {
+            commit: "def456".into(),
+        })]
+        .into();
+    let failed_builds = HashSet::new();
+
+    let statuses = compute_statuses(&config, &lock, &health, &failed_builds);
+    assert_eq!(statuses[0].state, PluginState::Outdated);
+    assert_eq!(statuses[0].current_commit.as_deref(), Some("def456"));
+    assert_eq!(statuses[0].lock_commit.as_deref(), Some("abc123"));
+}
+
+#[test]
+fn pinned_commit_with_drifted_head_shows_outdated() {
+    let config = make_config(r#"plugin "user/repo" commit="abc123""#);
+    let mut lock = LockFile::new();
+    lock.plugins.insert(
+        "github.com/user/repo".into(),
+        LockEntry::commit("user/repo", "abc123"),
+    );
+    let health: HashMap<String, RepoHealth> =
+        [("github.com/user/repo".into(), RepoHealth::Healthy {
+            commit: "def456".into(),
+        })]
+        .into();
+    let failed_builds = HashSet::new();
+
+    let statuses = compute_statuses(&config, &lock, &health, &failed_builds);
+    assert_eq!(statuses[0].state, PluginState::Outdated);
+    assert_eq!(statuses[0].current_commit.as_deref(), Some("def456"));
+    assert_eq!(statuses[0].lock_commit.as_deref(), Some("abc123"));
+}
+
+#[test]
 fn outdated_state_when_installed_commit_differs_from_lock() {
     let config = make_config(r#"plugin "user/repo""#);
     let mut lock = LockFile::new();

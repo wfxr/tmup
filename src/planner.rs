@@ -145,19 +145,22 @@ pub fn compute_statuses(
                     RepoHealth::Missing => (PluginState::Missing, None),
                     RepoHealth::Broken => (PluginState::Broken, None),
                     RepoHealth::Healthy { commit } => {
-                        let st = match &spec.tracking {
-                            Tracking::Tag(_) => PluginState::PinnedTag,
-                            Tracking::Commit(_) => PluginState::PinnedCommit,
-                            _ =>
-                                if let Some(locked) = lock_entry.map(|e| e.commit.as_str()) {
-                                    if commit != locked {
-                                        PluginState::Outdated
-                                    } else {
-                                        PluginState::Installed
-                                    }
-                                } else {
-                                    PluginState::Installed
-                                },
+                        let st = if let Some(locked) = lock_entry.map(|e| e.commit.as_str()) {
+                            if commit != locked {
+                                PluginState::Outdated
+                            } else {
+                                match &spec.tracking {
+                                    Tracking::Tag(_) => PluginState::PinnedTag,
+                                    Tracking::Commit(_) => PluginState::PinnedCommit,
+                                    _ => PluginState::Installed,
+                                }
+                            }
+                        } else {
+                            match &spec.tracking {
+                                Tracking::Tag(_) => PluginState::PinnedTag,
+                                Tracking::Commit(_) => PluginState::PinnedCommit,
+                                _ => PluginState::Installed,
+                            }
                         };
                         (st, Some(commit.clone()))
                     }

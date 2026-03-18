@@ -74,6 +74,23 @@ fn push_commit(bare: &std::path::Path, message: &str) -> String {
     hash
 }
 
+fn push_branch_commit(bare: &std::path::Path, branch: &str, message: &str) -> String {
+    let tmp = bare.parent().unwrap().join(format!("_branch_{branch}_tmp"));
+    let _ = std::fs::remove_dir_all(&tmp);
+    git(
+        &["clone", bare.to_str().unwrap(), tmp.to_str().unwrap()],
+        bare.parent().unwrap(),
+    );
+    git(&["checkout", "-b", branch], &tmp);
+    std::fs::write(tmp.join(format!("{message}.txt")), message).unwrap();
+    git(&["add", "."], &tmp);
+    git(&["commit", "-m", message], &tmp);
+    git(&["push", "-u", "origin", branch], &tmp);
+    let hash = git(&["rev-parse", "HEAD"], &tmp);
+    std::fs::remove_dir_all(&tmp).unwrap();
+    hash
+}
+
 /// Reset the bare repo's main branch to a given commit.
 fn reset_bare(bare: &std::path::Path, commit: &str) {
     git(&["update-ref", "refs/heads/main", commit], bare);
@@ -335,6 +352,64 @@ async fn install_adopts_healthy_branch_repo_without_lock() {
     assert_eq!(entry.tracking.kind, "branch");
     assert_eq!(entry.tracking.value, "main");
     assert_eq!(git(&["rev-parse", "HEAD"], &target), entry.commit);
+}
+
+#[tokio::test]
+async fn install_repairs_healthy_repo_when_branch_head_is_on_other_branch() {
+    let dir = tempdir().unwrap();
+    let (bare, main_commit) = make_bare_repo(&dir.path().join("repo"));
+    let feature_commit = push_branch_commit(&bare, "feature", "feature");
+
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let target = paths.plugin_dir("example.com/test/plugin");
+    clone_to_target(&bare, &target);
+    git(&["checkout", &feature_commit], &target);
+    assert_eq!(git(&["rev-parse", "HEAD"], &target), feature_commit);
+
+    let clone_url = format!("file://{}", bare.display());
+    let cfg = make_config_with_tracking(&clone_url, Tracking::Branch("main".into()), None);
+
+    let mut lock = LockFile::new();
+    plugin::install(&cfg, &mut lock, &paths, None, false)
+        .await
+        .unwrap();
+
+    let entry = lock.plugins.get("example.com/test/plugin").unwrap();
+    assert_eq!(entry.commit, main_commit);
+    assert_eq!(entry.tracking.kind, "branch");
+    assert_eq!(entry.tracking.value, "main");
+    assert_eq!(git(&["rev-parse", "HEAD"], &target), main_commit);
+}
+
+#[tokio::test]
+async fn install_repairs_healthy_repo_when_default_branch_head_is_on_other_branch() {
+    let dir = tempdir().unwrap();
+    let (bare, main_commit) = make_bare_repo(&dir.path().join("repo"));
+    let feature_commit = push_branch_commit(&bare, "feature", "feature");
+
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let target = paths.plugin_dir("example.com/test/plugin");
+    clone_to_target(&bare, &target);
+    git(&["checkout", &feature_commit], &target);
+    assert_eq!(git(&["rev-parse", "HEAD"], &target), feature_commit);
+
+    let clone_url = format!("file://{}", bare.display());
+    let cfg = make_config(&clone_url, None);
+
+    let mut lock = LockFile::new();
+    plugin::install(&cfg, &mut lock, &paths, None, false)
+        .await
+        .unwrap();
+
+    let entry = lock.plugins.get("example.com/test/plugin").unwrap();
+    assert_eq!(entry.commit, main_commit);
+    assert_eq!(entry.tracking.kind, "branch");
+    assert_eq!(entry.tracking.value, "main");
+    assert_eq!(git(&["rev-parse", "HEAD"], &target), main_commit);
 }
 
 // ---------------------------------------------------------------------------
