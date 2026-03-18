@@ -312,6 +312,9 @@ pub async fn restore(
 
         // Already at the correct commit — nothing to do
         if !revision_changed && target_dir.exists() {
+            // A no-op restore is still a successful operation — clear any
+            // stale failure markers so `list` doesn't show build-failed.
+            state::clear_failure_markers(&paths.failures_root, id)?;
             continue;
         }
 

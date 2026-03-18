@@ -75,9 +75,12 @@ fn resolve_config_path(paths: &Paths) -> Result<std::path::PathBuf> {
     // 1. $LAZY_TMUX_CONFIG
     if let Ok(p) = std::env::var("LAZY_TMUX_CONFIG") {
         let path = std::path::PathBuf::from(p);
-        if path.exists() {
-            return Ok(path);
-        }
+        anyhow::ensure!(
+            path.exists(),
+            "LAZY_TMUX_CONFIG={} does not exist",
+            path.display()
+        );
+        return Ok(path);
     }
     // 2. Default config path
     if paths.config_path.exists() {
