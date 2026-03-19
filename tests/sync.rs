@@ -1,11 +1,10 @@
 mod utils;
-use utils::*;
-
 use lazytmux::lockfile::{LockFile, config_fingerprint, remote_plugin_config_hash};
 use lazytmux::model::{Config, Options, PluginSource, PluginSpec, Tracking};
 use lazytmux::state::{Paths, build_command_hash};
 use lazytmux::sync::{self, SyncPolicy};
 use tempfile::tempdir;
+use utils::*;
 
 fn make_plugin(
     raw: &str,

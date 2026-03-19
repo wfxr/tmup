@@ -255,9 +255,12 @@ impl OperationLock {
         let file = Self::open_lock_file(lock_path)?;
         let mut lock = fd_lock::RwLock::new(file);
         let guard = lock.write().map_err(|e| anyhow::anyhow!("failed to acquire lock: {e}"))?;
-        // Forget the guard so LOCK_UN is not called on drop.
-        // The OS-level flock remains held via the fd inside `lock`.
-        // Dropping `lock` later closes the fd and releases the flock.
+        // Safety rationale: `fd_lock::RwLockWriteGuard` calls `LOCK_UN` on
+        // drop, which would release the flock immediately.  We want the lock
+        // held until `OperationLockGuard` (which owns the `RwLock<File>`) is
+        // dropped — at that point the fd is closed and the OS releases the
+        // flock.  `forget` is safe here because `RwLockWriteGuard` borrows the
+        // same fd owned by `RwLock`; no separate resources are leaked.
         std::mem::forget(guard);
         Ok(OperationLockGuard { _lock: lock })
     }
@@ -270,6 +273,7 @@ impl OperationLock {
         let acquired = {
             let result = lock.try_write();
             if let Ok(guard) = result {
+                // See `acquire` for why `forget` is correct here.
                 std::mem::forget(guard);
                 true
             } else {

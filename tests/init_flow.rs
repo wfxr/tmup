@@ -1,6 +1,4 @@
 mod utils;
-use utils::*;
-
 use std::collections::{HashMap, HashSet};
 
 use lazytmux::config::parse_config;
@@ -12,6 +10,7 @@ use lazytmux::planner::RepoHealth;
 use lazytmux::state::{OperationLock, Paths, build_command_hash};
 use lazytmux::{planner, sync};
 use tempfile::tempdir;
+use utils::*;
 
 fn make_plugin(clone_url: &str, tracking: Tracking, build: Option<&str>) -> PluginSpec {
     PluginSpec {

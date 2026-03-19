@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::path::Path;
 
 use anyhow::{Context, Result};
 
@@ -84,24 +85,16 @@ pub async fn install(
             && let Some(build_cmd) = &spec.build
             && is_known_failure(paths, id, &commit, build_cmd)?
         {
-            eprintln!(
-                "lazytmux: skipping {id} (known build failure at {})",
-                &commit[..7.min(commit.len())]
-            );
+            eprintln!("lazytmux: skipping {id} (known build failure at {})", short_hash(&commit));
             let _ = std::fs::remove_dir_all(&staging);
             continue;
         }
 
-        // Publish
-        let result = if target_dir.exists() {
-            let backup = paths.backup_dir(id);
-            git::publish_replace(&staging, &target_dir, &backup, spec.build.as_deref())
-        } else {
-            git::publish_fresh_install(&staging, &target_dir, spec.build.as_deref())
-        };
-        match result {
+        match publish_and_track(paths, id, &commit, &staging, &target_dir, spec.build.as_deref()) {
             Ok(()) => {
-                // Update lock
+                // Lock entry source stores the canonical remote id (e.g.
+                // "github.com/user/repo"), not the raw config source string,
+                // so that equivalent spellings produce identical lockfile entries.
                 lock.plugins.insert(
                     id.clone(),
                     LockEntry {
@@ -111,25 +104,8 @@ pub async fn install(
                         config_hash,
                     },
                 );
-                // Clear failure markers on success
-                state::clear_failure_markers(&paths.failures_root, id)?;
             }
             Err(e) => {
-                // Record failure marker
-                if let Some(build_cmd) = &spec.build {
-                    let bh = build_command_hash(build_cmd);
-                    let marker = FailureMarker {
-                        plugin_id: id.clone(),
-                        commit: commit.clone(),
-                        build_hash: bh,
-                        build_command: build_cmd.clone(),
-                        failed_at: timestamp_now(),
-                        stderr_summary: format!("{e}"),
-                    };
-                    let _ = state::write_failure_marker(&paths.failures_root, &marker);
-                }
-                // Clean up staging if it still exists
-                let _ = std::fs::remove_dir_all(&staging);
                 let msg = format!("{id}: {e}");
                 eprintln!("failed to install {msg}");
                 failures.push(msg);
@@ -232,18 +208,14 @@ pub async fn update(
             continue;
         }
 
-        // Revision changed or target missing — always run build if declared.
-        let build = spec.build.as_deref();
-
-        // Publish
-        let result = if target_dir.exists() {
-            let backup = paths.backup_dir(id);
-            git::publish_replace(&staging, &target_dir, &backup, build)
-        } else {
-            git::publish_fresh_install(&staging, &target_dir, build)
-        };
-
-        match result {
+        match publish_and_track(
+            paths,
+            id,
+            &new_commit,
+            &staging,
+            &target_dir,
+            spec.build.as_deref(),
+        ) {
             Ok(()) => {
                 lock.plugins.insert(
                     id.clone(),
@@ -254,22 +226,8 @@ pub async fn update(
                         config_hash,
                     },
                 );
-                state::clear_failure_markers(&paths.failures_root, id)?;
             }
             Err(e) => {
-                if let Some(build_cmd) = &spec.build {
-                    let bh = build_command_hash(build_cmd);
-                    let marker = FailureMarker {
-                        plugin_id: id.clone(),
-                        commit: new_commit.clone(),
-                        build_hash: bh,
-                        build_command: build_cmd.clone(),
-                        failed_at: timestamp_now(),
-                        stderr_summary: format!("{e}"),
-                    };
-                    let _ = state::write_failure_marker(&paths.failures_root, &marker);
-                }
-                let _ = std::fs::remove_dir_all(&staging);
                 let msg = format!("{id}: {e}");
                 eprintln!("failed to update {msg}");
                 failures.push(msg);
@@ -349,38 +307,17 @@ pub async fn restore(
             continue;
         }
 
-        // Revision changed (or missing), so run build if declared
-        let build = spec.build.as_deref();
-
-        let result = if target_dir.exists() {
-            let backup = paths.backup_dir(id);
-            git::publish_replace(&staging, &target_dir, &backup, build)
-        } else {
-            git::publish_fresh_install(&staging, &target_dir, build)
-        };
-
-        match result {
-            Ok(()) => {
-                state::clear_failure_markers(&paths.failures_root, id)?;
-            }
-            Err(e) => {
-                if let Some(build_cmd) = &spec.build {
-                    let bh = build_command_hash(build_cmd);
-                    let marker = FailureMarker {
-                        plugin_id: id.clone(),
-                        commit: entry.commit.clone(),
-                        build_hash: bh,
-                        build_command: build_cmd.clone(),
-                        failed_at: timestamp_now(),
-                        stderr_summary: format!("{e}"),
-                    };
-                    let _ = state::write_failure_marker(&paths.failures_root, &marker);
-                }
-                let _ = std::fs::remove_dir_all(&staging);
-                let msg = format!("{id}: {e}");
-                eprintln!("failed to restore {msg}");
-                failures.push(msg);
-            }
+        if let Err(e) = publish_and_track(
+            paths,
+            id,
+            &entry.commit,
+            &staging,
+            &target_dir,
+            spec.build.as_deref(),
+        ) {
+            let msg = format!("{id}: {e}");
+            eprintln!("failed to restore {msg}");
+            failures.push(msg);
         }
     }
 
@@ -469,6 +406,55 @@ pub(crate) async fn resolve_tracking(
             Ok((commit, TrackingRecord { kind: "default-branch".into(), value: branch }))
         }
     }
+}
+
+/// Publish a plugin from staging to its target directory, tracking success/failure.
+///
+/// On success: clears failure markers for the plugin.
+/// On failure: records a failure marker (if a build command is configured),
+/// cleans up the staging directory, and returns the error.
+fn publish_and_track(
+    paths: &Paths,
+    id: &str,
+    commit: &str,
+    staging: &Path,
+    target: &Path,
+    build: Option<&str>,
+) -> Result<()> {
+    let result = if target.exists() {
+        let backup = paths.backup_dir(id);
+        git::publish_replace(staging, target, &backup, build)
+    } else {
+        git::publish_fresh_install(staging, target, build)
+    };
+
+    match result {
+        Ok(()) => {
+            state::clear_failure_markers(&paths.failures_root, id)?;
+            Ok(())
+        }
+        Err(e) => {
+            if let Some(build_cmd) = build {
+                let bh = build_command_hash(build_cmd);
+                let marker = FailureMarker {
+                    plugin_id: id.to_string(),
+                    commit: commit.to_string(),
+                    build_hash: bh,
+                    build_command: build_cmd.to_string(),
+                    failed_at: timestamp_now(),
+                    stderr_summary: format!("{e}"),
+                };
+                let _ = state::write_failure_marker(&paths.failures_root, &marker);
+            }
+            let _ = std::fs::remove_dir_all(staging);
+            Err(e)
+        }
+    }
+}
+
+/// Return the first 7 characters of a commit hash for display.
+fn short_hash(hash: &str) -> &str {
+    &hash[..7.min(hash.len())]
 }
 
 fn cleanup_empty_parents(path: &std::path::Path, stop_at: &std::path::Path) {

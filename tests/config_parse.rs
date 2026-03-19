@@ -28,13 +28,11 @@ plugin "~/dev/my-plugin" local=#true name="my-plugin-dev"
 fn parses_options() {
     let input = r#"
 options {
-    concurrency 4
     auto-install #false
     auto-clean #true
 }
     "#;
     let cfg = parse_config(input).unwrap();
-    assert_eq!(cfg.options.concurrency, 4);
     assert!(!cfg.options.auto_install);
     assert!(cfg.options.auto_clean);
 }
@@ -90,7 +88,6 @@ fn parses_build_property() {
 #[test]
 fn defaults_are_applied() {
     let cfg = parse_config("").unwrap();
-    assert_eq!(cfg.options.concurrency, 8);
     assert!(cfg.options.auto_install);
     assert!(!cfg.options.auto_clean);
     assert!(cfg.plugins.is_empty());
@@ -112,6 +109,28 @@ fn rejects_wrong_type_local() {
 fn rejects_wrong_type_build() {
     let err = parse_config(r#"plugin "user/repo" build=42"#).unwrap_err();
     assert!(err.to_string().contains("build must be a string"), "{err}");
+}
+
+#[test]
+fn rejects_dual_build_specification() {
+    let input = r#"
+plugin "tmux-plugins/tmux-resurrect" build="make install" {
+    build "cargo build --release"
+}
+    "#;
+    let err = parse_config(input).unwrap_err();
+    assert!(err.to_string().contains("both as property and child node"), "{err}");
+}
+
+#[test]
+fn parses_build_as_child_node() {
+    let input = r#"
+plugin "tmux-plugins/tmux-resurrect" {
+    build "make install"
+}
+    "#;
+    let cfg = parse_config(input).unwrap();
+    assert_eq!(cfg.plugins[0].build.as_deref(), Some("make install"));
 }
 
 #[test]

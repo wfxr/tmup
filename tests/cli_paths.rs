@@ -1,9 +1,8 @@
 mod utils;
-use utils::*;
-
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::tempdir;
+use utils::*;
 
 fn make_remote_repo(root: &std::path::Path) -> std::path::PathBuf {
     let work = root.join("work");

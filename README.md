@@ -116,7 +116,6 @@ example, if `LAZY_TMUX_CONFIG=/path/to/custom.kdl`, lazytmux reads and writes
 
 ```kdl
 options {
-    concurrency 8
     auto-install #true
     auto-clean #false
 }
@@ -153,7 +152,6 @@ plugin "~/dev/my-tmux-plugin" local=#true name="my-plugin-dev"
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `concurrency` | int | `8` | Max parallel git operations (planned, currently serial) |
 | `auto-install` | bool | `#true` | Install missing plugins during `init` |
 | `auto-clean` | bool | `#false` | Remove undeclared managed remote repos during `init` |
 
@@ -324,6 +322,12 @@ This boundary is intentional, not an oversight.
 3. Restart tmux. lazytmux will clone all plugins fresh and generate the lock snapshot.
 4. Commit `lazy.kdl` and `lazylock.json` to your dotfiles repo.
 5. Remove the old `~/.tmux/plugins/` directory when satisfied.
+
+## Roadmap
+
+- [ ] **Concurrent operations** — parallel git clone/fetch across plugins (`concurrency` config option)
+- [ ] **Incremental fetch** — reuse healthy local repos (fetch + resolve) instead of fresh clone on every sync/install
+- [ ] **`migrate` command** — auto-generate `lazy.kdl` from TPM `set -g @plugin` declarations
 
 ## License
 
