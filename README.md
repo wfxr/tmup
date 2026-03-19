@@ -153,7 +153,7 @@ plugin "~/dev/my-tmux-plugin" local=#true name="my-plugin-dev"
 |--------|------|---------|-------------|
 | `concurrency` | int | `8` | Max parallel git operations (planned, currently serial) |
 | `auto-install` | bool | `#true` | Install missing plugins during `init` |
-| `auto-clean` | bool | `#false` | Remove undeclared plugins during `init` |
+| `auto-clean` | bool | `#false` | Remove undeclared managed remote repos during `init` |
 
 ### Plugin properties
 
@@ -193,7 +193,7 @@ lazytmux sync [id]          # Reconcile config into lazylock.json and plugin dir
 lazytmux install [id]       # Install missing remote plugins
 lazytmux update [id]        # Advance unchanged floating selectors after sync
 lazytmux restore [id]       # Restore to lock-recorded commits
-lazytmux clean              # Remove undeclared managed plugins
+lazytmux clean              # Remove undeclared managed remote repos
 lazytmux list               # Print plugin status table
 lazytmux migrate            # Migrate from TPM declarations (planned)
 ```
@@ -222,7 +222,9 @@ and applies only the changed plugin directories.
 
 - Changing `branch`, `tag`, `commit`, source URL, or `build` is handled by `sync`.
 - Removed remote plugins drop their lock entries immediately.
-- `sync` does not delete undeclared plugin directories; `clean` handles that.
+- `sync` does not delete undeclared plugin directories; `clean` / `auto-clean`
+  only remove undeclared remote directories that still look like
+  lazytmux-managed git repos.
 - Mutating commands run this same sync engine first and abort if it fails.
 
 ### `update` — advance floating selectors
@@ -281,9 +283,11 @@ Default layout when using `~/.config/tmux/lazy.kdl`:
 ```
 
 Managed scope note: lazytmux only reconciles and cleans remote plugin
-directories it manages under `~/.local/share/lazytmux/plugins/`. Manually
-cloned repos, ad-hoc edits inside that tree, and symlink-based layouts there
-are outside the current support contract.
+directories it manages under `~/.local/share/lazytmux/plugins/`. Cleanup is
+defined only for undeclared remote directories that it still recognizes as
+managed git repos (currently, paths in that tree that still contain a `.git`
+directory). Manually cloned repos, ad-hoc edits inside that tree, and
+symlink-based layouts there are outside the current support contract.
 
 Plugin directories use the full `host/owner/repo` path (like Go modules) to
 avoid basename collisions between `user1/tmux-foo` and `user2/tmux-foo`.
