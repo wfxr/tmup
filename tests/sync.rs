@@ -438,3 +438,48 @@ async fn sync_rebuilds_same_commit_when_only_build_changes_and_rewrites_markers(
     );
     assert_ne!(lock.plugins[plugin_id].config_hash, previous_hash);
 }
+
+#[tokio::test]
+async fn sync_rebuilds_when_build_changes_and_tracking_changes_to_same_commit() {
+    let dir = tempdir().unwrap();
+    let (bare, commit) = make_bare_repo(&dir.path().join("repo"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let plugin_id = "example.com/test/plugin";
+
+    let cfg_initial = make_config(vec![make_plugin(
+        "test/plugin",
+        plugin_id,
+        &clone_url,
+        Tracking::DefaultBranch,
+        Some("touch built-v1.marker"),
+    )]);
+    let mut lock = LockFile::new();
+    sync::run(&cfg_initial, &mut lock, &paths, None, SyncPolicy::SYNC)
+        .await
+        .unwrap();
+
+    let target = paths.plugin_dir(plugin_id);
+    assert_eq!(plugin_head(&paths, plugin_id), commit);
+    assert!(target.join("built-v1.marker").exists());
+
+    let cfg_changed = make_config(vec![make_plugin(
+        "test/plugin",
+        plugin_id,
+        &clone_url,
+        Tracking::Branch("main".into()),
+        Some("touch built-v2.marker"),
+    )]);
+    sync::run(&cfg_changed, &mut lock, &paths, None, SyncPolicy::SYNC)
+        .await
+        .unwrap();
+
+    let entry = lock.plugins.get(plugin_id).unwrap();
+    assert_eq!(entry.commit, commit);
+    assert_eq!(entry.tracking.kind, "branch");
+    assert_eq!(entry.tracking.value, "main");
+    assert!(!target.join("built-v1.marker").exists());
+    assert!(target.join("built-v2.marker").exists());
+}
