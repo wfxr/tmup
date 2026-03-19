@@ -182,7 +182,10 @@ fn missing_plugin_with_build_failure_shows_missing_and_failed() {
 
 #[test]
 fn local_plugin_status() {
-    let config = make_config(r#"plugin "~/dev/my-plugin" local=#true"#);
+    let dir = tempdir().unwrap();
+    let plugin_dir = dir.path().join("my-plugin");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    let config = make_config(&format!(r#"plugin "{}" local=#true"#, plugin_dir.display()));
     let lock = LockFile::new();
     let health = HashMap::new();
     let failed_builds = HashSet::new();
@@ -190,6 +193,43 @@ fn local_plugin_status() {
     let statuses = compute_statuses(&config, &lock, &health, &failed_builds);
     assert_eq!(statuses.len(), 1);
     assert_eq!(statuses[0].state, PluginState::Local);
+    assert_eq!(statuses[0].last_result, LastResult::Ok);
+    assert_eq!(statuses[0].kind, "local");
+}
+
+#[test]
+fn missing_local_plugin_shows_missing_and_none() {
+    let dir = tempdir().unwrap();
+    let plugin_dir = dir.path().join("missing-plugin");
+    let config = make_config(&format!(r#"plugin "{}" local=#true"#, plugin_dir.display()));
+    let lock = LockFile::new();
+    let health = HashMap::new();
+    let failed_builds = HashSet::new();
+
+    let statuses = compute_statuses(&config, &lock, &health, &failed_builds);
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].state, PluginState::Missing);
+    assert_eq!(statuses[0].last_result, LastResult::None);
+    assert_eq!(statuses[0].kind, "local");
+}
+
+#[test]
+fn local_plugin_file_path_shows_broken_and_none() {
+    let dir = tempdir().unwrap();
+    let plugin_file = dir.path().join("plugin.tmux");
+    std::fs::write(&plugin_file, "#!/bin/sh\n").unwrap();
+    let config = make_config(&format!(
+        r#"plugin "{}" local=#true"#,
+        plugin_file.display()
+    ));
+    let lock = LockFile::new();
+    let health = HashMap::new();
+    let failed_builds = HashSet::new();
+
+    let statuses = compute_statuses(&config, &lock, &health, &failed_builds);
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].state, PluginState::Broken);
+    assert_eq!(statuses[0].last_result, LastResult::None);
     assert_eq!(statuses[0].kind, "local");
 }
 
@@ -419,6 +459,25 @@ fn init_plans_install_for_healthy_plugin_without_lock() {
     let plan = plan.expect("expected WritePlan — Healthy+no-lock needs install");
     assert_eq!(plan.to_install, vec!["github.com/user/repo"]);
     assert!(plan.to_restore.is_empty());
+}
+
+#[test]
+fn init_does_not_install_healthy_unlocked_plugin_when_auto_install_disabled() {
+    let config = make_config(
+        r#"
+options { auto-install #false }
+plugin "user/repo"
+    "#,
+    );
+    let lock = LockFile::new();
+    let health: HashMap<String, RepoHealth> =
+        [("github.com/user/repo".into(), RepoHealth::Healthy {
+            commit: "abc123".into(),
+        })]
+        .into();
+
+    let plan = plan_init(&config, &lock, &health, &HashSet::new());
+    assert!(plan.is_none());
 }
 
 #[test]

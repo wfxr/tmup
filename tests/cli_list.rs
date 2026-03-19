@@ -120,3 +120,36 @@ fn list_does_not_mutate_stale_lockfile() {
 
     assert_eq!(std::fs::read_to_string(&lock_path).unwrap(), original);
 }
+
+#[test]
+fn list_marks_missing_local_plugin_as_missing() {
+    let dir = tempdir().unwrap();
+    let config_home = dir.path().join("config");
+    let config_dir = config_home.join("tmux");
+    let data_home = dir.path().join("data");
+    let state_home = dir.path().join("state");
+    std::fs::create_dir_all(&config_dir).unwrap();
+
+    let missing_local = dir.path().join("missing-plugin");
+    let config_path = config_dir.join("lazy.kdl");
+    std::fs::write(
+        &config_path,
+        format!(r#"plugin "{}" local=#true"#, missing_local.display()),
+    )
+    .unwrap();
+
+    Command::cargo_bin("lazytmux")
+        .unwrap()
+        .arg("list")
+        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_DATA_HOME", &data_home)
+        .env("XDG_STATE_HOME", &state_home)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            missing_local.to_string_lossy().as_ref(),
+        ))
+        .stdout(predicate::str::contains("missing"))
+        .stdout(predicate::str::contains("none"));
+}
