@@ -1,27 +1,8 @@
+mod utils;
+use utils::*;
+
 use assert_cmd::Command;
 use tempfile::tempdir;
-
-fn git(args: &[&str], dir: &std::path::Path) -> String {
-    let out = std::process::Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("HOME", dir)
-        .env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "test@test")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "test@test")
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git {:?} failed: {}",
-        args,
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
 
 fn make_remote_repo(root: &std::path::Path) -> std::path::PathBuf {
     let work = root.join("work");
@@ -35,15 +16,7 @@ fn make_remote_repo(root: &std::path::Path) -> std::path::PathBuf {
     let bare_parent = root.join("remotes/example.com/test");
     std::fs::create_dir_all(&bare_parent).unwrap();
     let bare = bare_parent.join("plugin.git");
-    git(
-        &[
-            "clone",
-            "--bare",
-            work.to_str().unwrap(),
-            bare.to_str().unwrap(),
-        ],
-        root,
-    );
+    git(&["clone", "--bare", work.to_str().unwrap(), bare.to_str().unwrap()], root);
     bare
 }
 
@@ -101,11 +74,7 @@ fn install_target_ignores_unrelated_sync_failures() {
         .assert()
         .success();
 
-    assert!(
-        dir.path()
-            .join("data/lazytmux/plugins/example.com/test/plugin/init.tmux")
-            .exists()
-    );
+    assert!(dir.path().join("data/lazytmux/plugins/example.com/test/plugin/init.tmux").exists());
 
     let lock = std::fs::read_to_string(dir.path().join("config/tmux/lazylock.json")).unwrap();
     assert!(lock.contains("example.com/test/plugin"));

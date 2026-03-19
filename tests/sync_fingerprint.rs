@@ -1,7 +1,5 @@
-use lazytmux::{
-    config::parse_config,
-    lockfile::{config_fingerprint, remote_plugin_config_hash},
-};
+use lazytmux::config::parse_config;
+use lazytmux::lockfile::{config_fingerprint, remote_plugin_config_hash};
 
 #[test]
 fn default_branch_hash_uses_declared_selector_semantics() {

@@ -1,28 +1,9 @@
+mod utils;
+use utils::*;
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::tempdir;
-
-fn git(args: &[&str], dir: &std::path::Path) -> String {
-    let out = std::process::Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("HOME", dir)
-        .env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "test@test")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "test@test")
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git {:?} failed: {}",
-        args,
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
 
 fn make_remote_repo(root: &std::path::Path) -> std::path::PathBuf {
     let work = root.join("work");
@@ -36,15 +17,7 @@ fn make_remote_repo(root: &std::path::Path) -> std::path::PathBuf {
     let bare_parent = root.join("remotes/example.com/test");
     std::fs::create_dir_all(&bare_parent).unwrap();
     let bare = bare_parent.join("plugin.git");
-    git(
-        &[
-            "clone",
-            "--bare",
-            work.to_str().unwrap(),
-            bare.to_str().unwrap(),
-        ],
-        root,
-    );
+    git(&["clone", "--bare", work.to_str().unwrap(), bare.to_str().unwrap()], root);
     bare
 }
 
@@ -86,11 +59,7 @@ fn list_reads_lockfile_next_to_override_config() {
 
     let config_path = config_dir.join("custom.kdl");
     std::fs::write(&config_path, r#"plugin "user/repo""#).unwrap();
-    std::fs::write(
-        config_dir.join("lazylock.json"),
-        r#"{"version":2,"plugins":{}}"#,
-    )
-    .unwrap();
+    std::fs::write(config_dir.join("lazylock.json"), r#"{"version":2,"plugins":{}}"#).unwrap();
     std::fs::write(xdg_config_dir.join("lazylock.json"), "not-json").unwrap();
 
     cargo_cmd(dir.path(), &config_path, &gitconfig)
@@ -109,27 +78,14 @@ fn sync_writes_lockfile_next_to_override_config() {
     std::fs::create_dir_all(&config_dir).unwrap();
 
     let config_path = config_dir.join("custom.kdl");
-    std::fs::write(
-        &config_path,
-        r#"plugin "https://example.com/test/plugin.git""#,
-    )
-    .unwrap();
+    std::fs::write(&config_path, r#"plugin "https://example.com/test/plugin.git""#).unwrap();
 
-    cargo_cmd(dir.path(), &config_path, &gitconfig)
-        .arg("sync")
-        .assert()
-        .success();
+    cargo_cmd(dir.path(), &config_path, &gitconfig).arg("sync").assert().success();
 
     let sibling_lock = config_dir.join("lazylock.json");
     let default_lock = dir.path().join("xdg-config/tmux/lazylock.json");
-    assert!(
-        sibling_lock.exists(),
-        "expected sibling lockfile to be written"
-    );
-    assert!(
-        !default_lock.exists(),
-        "expected default XDG lockfile to remain untouched"
-    );
+    assert!(sibling_lock.exists(), "expected sibling lockfile to be written");
+    assert!(!default_lock.exists(), "expected default XDG lockfile to remain untouched");
 
     let content = std::fs::read_to_string(sibling_lock).unwrap();
     assert!(content.contains("example.com/test/plugin"));

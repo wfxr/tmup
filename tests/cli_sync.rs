@@ -28,11 +28,8 @@ fn sync_errors_on_local_plugin_target() {
     let config_dir = dir.path().join("config/tmux");
     std::fs::create_dir_all(&config_dir).unwrap();
     let config_path = config_dir.join("lazy.kdl");
-    std::fs::write(
-        &config_path,
-        r#"plugin "/tmp/local-plugin" local=#true name="local-plugin""#,
-    )
-    .unwrap();
+    std::fs::write(&config_path, r#"plugin "/tmp/local-plugin" local=#true name="local-plugin""#)
+        .unwrap();
 
     Command::cargo_bin("lazytmux")
         .unwrap()

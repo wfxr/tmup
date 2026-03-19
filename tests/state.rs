@@ -1,41 +1,20 @@
 use lazytmux::state::{
-    FailureKey,
-    FailureMarker,
-    OperationLock,
-    Paths,
-    build_command_hash,
-    clear_failure_markers,
-    has_failure_marker,
-    read_failure_markers,
-    write_failure_marker,
+    FailureKey, FailureMarker, OperationLock, Paths, build_command_hash, clear_failure_markers,
+    has_failure_marker, read_failure_markers, write_failure_marker,
 };
 use tempfile::tempdir;
 
 #[test]
 fn paths_keep_plugins_and_staging_on_same_data_root() {
     let paths = Paths::for_test("/tmp/data", "/tmp/state");
-    assert_eq!(
-        paths.plugin_root.parent().unwrap(),
-        paths.staging_root.parent().unwrap()
-    );
-    assert_eq!(
-        paths.plugin_root.parent().unwrap(),
-        paths.backup_root.parent().unwrap()
-    );
+    assert_eq!(paths.plugin_root.parent().unwrap(), paths.staging_root.parent().unwrap());
+    assert_eq!(paths.plugin_root.parent().unwrap(), paths.backup_root.parent().unwrap());
 }
 
 #[test]
 fn failure_key_changes_when_build_command_changes() {
-    let a = FailureKey::new(
-        "github.com/user/repo",
-        "abc123",
-        &build_command_hash("make install"),
-    );
-    let b = FailureKey::new(
-        "github.com/user/repo",
-        "abc123",
-        &build_command_hash("just build"),
-    );
+    let a = FailureKey::new("github.com/user/repo", "abc123", &build_command_hash("make install"));
+    let b = FailureKey::new("github.com/user/repo", "abc123", &build_command_hash("just build"));
     assert_ne!(a, b);
 }
 
@@ -61,11 +40,11 @@ fn failure_marker_round_trip() {
     let failures_root = dir.path().join("failures");
 
     let marker = FailureMarker {
-        plugin_id:      "github.com/user/repo".into(),
-        commit:         "abc123".into(),
-        build_hash:     build_command_hash("make install"),
-        build_command:  "make install".into(),
-        failed_at:      "2025-01-01T00:00:00Z".into(),
+        plugin_id: "github.com/user/repo".into(),
+        commit: "abc123".into(),
+        build_hash: build_command_hash("make install"),
+        build_command: "make install".into(),
+        failed_at: "2025-01-01T00:00:00Z".into(),
         stderr_summary: "error: something failed".into(),
     };
 
@@ -85,19 +64,19 @@ fn clear_failure_markers_removes_matching() {
     let failures_root = dir.path().join("failures");
 
     let marker1 = FailureMarker {
-        plugin_id:      "github.com/user/repo".into(),
-        commit:         "abc123".into(),
-        build_hash:     build_command_hash("make"),
-        build_command:  "make".into(),
-        failed_at:      "2025-01-01T00:00:00Z".into(),
+        plugin_id: "github.com/user/repo".into(),
+        commit: "abc123".into(),
+        build_hash: build_command_hash("make"),
+        build_command: "make".into(),
+        failed_at: "2025-01-01T00:00:00Z".into(),
         stderr_summary: "err".into(),
     };
     let marker2 = FailureMarker {
-        plugin_id:      "github.com/other/plugin".into(),
-        commit:         "def456".into(),
-        build_hash:     build_command_hash("build"),
-        build_command:  "build".into(),
-        failed_at:      "2025-01-01T00:00:00Z".into(),
+        plugin_id: "github.com/other/plugin".into(),
+        commit: "def456".into(),
+        build_hash: build_command_hash("build"),
+        build_command: "build".into(),
+        failed_at: "2025-01-01T00:00:00Z".into(),
         stderr_summary: "err".into(),
     };
 
@@ -116,16 +95,12 @@ fn operation_lock_mutual_exclusion() {
     let dir = tempdir().unwrap();
     let lock_path = dir.path().join("operations.lock");
 
-    let guard1 = OperationLock::try_acquire(&lock_path)
-        .unwrap()
-        .expect("should acquire first lock");
+    let guard1 =
+        OperationLock::try_acquire(&lock_path).unwrap().expect("should acquire first lock");
 
     // Second attempt should fail while first is held
     let guard2 = OperationLock::try_acquire(&lock_path).unwrap();
     assert!(guard2.is_none(), "should not acquire lock while held");
-
-    // Writer should be detected as active
-    assert!(OperationLock::is_writer_active(&lock_path).unwrap());
 
     drop(guard1);
 

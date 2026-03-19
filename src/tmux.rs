@@ -1,5 +1,7 @@
+use std::path::PathBuf;
+use std::process::Stdio;
+
 use anyhow::{Result, bail};
-use std::{path::PathBuf, process::Stdio};
 
 /// Represents a tmux command to be executed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,12 +16,7 @@ impl TmuxCommand {
     pub fn to_args(&self) -> Vec<String> {
         match self {
             Self::SetEnvironment { key, value } => {
-                vec![
-                    "set-environment".into(),
-                    "-g".into(),
-                    key.clone(),
-                    value.clone(),
-                ]
+                vec!["set-environment".into(), "-g".into(), key.clone(), value.clone()]
             }
             Self::SetOption { key, value } => {
                 vec!["set".into(), "-g".into(), format!("@{key}"), value.clone()]
@@ -54,10 +51,7 @@ pub fn execute(cmd: &TmuxCommand) -> Result<()> {
         .output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "tmux {} failed: {stderr}",
-            args.first().unwrap_or(&String::new())
-        );
+        bail!("tmux {} failed: {stderr}", args.first().unwrap_or(&String::new()));
     }
     Ok(())
 }

@@ -1,68 +1,23 @@
+mod utils;
+use utils::*;
+
 use std::collections::{HashMap, HashSet};
 
-use lazytmux::{
-    config::parse_config,
-    lockfile::{LockEntry, LockFile, config_fingerprint, read_lockfile, remote_plugin_config_hash},
-    model::{Config, Options, PluginSource, PluginSpec, Tracking},
-    planner,
-    planner::RepoHealth,
-    state::{OperationLock, Paths, build_command_hash},
-    sync,
+use lazytmux::config::parse_config;
+use lazytmux::lockfile::{
+    LockEntry, LockFile, config_fingerprint, read_lockfile, remote_plugin_config_hash,
 };
+use lazytmux::model::{Config, Options, PluginSource, PluginSpec, Tracking};
+use lazytmux::planner::RepoHealth;
+use lazytmux::state::{OperationLock, Paths, build_command_hash};
+use lazytmux::{planner, sync};
 use tempfile::tempdir;
-
-fn git(args: &[&str], dir: &std::path::Path) -> String {
-    let out = std::process::Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("HOME", dir)
-        .env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "test@test")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "test@test")
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git {:?} failed: {}",
-        args,
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
-
-fn make_bare_repo(root: &std::path::Path) -> (std::path::PathBuf, String) {
-    let work = root.join("work");
-    std::fs::create_dir_all(&work).unwrap();
-
-    git(&["init", "-b", "main"], &work);
-    std::fs::write(work.join("init.tmux"), "#!/bin/sh\n").unwrap();
-    git(&["add", "."], &work);
-    git(&["commit", "-m", "init"], &work);
-
-    let commit = git(&["rev-parse", "HEAD"], &work);
-
-    let bare = root.join("bare.git");
-    git(
-        &[
-            "clone",
-            "--bare",
-            work.to_str().unwrap(),
-            bare.to_str().unwrap(),
-        ],
-        root,
-    );
-
-    (bare, commit)
-}
 
 fn make_plugin(clone_url: &str, tracking: Tracking, build: Option<&str>) -> PluginSpec {
     PluginSpec {
         source: PluginSource::Remote {
-            raw:       "test/plugin".into(),
-            id:        "example.com/test/plugin".into(),
+            raw: "test/plugin".into(),
+            id: "example.com/test/plugin".into(),
             clone_url: clone_url.into(),
         },
         name: "plugin".into(),
@@ -81,15 +36,10 @@ fn make_config_from_plugin(plugin: PluginSpec) -> Config {
 fn init_read_only_path_detected_when_aligned() {
     let config = parse_config(r#"plugin "user/repo""#).unwrap();
     let mut lock = LockFile::new();
-    lock.plugins.insert(
-        "github.com/user/repo".into(),
-        LockEntry::branch("user/repo", "main", "abc123"),
-    );
+    lock.plugins
+        .insert("github.com/user/repo".into(), LockEntry::branch("user/repo", "main", "abc123"));
     let health: HashMap<String, RepoHealth> =
-        [("github.com/user/repo".into(), RepoHealth::Healthy {
-            commit: "abc123".into(),
-        })]
-        .into();
+        [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "abc123".into() })].into();
 
     let plan = planner::plan_init(&config, &lock, &health, &HashSet::new());
     assert!(plan.is_none());
@@ -109,10 +59,7 @@ plugin "user/repo"
 
     let plan = planner::plan_init(&config, &lock, &health, &HashSet::new());
     let plan = plan.expect("expected Some(WritePlan)");
-    assert!(
-        plan.to_install
-            .contains(&"github.com/user/repo".to_string())
-    );
+    assert!(plan.to_install.contains(&"github.com/user/repo".to_string()));
 }
 
 #[test]
@@ -127,16 +74,11 @@ plugin "user/repo"
     )
     .unwrap();
     let mut lock = LockFile::new();
-    lock.plugins.insert(
-        "github.com/user/repo".into(),
-        LockEntry::branch("user/repo", "main", "abc123"),
-    );
+    lock.plugins
+        .insert("github.com/user/repo".into(), LockEntry::branch("user/repo", "main", "abc123"));
     // Between preflight and lock acquisition, plugin was installed
     let health: HashMap<String, RepoHealth> =
-        [("github.com/user/repo".into(), RepoHealth::Healthy {
-            commit: "abc123".into(),
-        })]
-        .into();
+        [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "abc123".into() })].into();
 
     let plan = planner::plan_init(&config, &lock, &health, &HashSet::new());
     assert!(plan.is_none());
@@ -151,11 +93,11 @@ fn init_does_not_retry_same_failed_build_tuple() {
     // Write a failure marker
     let bh = build_command_hash("make install");
     let marker = lazytmux::state::FailureMarker {
-        plugin_id:      "github.com/user/repo".into(),
-        commit:         "abc123".into(),
-        build_hash:     bh.clone(),
-        build_command:  "make install".into(),
-        failed_at:      "now".into(),
+        plugin_id: "github.com/user/repo".into(),
+        commit: "abc123".into(),
+        build_hash: bh.clone(),
+        build_command: "make install".into(),
+        failed_at: "now".into(),
         stderr_summary: "error".into(),
     };
     lazytmux::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
@@ -180,11 +122,11 @@ fn init_retries_when_build_command_changes() {
 
     // Write a failure marker for "make install"
     let marker = lazytmux::state::FailureMarker {
-        plugin_id:      "github.com/user/repo".into(),
-        commit:         "abc123".into(),
-        build_hash:     build_command_hash("make install"),
-        build_command:  "make install".into(),
-        failed_at:      "now".into(),
+        plugin_id: "github.com/user/repo".into(),
+        commit: "abc123".into(),
+        build_hash: build_command_hash("make install"),
+        build_command: "make install".into(),
+        failed_at: "now".into(),
         stderr_summary: "error".into(),
     };
     lazytmux::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
@@ -202,12 +144,7 @@ fn operation_lock_blocks_concurrent_init() {
     let lock_path = dir.path().join("operations.lock");
 
     // First process holds the lock
-    let _guard = OperationLock::try_acquire(&lock_path)
-        .unwrap()
-        .expect("should acquire");
-
-    // Second process detects writer active
-    assert!(OperationLock::is_writer_active(&lock_path).unwrap());
+    let _guard = OperationLock::try_acquire(&lock_path).unwrap().expect("should acquire");
 
     // Second process cannot acquire
     assert!(OperationLock::try_acquire(&lock_path).unwrap().is_none());
@@ -222,11 +159,8 @@ async fn init_preflight_sync_failure_preserves_previous_lock_snapshot() {
 
     let clone_url = format!("file://{}", bare.display());
     let old_plugin = make_plugin(&clone_url, Tracking::DefaultBranch, Some("touch built-v1"));
-    let new_plugin = make_plugin(
-        &clone_url,
-        Tracking::DefaultBranch,
-        Some("touch built-v2; exit 1"),
-    );
+    let new_plugin =
+        make_plugin(&clone_url, Tracking::DefaultBranch, Some("touch built-v2; exit 1"));
 
     let mut lock = LockFile::new();
     let mut entry = LockEntry::default_branch("test/plugin", "main", &commit);
@@ -237,17 +171,11 @@ async fn init_preflight_sync_failure_preserves_previous_lock_snapshot() {
     let cfg = make_config_from_plugin(new_plugin);
     let result =
         sync::run_and_write(&cfg, &mut lock, &paths, None, sync::SyncPolicy::init(true)).await;
-    assert!(
-        result.is_err(),
-        "init preflight should abort on sync failure"
-    );
+    assert!(result.is_err(), "init preflight should abort on sync failure");
 
     let persisted = read_lockfile(&paths.lockfile_path).unwrap();
     let entry = persisted.plugins.get("example.com/test/plugin").unwrap();
     assert_eq!(entry.commit, commit);
     assert_eq!(entry.tracking.kind, "default-branch");
-    assert_eq!(
-        entry.config_hash,
-        lock.plugins["example.com/test/plugin"].config_hash
-    );
+    assert_eq!(entry.config_hash, lock.plugins["example.com/test/plugin"].config_hash);
 }

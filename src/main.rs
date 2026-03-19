@@ -1,16 +1,8 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-
-use lazytmux::{
-    config,
-    loader,
-    lockfile,
-    planner,
-    plugin,
-    state::{OperationLock, Paths},
-    sync::{self, SyncPolicy},
-    tmux,
-};
+use lazytmux::state::{OperationLock, Paths};
+use lazytmux::sync::{self, SyncPolicy};
+use lazytmux::{config, loader, lockfile, planner, plugin, tmux};
 
 #[derive(Debug, Parser)]
 #[command(name = "lazytmux", about = "Modern tmux plugin manager")]
@@ -87,11 +79,7 @@ fn resolve_config_path(paths: &Paths) -> Result<std::path::PathBuf> {
     // 1. $LAZY_TMUX_CONFIG
     if let Ok(p) = std::env::var("LAZY_TMUX_CONFIG") {
         let path = std::path::PathBuf::from(p);
-        anyhow::ensure!(
-            path.exists(),
-            "LAZY_TMUX_CONFIG={} does not exist",
-            path.display()
-        );
+        anyhow::ensure!(path.exists(), "LAZY_TMUX_CONFIG={} does not exist", path.display());
         return Ok(path);
     }
     // 2. Default config path
@@ -129,14 +117,8 @@ async fn run_init() -> Result<()> {
     let _guard = OperationLock::acquire(&paths.lock_path)?;
 
     let mut lock = load_lockfile(&paths)?;
-    sync::run_and_write(
-        &cfg,
-        &mut lock,
-        &paths,
-        None,
-        SyncPolicy::init(cfg.options.auto_install),
-    )
-    .await?;
+    sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::init(cfg.options.auto_install))
+        .await?;
     let managed_ids = planner::scan_managed_plugin_ids(&paths.plugin_root);
     let health_map = build_health_map(&cfg, &paths);
     let plan = planner::plan_init(&cfg, &lock, &health_map, &managed_ids);
@@ -268,14 +250,8 @@ fn run_list() -> Result<()> {
             s.kind,
             s.state,
             s.last_result,
-            s.current_commit
-                .as_deref()
-                .map(|c| &c[..7.min(c.len())])
-                .unwrap_or("-"),
-            s.lock_commit
-                .as_deref()
-                .map(|c| &c[..7.min(c.len())])
-                .unwrap_or("-"),
+            s.current_commit.as_deref().map(|c| &c[..7.min(c.len())]).unwrap_or("-"),
+            s.lock_commit.as_deref().map(|c| &c[..7.min(c.len())]).unwrap_or("-"),
             s.source,
         );
     }

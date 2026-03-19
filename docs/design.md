@@ -40,8 +40,8 @@ script-friendly behavior with reliable exit codes.
 3. **No compatibility with plugins that depend on TPM's flat directory
    layout**: e.g. plugins that enumerate `$TMUX_PLUGIN_MANAGER_PATH` children.
 4. **No implicit updates during init**: startup may install missing plugins
-   but never advances existing plugin versions or retries a known-failed build
-   tuple.
+   but never advances existing plugin versions. Known-failed build tuples are
+   still recorded, but may be retried during the implicit sync phase.
 5. **No TUI in MVP**: the interactive terminal UI is deferred. CLI commands
    and `list` output cover all current use cases.
 6. **No hooks, registry, or dependency resolution in MVP**: these belong to
@@ -284,7 +284,9 @@ and mutation.
 Key constraints:
 
 - `init` **never advances** unchanged floating selectors beyond what config declares.
-- `init` **does not retry** a known-failed `(plugin-id, commit, build-command-hash)` tuple.
+- `init` may re-surface a known-failed `(plugin-id, commit, build-command-hash)`
+  tuple during the implicit sync phase; exact-tuple suppression currently only
+  applies in the later install path.
 - When all plugins are installed and lock is unchanged, init performs no git
   network access.
 
@@ -536,21 +538,22 @@ failure marker containing:
 - Failure timestamp
 - stderr summary
 
-**Suppression key for init auto-retry**:
+**Failure marker key**:
 
 ```text
 (plugin-id, commit, build-command-hash)
 ```
 
-This check happens inside the install path, after the candidate commit is
-resolved (by cloning and resolving tracking), but before the publish step. This
-ensures the exact three-part tuple is used even when no lock entry exists yet
-(first-install failure case).
+This exact tuple is checked inside the install path, after the candidate commit
+is resolved (by cloning and resolving tracking), but before the publish step.
+That ensures first-install failures can still be recognized even when no lock
+entry exists yet.
 
 Semantics:
 
-- `init` encountering a matching failure marker: logs a warning, skips the
-  plugin.
+- `init` records and surfaces matching failures, but because startup begins
+  with implicit `sync`, the same tuple may still be retried during sync before
+  the later install-path suppression check runs.
 - Explicit `install` / `update` / `restore`: always retries regardless of
   markers.
 - Successful build: clears all failure markers for that plugin.

@@ -1,15 +1,16 @@
-use lazytmux::{
-    config::parse_config,
-    lockfile::{LockEntry, LockFile, read_lockfile},
-    model::{Config, Options, PluginSource, PluginSpec, Tracking},
-    planner,
-    plugin,
-    state::{Paths, build_command_hash},
-    sync::{self, SyncPolicy},
-};
+mod utils;
+use utils::*;
+
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 use std::path::Path;
+
+use lazytmux::config::parse_config;
+use lazytmux::lockfile::{LockEntry, LockFile, read_lockfile};
+use lazytmux::model::{Config, Options, PluginSource, PluginSpec, Tracking};
+use lazytmux::state::{Paths, build_command_hash};
+use lazytmux::sync::{self, SyncPolicy};
+use lazytmux::{planner, plugin};
 use tempfile::tempdir;
 
 /// Create a minimal but real git repo at `path` with one commit, returning
@@ -52,89 +53,6 @@ fn init_git_repo(path: &Path) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_string()
 }
 
-fn git(args: &[&str], dir: &Path) -> String {
-    let out = std::process::Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("HOME", dir)
-        .env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "test@test")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "test@test")
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git {:?} failed: {}",
-        args,
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8(out.stdout).unwrap().trim().to_string()
-}
-
-fn make_bare_repo(root: &Path) -> (std::path::PathBuf, String) {
-    let work = root.join("work");
-    std::fs::create_dir_all(&work).unwrap();
-
-    git(&["init", "-b", "main"], &work);
-    std::fs::write(work.join("init.tmux"), "#!/bin/sh\n").unwrap();
-    git(&["add", "."], &work);
-    git(&["commit", "-m", "init"], &work);
-
-    let commit = git(&["rev-parse", "HEAD"], &work);
-
-    let bare = root.join("bare.git");
-    git(
-        &[
-            "clone",
-            "--bare",
-            work.to_str().unwrap(),
-            bare.to_str().unwrap(),
-        ],
-        root,
-    );
-
-    (bare, commit)
-}
-
-fn push_commit(bare: &Path, message: &str) -> String {
-    let tmp = bare.parent().unwrap().join(format!("_push_{message}_tmp"));
-    let _ = std::fs::remove_dir_all(&tmp);
-    git(
-        &["clone", bare.to_str().unwrap(), tmp.to_str().unwrap()],
-        bare.parent().unwrap(),
-    );
-    std::fs::write(tmp.join(format!("{message}.txt")), message).unwrap();
-    git(&["add", "."], &tmp);
-    git(&["commit", "-m", message], &tmp);
-    git(&["push"], &tmp);
-    let hash = git(&["rev-parse", "HEAD"], &tmp);
-    std::fs::remove_dir_all(&tmp).unwrap();
-    hash
-}
-
-fn push_tag(bare: &Path, tag: &str, commit: &str) {
-    let tmp = bare.parent().unwrap().join("_tag_tmp");
-    let _ = std::fs::remove_dir_all(&tmp);
-    git(
-        &["clone", bare.to_str().unwrap(), tmp.to_str().unwrap()],
-        bare.parent().unwrap(),
-    );
-    git(&["tag", tag, commit], &tmp);
-    git(&["push", "origin", tag], &tmp);
-    std::fs::remove_dir_all(&tmp).unwrap();
-}
-
-fn clone_to_target(source: &Path, target: &Path) {
-    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-    git(
-        &["clone", source.to_str().unwrap(), target.to_str().unwrap()],
-        target.parent().unwrap(),
-    );
-}
-
 fn make_plugin(
     raw: &str,
     id: &str,
@@ -144,8 +62,8 @@ fn make_plugin(
 ) -> PluginSpec {
     PluginSpec {
         source: PluginSource::Remote {
-            raw:       raw.into(),
-            id:        id.into(),
+            raw: raw.into(),
+            id: id.into(),
             clone_url: clone_url.into(),
         },
         name: raw.rsplit('/').next().unwrap_or(raw).into(),
@@ -258,18 +176,9 @@ fn clean_unlinks_symlinked_undeclared_plugin_without_removing_target_repo() {
 
     plugin::clean(&config, &paths).unwrap();
 
-    assert!(
-        !managed_link.exists(),
-        "symlinked managed entry should be removed"
-    );
-    assert!(
-        external_repo.exists(),
-        "clean must not remove the symlink target repo"
-    );
-    assert!(
-        external_repo.join(".git").exists(),
-        "target repo contents should remain intact"
-    );
+    assert!(!managed_link.exists(), "symlinked managed entry should be removed");
+    assert!(external_repo.exists(), "clean must not remove the symlink target repo");
+    assert!(external_repo.join(".git").exists(), "target repo contents should remain intact");
 }
 
 #[cfg(unix)]
@@ -289,10 +198,7 @@ fn clean_does_not_traverse_symlinked_parent_directories() {
 
     plugin::clean(&config, &paths).unwrap();
 
-    assert!(
-        managed_host_link.exists(),
-        "clean should not recurse into a symlinked host directory"
-    );
+    assert!(managed_host_link.exists(), "clean should not recurse into a symlinked host directory");
     assert!(
         external_host_root.join("user/repo/.git").exists(),
         "clean must not remove repos reachable only through a symlinked parent"
@@ -307,11 +213,11 @@ fn is_known_failure_detects_matching_key() {
 
     // Write a failure marker
     let marker = lazytmux::state::FailureMarker {
-        plugin_id:      "github.com/user/repo".into(),
-        commit:         "abc123".into(),
-        build_hash:     build_command_hash("make"),
-        build_command:  "make".into(),
-        failed_at:      "now".into(),
+        plugin_id: "github.com/user/repo".into(),
+        commit: "abc123".into(),
+        build_hash: build_command_hash("make"),
+        build_command: "make".into(),
+        failed_at: "now".into(),
         stderr_summary: "error".into(),
     };
     lazytmux::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
@@ -336,10 +242,8 @@ fn list_shows_broken_for_dir_without_git() {
 
     let config = parse_config(r#"plugin "user/repo""#).unwrap();
     let mut lock = LockFile::new();
-    lock.plugins.insert(
-        "github.com/user/repo".into(),
-        LockEntry::branch("user/repo", "main", "abc123"),
-    );
+    lock.plugins
+        .insert("github.com/user/repo".into(), LockEntry::branch("user/repo", "main", "abc123"));
 
     // Create target dir but no .git — simulates a broken/corrupt install
     let plugin_dir = paths.plugin_dir("github.com/user/repo");
@@ -378,10 +282,7 @@ fn update_skips_pinned_tag() {
 fn update_skips_pinned_commit() {
     let config = parse_config(r#"plugin "user/repo" commit="abc123""#).unwrap();
     let spec = &config.plugins[0];
-    assert!(matches!(
-        spec.tracking,
-        lazytmux::model::Tracking::Commit(_)
-    ));
+    assert!(matches!(spec.tracking, lazytmux::model::Tracking::Commit(_)));
 }
 
 #[test]
@@ -392,27 +293,23 @@ fn list_shows_both_state_and_last_result_for_build_failure() {
 
     let config = parse_config(r#"plugin "user/repo" build="make""#).unwrap();
     let mut lock = LockFile::new();
-    lock.plugins.insert(
-        "github.com/user/repo".into(),
-        LockEntry::branch("user/repo", "main", "abc123"),
-    );
+    lock.plugins
+        .insert("github.com/user/repo".into(), LockEntry::branch("user/repo", "main", "abc123"));
 
     // Plugin is installed (real git repo) but has a build failure marker
     let plugin_dir = paths.plugin_dir("github.com/user/repo");
     let commit = init_git_repo(&plugin_dir);
 
     // Update lock to match the real commit
-    lock.plugins.insert(
-        "github.com/user/repo".into(),
-        LockEntry::branch("user/repo", "main", &commit),
-    );
+    lock.plugins
+        .insert("github.com/user/repo".into(), LockEntry::branch("user/repo", "main", &commit));
 
     let marker = lazytmux::state::FailureMarker {
-        plugin_id:      "github.com/user/repo".into(),
-        commit:         commit.clone(),
-        build_hash:     build_command_hash("make"),
-        build_command:  "make".into(),
-        failed_at:      "now".into(),
+        plugin_id: "github.com/user/repo".into(),
+        commit: commit.clone(),
+        build_hash: build_command_hash("make"),
+        build_command: "make".into(),
+        failed_at: "now".into(),
         stderr_summary: "error".into(),
     };
     lazytmux::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
@@ -427,19 +324,16 @@ fn stale_lock_detection_catches_missing_and_mismatched_sync_metadata() {
     let config = parse_config(r#"plugin "user/repo" build="make install""#).unwrap();
 
     let mut stale_lock = LockFile::new();
-    stale_lock.plugins.insert(
-        "github.com/user/repo".into(),
-        LockEntry::branch("user/repo", "main", "abc123"),
-    );
+    stale_lock
+        .plugins
+        .insert("github.com/user/repo".into(), LockEntry::branch("user/repo", "main", "abc123"));
     stale_lock.config_fingerprint = None;
     assert!(sync::lock_is_stale(&config, &stale_lock));
 
     let mut aligned_lock = LockFile::new();
     let mut entry = LockEntry::branch("user/repo", "main", "abc123");
     entry.config_hash = lazytmux::lockfile::remote_plugin_config_hash(&config.plugins[0]);
-    aligned_lock
-        .plugins
-        .insert("github.com/user/repo".into(), entry);
+    aligned_lock.plugins.insert("github.com/user/repo".into(), entry);
     aligned_lock.config_fingerprint = Some(lazytmux::lockfile::config_fingerprint(&config));
     assert!(!sync::lock_is_stale(&config, &aligned_lock));
 
@@ -472,21 +366,14 @@ async fn install_uses_post_sync_lock_snapshot() {
         LockEntry::branch("test/plugin", "main", &commit_b),
     );
 
-    sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::INSTALL)
-        .await
-        .unwrap();
+    sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::INSTALL).await.unwrap();
 
     let mut persisted = read_lockfile(&paths.lockfile_path).unwrap();
-    plugin::install(&cfg, &mut persisted, &paths, None, false)
-        .await
-        .unwrap();
+    plugin::install(&cfg, &mut persisted, &paths, None, false).await.unwrap();
 
     let target = paths.plugin_dir("example.com/test/plugin");
     assert_eq!(git(&["rev-parse", "HEAD"], &target), commit_a);
-    assert_eq!(
-        persisted.plugins["example.com/test/plugin"].tracking.kind,
-        "tag"
-    );
+    assert_eq!(persisted.plugins["example.com/test/plugin"].tracking.kind, "tag");
 }
 
 #[tokio::test]
@@ -517,19 +404,12 @@ async fn restore_uses_post_sync_lock_snapshot() {
         LockEntry::branch("test/plugin", "main", &commit_a),
     );
 
-    sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::RESTORE)
-        .await
-        .unwrap();
+    sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::RESTORE).await.unwrap();
 
     let persisted = read_lockfile(&paths.lockfile_path).unwrap();
-    plugin::restore(&cfg, &persisted, &paths, None)
-        .await
-        .unwrap();
+    plugin::restore(&cfg, &persisted, &paths, None).await.unwrap();
     assert_eq!(git(&["rev-parse", "HEAD"], &target), commit_b);
-    assert_eq!(
-        persisted.plugins["example.com/test/plugin"].commit,
-        commit_b
-    );
+    assert_eq!(persisted.plugins["example.com/test/plugin"].commit, commit_b);
 }
 
 #[tokio::test]
@@ -581,29 +461,16 @@ async fn update_runs_sync_first_then_only_advances_unchanged_floating_plugins() 
         LockEntry::branch("test/plugin-b", "main", &commit_b1),
     );
 
-    sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::UPDATE)
-        .await
-        .unwrap();
+    sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::UPDATE).await.unwrap();
 
     let mut persisted = read_lockfile(&paths.lockfile_path).unwrap();
-    plugin::update(&cfg, &mut persisted, &paths, None)
-        .await
-        .unwrap();
+    plugin::update(&cfg, &mut persisted, &paths, None).await.unwrap();
 
     assert_eq!(git(&["rev-parse", "HEAD"], &target_a), commit_a1);
     assert_eq!(git(&["rev-parse", "HEAD"], &target_b), commit_b2);
-    assert_eq!(
-        persisted.plugins["example.com/test/plugin-a"].tracking.kind,
-        "tag"
-    );
-    assert_eq!(
-        persisted.plugins["example.com/test/plugin-a"].commit,
-        commit_a1
-    );
-    assert_eq!(
-        persisted.plugins["example.com/test/plugin-b"].commit,
-        commit_b2
-    );
+    assert_eq!(persisted.plugins["example.com/test/plugin-a"].tracking.kind, "tag");
+    assert_eq!(persisted.plugins["example.com/test/plugin-a"].commit, commit_a1);
+    assert_eq!(persisted.plugins["example.com/test/plugin-b"].commit, commit_b2);
     assert_ne!(commit_a1, commit_a2);
 }
 
@@ -636,9 +503,7 @@ async fn clean_prunes_removed_lock_entries_without_rebuilding_declared_plugins()
     ]);
 
     let mut lock = LockFile::new();
-    sync::run_and_write(&initial_cfg, &mut lock, &paths, None, SyncPolicy::SYNC)
-        .await
-        .unwrap();
+    sync::run_and_write(&initial_cfg, &mut lock, &paths, None, SyncPolicy::SYNC).await.unwrap();
 
     let plugin_a = paths.plugin_dir("example.com/test/plugin-a");
     let plugin_b = paths.plugin_dir("example.com/test/plugin-b");
@@ -653,19 +518,14 @@ async fn clean_prunes_removed_lock_entries_without_rebuilding_declared_plugins()
         Some("touch built-v2.marker"),
     )]);
 
-    sync::run_and_write(&clean_cfg, &mut lock, &paths, None, SyncPolicy::CLEAN)
-        .await
-        .unwrap();
+    sync::run_and_write(&clean_cfg, &mut lock, &paths, None, SyncPolicy::CLEAN).await.unwrap();
     plugin::clean(&clean_cfg, &paths).unwrap();
 
     let persisted = read_lockfile(&paths.lockfile_path).unwrap();
     assert!(plugin_a.exists());
     assert!(plugin_a.join("built-v1.marker").exists());
     assert!(!plugin_a.join("built-v2.marker").exists());
-    assert!(
-        !plugin_b.exists(),
-        "clean should still remove undeclared repos"
-    );
+    assert!(!plugin_b.exists(), "clean should still remove undeclared repos");
     assert!(persisted.plugins.contains_key("example.com/test/plugin-a"));
     assert!(!persisted.plugins.contains_key("example.com/test/plugin-b"));
 }

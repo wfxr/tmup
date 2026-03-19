@@ -1,7 +1,11 @@
+use std::collections::BTreeMap;
+use std::fs;
+use std::io::Write;
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, fs, io::Write, path::Path};
 
 use crate::model::{Config, PluginSource, PluginSpec, Tracking};
 
@@ -9,17 +13,17 @@ pub const LOCKFILE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LockFile {
-    pub version:            u32,
+    pub version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_fingerprint: Option<String>,
-    pub plugins:            BTreeMap<String, LockEntry>,
+    pub plugins: BTreeMap<String, LockEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LockEntry {
-    pub source:      String,
-    pub tracking:    TrackingRecord,
-    pub commit:      String,
+    pub source: String,
+    pub tracking: TrackingRecord,
+    pub commit: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_hash: Option<String>,
 }
@@ -27,43 +31,43 @@ pub struct LockEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TrackingRecord {
     #[serde(rename = "type")]
-    pub kind:  String,
+    pub kind: String,
     pub value: String,
 }
 
 impl LockEntry {
     pub fn branch(source: &str, branch: &str, commit: &str) -> Self {
         Self {
-            source:      source.into(),
-            tracking:    TrackingRecord { kind: "branch".into(), value: branch.into() },
-            commit:      commit.into(),
+            source: source.into(),
+            tracking: TrackingRecord { kind: "branch".into(), value: branch.into() },
+            commit: commit.into(),
             config_hash: None,
         }
     }
 
     pub fn tag(source: &str, tag: &str, commit: &str) -> Self {
         Self {
-            source:      source.into(),
-            tracking:    TrackingRecord { kind: "tag".into(), value: tag.into() },
-            commit:      commit.into(),
+            source: source.into(),
+            tracking: TrackingRecord { kind: "tag".into(), value: tag.into() },
+            commit: commit.into(),
             config_hash: None,
         }
     }
 
     pub fn commit(source: &str, commit: &str) -> Self {
         Self {
-            source:      source.into(),
-            tracking:    TrackingRecord { kind: "commit".into(), value: commit.into() },
-            commit:      commit.into(),
+            source: source.into(),
+            tracking: TrackingRecord { kind: "commit".into(), value: commit.into() },
+            commit: commit.into(),
             config_hash: None,
         }
     }
 
     pub fn default_branch(source: &str, branch: &str, commit: &str) -> Self {
         Self {
-            source:      source.into(),
-            tracking:    TrackingRecord { kind: "default-branch".into(), value: branch.into() },
-            commit:      commit.into(),
+            source: source.into(),
+            tracking: TrackingRecord { kind: "default-branch".into(), value: branch.into() },
+            commit: commit.into(),
             config_hash: None,
         }
     }
@@ -71,11 +75,7 @@ impl LockEntry {
 
 impl LockFile {
     pub fn new() -> Self {
-        Self {
-            version:            LOCKFILE_VERSION,
-            config_fingerprint: None,
-            plugins:            BTreeMap::new(),
-        }
+        Self { version: LOCKFILE_VERSION, config_fingerprint: None, plugins: BTreeMap::new() }
     }
 }
 
@@ -92,11 +92,13 @@ pub fn remote_plugin_config_hash(spec: &PluginSpec) -> Option<String> {
 
     let selector = match &spec.tracking {
         Tracking::DefaultBranch => HashTrackingSelector { kind: "default-branch", value: None },
-        Tracking::Branch(branch) =>
-            HashTrackingSelector { kind: "branch", value: Some(branch.as_str()) },
+        Tracking::Branch(branch) => {
+            HashTrackingSelector { kind: "branch", value: Some(branch.as_str()) }
+        }
         Tracking::Tag(tag) => HashTrackingSelector { kind: "tag", value: Some(tag.as_str()) },
-        Tracking::Commit(commit) =>
-            HashTrackingSelector { kind: "commit", value: Some(commit.as_str()) },
+        Tracking::Commit(commit) => {
+            HashTrackingSelector { kind: "commit", value: Some(commit.as_str()) }
+        }
     };
 
     Some(hash_json(&HashPluginInput {
@@ -113,7 +115,7 @@ pub fn config_fingerprint(config: &Config) -> String {
         .iter()
         .filter_map(|spec| {
             Some(HashFingerprintEntry {
-                id:          spec.remote_id()?,
+                id: spec.remote_id()?,
                 config_hash: remote_plugin_config_hash(spec)?,
             })
         })
@@ -156,11 +158,7 @@ pub fn write_lockfile_atomic(path: &Path, lock: &LockFile) -> Result<()> {
     drop(file);
 
     fs::rename(&tmp_path, path).with_context(|| {
-        format!(
-            "failed to rename {} -> {}",
-            tmp_path.display(),
-            path.display()
-        )
+        format!("failed to rename {} -> {}", tmp_path.display(), path.display())
     })?;
 
     Ok(())
@@ -168,23 +166,23 @@ pub fn write_lockfile_atomic(path: &Path, lock: &LockFile) -> Result<()> {
 
 #[derive(Serialize)]
 struct HashPluginInput<'a> {
-    id:       &'a str,
-    source:   &'a str,
+    id: &'a str,
+    source: &'a str,
     tracking: HashTrackingSelector<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    build:    Option<&'a str>,
+    build: Option<&'a str>,
 }
 
 #[derive(Serialize)]
 struct HashTrackingSelector<'a> {
-    kind:  &'static str,
+    kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<&'a str>,
 }
 
 #[derive(Serialize)]
 struct HashFingerprintEntry<'a> {
-    id:          &'a str,
+    id: &'a str,
     config_hash: String,
 }
 

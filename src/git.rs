@@ -1,5 +1,8 @@
+use std::fs;
+use std::path::Path;
+use std::process::Stdio;
+
 use anyhow::{Context, Result, bail};
-use std::{fs, path::Path, process::Stdio};
 use tokio::process::Command;
 
 /// Clone a git repository into the staging directory.
@@ -161,11 +164,7 @@ pub fn publish_fresh_install(staging: &Path, target: &Path, build: Option<&str>)
     }
 
     fs::rename(staging, target).with_context(|| {
-        format!(
-            "failed to rename staging -> target: {} -> {}",
-            staging.display(),
-            target.display()
-        )
+        format!("failed to rename staging -> target: {} -> {}", staging.display(), target.display())
     })?;
 
     if let Some(cmd) = build {
@@ -201,11 +200,7 @@ pub fn publish_replace(
 
     // Step 1: target -> backup
     fs::rename(target, backup).with_context(|| {
-        format!(
-            "failed to backup: {} -> {}",
-            target.display(),
-            backup.display()
-        )
+        format!("failed to backup: {} -> {}", target.display(), backup.display())
     })?;
 
     // Step 2: staging -> target

@@ -62,18 +62,9 @@ fn replace_moves_old_to_backup_and_staging_to_target() {
     publish_replace(&staging, &target, &backup, None).unwrap();
 
     assert!(!staging.exists(), "staging should be removed");
-    assert!(
-        !backup.exists(),
-        "backup should be cleaned up after success"
-    );
-    assert!(
-        target.join("new.txt").exists(),
-        "new content should be in target"
-    );
-    assert!(
-        !target.join("old.txt").exists(),
-        "old content should be gone"
-    );
+    assert!(!backup.exists(), "backup should be cleaned up after success");
+    assert!(target.join("new.txt").exists(), "new content should be in target");
+    assert!(!target.join("old.txt").exists(), "old content should be gone");
 }
 
 #[test]
@@ -95,18 +86,9 @@ fn replace_rolls_back_when_build_fails() {
     assert!(result.is_err());
 
     // Old content should be restored
-    assert!(
-        target.join("old.txt").exists(),
-        "old content should be restored"
-    );
-    assert!(
-        !target.join("new.txt").exists(),
-        "new content should not remain"
-    );
-    assert!(
-        !backup.exists(),
-        "backup should be cleaned up after rollback"
-    );
+    assert!(target.join("old.txt").exists(), "old content should be restored");
+    assert!(!target.join("new.txt").exists(), "new content should not remain");
+    assert!(!backup.exists(), "backup should be cleaned up after rollback");
 }
 
 #[test]

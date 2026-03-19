@@ -42,8 +42,10 @@ lazy.nvim's design philosophy to tmux:
 - **Incremental reconcile** — changing one remote plugin's source, selector, or
   `build` only syncs that plugin.
 - **Build failure memory** — failed builds are recorded as
-  `(plugin, commit, build-command-hash)` tuples. `init` won't auto-retry the
-  same failure. Change the build command or run `sync`/`install` explicitly to retry.
+  `(plugin, commit, build-command-hash)` tuples. Those markers are surfaced in
+  `list`, and exact-tuple suppression currently applies in the install path
+  after commit resolution; because `init` starts with implicit `sync`, startup
+  may still re-surface the same failure.
 - **Partial failure reporting** — commands like `install` and `update` publish
   successful plugins and write the lock, but return a non-zero exit code if
   any plugin fails.
@@ -213,8 +215,10 @@ Designed for `run-shell "lazytmux init"` in `.tmux.conf`.
    `auto-clean`.
 4. **Load tmux state** — set options and source `*.tmux` files after sync.
 
-`init` never advances floating selectors beyond what config declares, and never
-retries a known build failure automatically.
+`init` never advances floating selectors beyond what config declares. Known
+build failures are still recorded and surfaced, but because startup begins with
+implicit `sync`, `init` may re-surface the same failure before the later
+install-path suppression check runs.
 
 ### `sync` — reconcile config into the lock snapshot
 
