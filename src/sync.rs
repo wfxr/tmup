@@ -121,6 +121,7 @@ pub async fn run_and_write(
     target_id: Option<&str>,
     policy: SyncPolicy,
 ) -> Result<()> {
+    validate_target_id(config, target_id)?;
     let sync_result = run(config, lock, paths, target_id, policy).await;
     write_lockfile_atomic(&paths.lockfile_path, lock)?;
     sync_result

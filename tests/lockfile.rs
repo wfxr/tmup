@@ -89,7 +89,7 @@ fn plugins_are_sorted_by_key() {
 }
 
 #[test]
-fn reads_v1_lockfile_without_sync_metadata() {
+fn rejects_unsupported_lockfile_version() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("lazylock.json");
     std::fs::write(
@@ -111,13 +111,10 @@ fn reads_v1_lockfile_without_sync_metadata() {
     )
     .unwrap();
 
-    let reread = read_lockfile(&path).unwrap();
-    assert_eq!(reread.version, 1);
-    assert!(reread.config_fingerprint.is_none());
+    let err = read_lockfile(&path).unwrap_err();
     assert!(
-        reread.plugins["github.com/tmux-plugins/tmux-sensible"]
-            .config_hash
-            .is_none()
+        err.to_string().contains("unsupported lockfile version"),
+        "unexpected error: {err}"
     );
 }
 
