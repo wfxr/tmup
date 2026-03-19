@@ -144,7 +144,6 @@ direct children are plugin directories. This is an explicit non-goal.
 // ~/.config/tmux/lazy.kdl
 
 options {
-    concurrency 8
     auto-install #true
     auto-clean #false
 }
@@ -210,7 +209,6 @@ Rules:
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `concurrency` | int | `8` | Max parallel git operations (planned, currently serial) |
 | `auto-install` | bool | `true` | Install missing plugins during `init` |
 | `auto-clean` | bool | `false` | Remove undeclared managed remote repos during `init` |
 

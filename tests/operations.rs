@@ -1,6 +1,4 @@
 mod utils;
-use utils::*;
-
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 use std::path::Path;
@@ -12,6 +10,7 @@ use lazytmux::state::{Paths, build_command_hash};
 use lazytmux::sync::{self, SyncPolicy};
 use lazytmux::{planner, plugin};
 use tempfile::tempdir;
+use utils::*;
 
 /// Create a minimal but real git repo at `path` with one commit, returning
 /// the HEAD commit hash.

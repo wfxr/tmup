@@ -1,11 +1,10 @@
 mod utils;
-use utils::*;
-
 use lazytmux::lockfile::{LockEntry, LockFile, TrackingRecord};
 use lazytmux::model::{Config, Options, PluginSource, PluginSpec, Tracking};
 use lazytmux::plugin;
 use lazytmux::state::Paths;
 use tempfile::tempdir;
+use utils::*;
 
 /// Reset the bare repo's main branch to a given commit.
 fn reset_bare(bare: &std::path::Path, commit: &str) {

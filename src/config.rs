@@ -14,7 +14,7 @@ pub fn parse_config(input: &str) -> Result<Config> {
     let mut plugins = Vec::new();
 
     for node in doc.nodes() {
-        if node.name().to_string() == "plugin" {
+        if node.name().value() == "plugin" {
             let spec = parse_plugin(node)?;
             plugins.push(spec);
         }
@@ -35,9 +35,6 @@ fn parse_options(doc: &KdlDocument) -> Result<Options> {
         return Ok(opts);
     };
 
-    if let Some(v) = children.get_arg("concurrency") {
-        opts.concurrency = v.as_integer().context("concurrency must be an integer")? as usize;
-    }
     if let Some(v) = children.get_arg("auto-install") {
         opts.auto_install = v.as_bool().context("auto-install must be a bool")?;
     }
@@ -84,36 +81,44 @@ fn parse_plugin(node: &kdl::KdlNode) -> Result<PluginSpec> {
         Tracking::DefaultBranch
     };
 
-    // Parse child opt nodes
+    // Parse child nodes: opt entries and build (as child node)
     let mut opts = Vec::new();
+    let mut child_build: Option<String> = None;
     if let Some(children) = node.children() {
         for child in children.nodes() {
-            if child.name().to_string() == "opt" {
-                let key = child
-                    .get(0)
-                    .and_then(|v| v.as_string())
-                    .context("opt requires a key string")?
-                    .to_string();
-                let value = child
-                    .get(1)
-                    .and_then(|v| v.as_string())
-                    .context("opt requires a value string")?
-                    .to_string();
-                opts.push((key, value));
-            }
-            if child.name().to_string() == "build" {
-                // build can also be a child node
-                // but we already handle it as a property; skip
+            match child.name().value() {
+                "opt" => {
+                    let key = child
+                        .get(0)
+                        .and_then(|v| v.as_string())
+                        .context("opt requires a key string")?
+                        .to_string();
+                    let value = child
+                        .get(1)
+                        .and_then(|v| v.as_string())
+                        .context("opt requires a value string")?
+                        .to_string();
+                    opts.push((key, value));
+                }
+                "build" => {
+                    child_build = Some(
+                        child
+                            .get(0)
+                            .and_then(|v| v.as_string())
+                            .context("build child node requires a command string")?
+                            .to_string(),
+                    );
+                }
+                _ => {}
             }
         }
     }
 
-    let build = build.or_else(|| {
-        node.children()
-            .and_then(|c| c.get_arg("build"))
-            .and_then(|v| v.as_string())
-            .map(String::from)
-    });
+    ensure!(
+        !(build.is_some() && child_build.is_some()),
+        "plugin \"{raw}\": build specified both as property and child node"
+    );
+    let build = build.or(child_build);
 
     let source = if is_local {
         let expanded_path = expand_local_path(&raw)?;

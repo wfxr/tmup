@@ -250,8 +250,8 @@ fn run_list() -> Result<()> {
             s.kind,
             s.state,
             s.last_result,
-            s.current_commit.as_deref().map(|c| &c[..7.min(c.len())]).unwrap_or("-"),
-            s.lock_commit.as_deref().map(|c| &c[..7.min(c.len())]).unwrap_or("-"),
+            short_commit(s.current_commit.as_deref()),
+            short_commit(s.lock_commit.as_deref()),
             s.source,
         );
     }
@@ -271,6 +271,10 @@ fn build_health_map(
             Some((id.to_string(), health))
         })
         .collect()
+}
+
+fn short_commit(hash: Option<&str>) -> &str {
+    hash.map(|c| &c[..7.min(c.len())]).unwrap_or("-")
 }
 
 fn dirs_home() -> std::path::PathBuf {

@@ -51,7 +51,7 @@ pub fn execute(cmd: &TmuxCommand) -> Result<()> {
         .output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("tmux {} failed: {stderr}", args.first().unwrap_or(&String::new()));
+        bail!("tmux {} failed: {stderr}", args.first().map_or("?", |s| s.as_str()));
     }
     Ok(())
 }

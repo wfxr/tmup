@@ -2,7 +2,6 @@
 fn example_config_parses() {
     let input = std::fs::read_to_string("examples/lazy.kdl").unwrap();
     let cfg = lazytmux::config::parse_config(&input).unwrap();
-    assert_eq!(cfg.options.concurrency, 8);
     assert!(cfg.options.auto_install);
     assert!(!cfg.options.auto_clean);
     assert_eq!(cfg.plugins.len(), 6); // continuum disabled via slashdash

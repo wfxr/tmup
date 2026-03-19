@@ -2,7 +2,6 @@
 // lazytmux configuration — KDL v2 syntax
 
 options {
-    concurrency 8
     auto-install #true
     auto-clean #false
 }
