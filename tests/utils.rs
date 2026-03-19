@@ -66,7 +66,8 @@ pub fn push_branch_commit(bare: &Path, branch: &str, message: &str) -> String {
     std::fs::write(tmp.join(format!("{message}.txt")), message).unwrap();
     git(&["add", "."], &tmp);
     git(&["commit", "-m", message], &tmp);
-    git(&["push", "-u", "origin", branch], &tmp);
+    let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+    git(&["push", "-u", "origin", &refspec], &tmp);
     let hash = git(&["rev-parse", "HEAD"], &tmp);
     std::fs::remove_dir_all(&tmp).unwrap();
     hash

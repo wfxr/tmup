@@ -108,6 +108,23 @@ pub async fn resolve_remote_branch(repo: &Path, branch: &str) -> Result<String> 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Resolve a tag ref to the commit it points at, even if a branch shares the same name.
+pub async fn resolve_tag(repo: &Path, tag: &str) -> Result<String> {
+    let tag_ref = format!("refs/tags/{tag}^{{}}");
+    let output = Command::new("git")
+        .args(["rev-parse", &tag_ref])
+        .current_dir(repo)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("failed to resolve tag {tag}: {stderr}");
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 /// Resolve the default branch name of the remote.
 pub async fn default_branch(repo: &Path) -> Result<String> {
     let output = Command::new("git")

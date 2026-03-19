@@ -120,6 +120,14 @@ fn checked_plugin_id(id: &str) -> &str {
     id
 }
 
+fn map_try_write_result<T>(result: std::io::Result<T>) -> std::io::Result<Option<T>> {
+    match result {
+        Ok(guard) => Ok(Some(guard)),
+        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
 /// SHA-256 hash of a string, returned as hex.
 pub fn build_command_hash(input: &str) -> String {
     let mut hasher = Sha256::new();
@@ -269,21 +277,39 @@ impl OperationLock {
     pub fn try_acquire(lock_path: &Path) -> Result<Option<OperationLockGuard>> {
         let file = Self::open_lock_file(lock_path)?;
         let mut lock = fd_lock::RwLock::new(file);
-        // Scope the borrow so we can move `lock` afterwards.
-        let acquired = {
-            let result = lock.try_write();
-            if let Ok(guard) = result {
+        {
+            let Some(guard) = map_try_write_result(lock.try_write())
+                .map_err(|e| anyhow::anyhow!("failed to acquire lock: {e}"))?
+            else {
+                return Ok(None);
+            };
+            // Scope the borrow so we can move `lock` afterwards.
+            {
                 // See `acquire` for why `forget` is correct here.
                 std::mem::forget(guard);
-                true
-            } else {
-                false
             }
-        };
-        if acquired { Ok(Some(OperationLockGuard { _lock: lock })) } else { Ok(None) }
+        }
+        Ok(Some(OperationLockGuard { _lock: lock }))
     }
 }
 
 pub struct OperationLockGuard {
     _lock: fd_lock::RwLock<fs::File>,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Error, ErrorKind, Result};
+
+    #[test]
+    fn try_write_result_maps_would_block_to_none() {
+        let result: Result<()> = Err(ErrorKind::WouldBlock.into());
+        assert!(super::map_try_write_result(result).unwrap().is_none());
+    }
+
+    #[test]
+    fn try_write_result_preserves_real_errors() {
+        let err = super::map_try_write_result::<()>(Err(Error::other("boom"))).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::Other);
+    }
 }
