@@ -19,9 +19,9 @@ pub struct Paths {
     pub lock_path:     PathBuf,
     /// Build failure markers: {state}/failures/
     pub failures_root: PathBuf,
-    /// Config file path
+    /// Active config file path
     pub config_path:   PathBuf,
-    /// Lock file (lazylock.json) path
+    /// Active lock file (usually next to the active config file)
     pub lockfile_path: PathBuf,
 }
 
@@ -60,6 +60,18 @@ impl Paths {
             config_path:   state.join("lazy.kdl"),
             lockfile_path: state.join("lazylock.json"),
         }
+    }
+
+    pub fn set_config_path(&mut self, config_path: PathBuf) -> Result<()> {
+        let config_dir = config_path.parent().with_context(|| {
+            format!(
+                "config path has no parent directory: {}",
+                config_path.display()
+            )
+        })?;
+        self.lockfile_path = config_dir.join("lazylock.json");
+        self.config_path = config_path;
+        Ok(())
     }
 
     /// Ensure all required directories exist.

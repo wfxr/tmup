@@ -46,6 +46,9 @@ script-friendly behavior with reliable exit codes.
    and `list` output cover all current use cases.
 6. **No hooks, registry, or dependency resolution in MVP**: these belong to
    future extensions.
+7. **No support for out-of-band filesystem manipulation inside the managed
+   plugin root**: manually cloned repos, in-place repo edits, and symlink-based
+   layouts under `plugin_root` are outside the current contract.
 
 ---
 
@@ -87,6 +90,8 @@ Rules:
 - `name` defaults to the last segment of the ID (basename); used only for
   display in `list` output and log messages.
 - The CLI target selector is `id`, not `name`.
+- The managed plugin tree is lazy.tmux-owned state; manually cloning into it,
+  mutating repos in place, or introducing symlink-based layouts is unsupported.
 
 Directory layout:
 
@@ -628,6 +633,10 @@ Config file search order:
 2. `$XDG_CONFIG_HOME/tmux/lazy.kdl`
 3. `~/.config/tmux/lazy.kdl`
 4. `~/.tmux/lazy.kdl`
+
+The active `lazylock.json` is always stored next to the resolved config file.
+For example, `LAZY_TMUX_CONFIG=/path/to/custom.kdl` uses
+`/path/to/lazylock.json`.
 
 ---
 
