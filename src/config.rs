@@ -2,7 +2,10 @@ use anyhow::{Context, Result, bail, ensure};
 use kdl::KdlDocument;
 use std::{collections::HashSet, path::Path};
 
-use crate::model::{Config, Options, PluginSource, PluginSpec, Tracking};
+use crate::{
+    model::{Config, Options, PluginSource, PluginSpec, Tracking},
+    state::validate_plugin_id,
+};
 
 pub fn parse_config(input: &str) -> Result<Config> {
     let doc: KdlDocument = input.parse().context("failed to parse KDL")?;
@@ -177,8 +180,7 @@ pub fn normalize_remote_source(raw: &str) -> Result<(String, String)> {
         let (host, path) = rest
             .split_once(':')
             .context("invalid SSH URL: missing ':'")?;
-        let path = path.strip_suffix(".git").unwrap_or(path);
-        let id = format!("{host}/{path}");
+        let id = normalize_remote_id(host, path)?;
         return Ok((id, raw.to_string()));
     }
 
@@ -188,21 +190,43 @@ pub fn normalize_remote_source(raw: &str) -> Result<(String, String)> {
             .strip_prefix("https://")
             .or_else(|| raw.strip_prefix("http://"))
             .unwrap();
-        let id = without_scheme
-            .strip_suffix(".git")
-            .unwrap_or(without_scheme);
-        return Ok((id.to_string(), raw.to_string()));
+        let (host, path) = without_scheme
+            .split_once('/')
+            .context("invalid remote URL: missing repository path")?;
+        let id = normalize_remote_id(host, path)?;
+        return Ok((id, raw.to_string()));
     }
 
     // GitHub shorthand: user/repo or org/repo
     let parts: Vec<&str> = raw.split('/').collect();
     if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
         let id = format!("github.com/{raw}");
+        validate_plugin_id(&id)?;
         let clone_url = format!("https://github.com/{raw}.git");
         return Ok((id, clone_url));
     }
 
     bail!("cannot parse remote source: \"{raw}\"")
+}
+
+fn normalize_remote_id(host: &str, path: &str) -> Result<String> {
+    ensure!(
+        !host.is_empty()
+            && host != "."
+            && host != ".."
+            && !host.contains('/')
+            && !host.contains('\\'),
+        "unsafe remote host: {host:?}"
+    );
+    let path = path.trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    ensure!(
+        !path.is_empty(),
+        "invalid remote URL: missing repository path"
+    );
+    let id = format!("{host}/{path}");
+    validate_plugin_id(&id)?;
+    Ok(id)
 }
 
 fn validate_unique_ids(plugins: &[PluginSpec]) -> Result<()> {

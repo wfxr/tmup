@@ -25,10 +25,23 @@ impl TmuxCommand {
                 vec!["set".into(), "-g".into(), format!("@{key}"), value.clone()]
             }
             Self::RunShell { script } => {
-                vec!["run-shell".into(), script.to_string_lossy().to_string()]
+                vec!["run-shell".into(), shell_quote(&script.to_string_lossy())]
             }
         }
     }
+}
+
+fn shell_quote(value: &str) -> String {
+    let mut quoted = String::from("'");
+    for ch in value.chars() {
+        if ch == '\'' {
+            quoted.push_str("'\"'\"'");
+        } else {
+            quoted.push(ch);
+        }
+    }
+    quoted.push('\'');
+    quoted
 }
 
 /// Execute a single tmux command.

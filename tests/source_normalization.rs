@@ -46,6 +46,24 @@ fn normalizes_custom_host_url() {
 }
 
 #[test]
+fn rejects_remote_ids_with_parent_segments() {
+    let err = parse_config(r#"plugin "https://git.example.com/team/../plugin.git""#).unwrap_err();
+    assert!(
+        err.to_string().contains("unsafe plugin id segment"),
+        "{err}"
+    );
+}
+
+#[test]
+fn rejects_remote_ids_with_empty_segments() {
+    let err = parse_config(r#"plugin "git@github.com:team//plugin.git""#).unwrap_err();
+    assert!(
+        err.to_string().contains("unsafe plugin id segment"),
+        "{err}"
+    );
+}
+
+#[test]
 fn name_defaults_to_id_basename() {
     let cfg = parse_config(r#"plugin "tmux-plugins/tmux-sensible""#).unwrap();
     assert_eq!(cfg.plugins[0].name, "tmux-sensible");
