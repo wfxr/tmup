@@ -43,7 +43,7 @@ pub async fn install(
     let mut failures: Vec<String> = Vec::new();
 
     for spec in &config.plugins {
-        let PluginSource::Remote { raw, id, clone_url } = &spec.source else {
+        let PluginSource::Remote { id, clone_url, .. } = &spec.source else {
             continue;
         };
 
@@ -119,7 +119,7 @@ pub async fn install(
             Ok(()) => {
                 // Update lock
                 lock.plugins.insert(id.clone(), LockEntry {
-                    source: raw.clone(),
+                    source: id.clone(),
                     tracking: tracking_record,
                     commit,
                     config_hash,
@@ -174,7 +174,7 @@ pub async fn update(
     let mut failures: Vec<String> = Vec::new();
 
     for spec in &config.plugins {
-        let PluginSource::Remote { raw, id, clone_url } = &spec.source else {
+        let PluginSource::Remote { id, clone_url, .. } = &spec.source else {
             continue;
         };
 
@@ -234,7 +234,7 @@ pub async fn update(
         if !revision_changed && target_dir.exists() {
             let _ = std::fs::remove_dir_all(&staging);
             lock.plugins.insert(id.clone(), LockEntry {
-                source:      raw.clone(),
+                source:      id.clone(),
                 tracking:    tracking_record,
                 commit:      new_commit,
                 config_hash: config_hash.clone(),
@@ -259,7 +259,7 @@ pub async fn update(
         match result {
             Ok(()) => {
                 lock.plugins.insert(id.clone(), LockEntry {
-                    source: raw.clone(),
+                    source: id.clone(),
                     tracking: tracking_record,
                     commit: new_commit,
                     config_hash,

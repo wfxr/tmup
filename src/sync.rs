@@ -195,7 +195,7 @@ async fn resolve_desired_plugin(
     config_hash: String,
     paths: &Paths,
 ) -> Result<ResolvedPlugin> {
-    let PluginSource::Remote { raw, id, clone_url } = &spec.source else {
+    let PluginSource::Remote { id, clone_url, .. } = &spec.source else {
         unreachable!("sync only processes remote plugins");
     };
 
@@ -205,7 +205,7 @@ async fn resolve_desired_plugin(
         let (commit, tracking) = plugin::resolve_tracking(&staging_dir, &spec.tracking).await?;
         git::checkout(&staging_dir, &commit).await?;
         Ok::<_, anyhow::Error>(LockEntry {
-            source: raw.clone(),
+            source: id.clone(),
             tracking,
             commit,
             config_hash: Some(config_hash),

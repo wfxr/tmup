@@ -173,7 +173,8 @@ plugin "~/dev/my-tmux-plugin" local=#true name="my-plugin-dev"
 > Local paths support `~`, `$VAR`, and `${VAR}` expansion. After expansion, the
 > path must be absolute.
 >
-> Sync hashes only remote plugin source, tracking selector, and `build`.
+> Sync hashes the canonical remote identity, tracking selector, and `build`.
+> Equivalent remote spellings such as `.git` vs no `.git` do not trigger sync.
 > Comments, formatting, `name`, `opt`, `opt-prefix`, and local-plugin-only
 > changes do not trigger sync.
 
