@@ -128,6 +128,39 @@ fn plugin_head(paths: &Paths, id: &str) -> String {
 }
 
 #[tokio::test]
+async fn sync_run_and_write_does_not_create_lockfile_for_unknown_target() {
+    let dir = tempdir().unwrap();
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    let cfg = make_config(vec![make_plugin(
+        "test/plugin",
+        "example.com/test/plugin",
+        "file:///tmp/unused.git",
+        Tracking::DefaultBranch,
+        None,
+    )]);
+    let mut lock = LockFile::new();
+
+    let err = sync::run_and_write(
+        &cfg,
+        &mut lock,
+        &paths,
+        Some("example.com/test/other"),
+        SyncPolicy::SYNC,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        err.to_string().contains("unknown plugin id"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        !paths.lockfile_path.exists(),
+        "unknown target should not create a lockfile"
+    );
+}
+
+#[tokio::test]
 async fn sync_installs_new_remote_plugin_and_persists_metadata() {
     let dir = tempdir().unwrap();
     let (bare, commit) = make_bare_repo(&dir.path().join("repo"));

@@ -680,7 +680,7 @@ lazytmux/
 |   +-- planner.rs           # Init decision, status computation, failure detection
 |   +-- init_flow.rs         # Init planning, lock contention, failure suppression
 |   +-- operations.rs        # install/update/restore/clean/list behavior
-|   +-- lockfile.rs          # Lock snapshot round-trip and compatibility
+|   +-- lockfile.rs          # Lock snapshot round-trip and version checks
 |   +-- sync.rs              # Incremental sync behavior
 |   +-- sync_fingerprint.rs  # Lock-affecting config fingerprinting
 |   +-- loader.rs            # Load plan generation and ordering

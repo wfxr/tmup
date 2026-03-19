@@ -18,7 +18,7 @@ fn list_prints_state_and_last_result_columns() {
     let lock_path = config_dir.join("lazylock.json");
     std::fs::write(
         &lock_path,
-        r#"{"version":1,"plugins":{"github.com/user/repo":{"source":"user/repo","tracking":{"type":"branch","value":"main"},"commit":"abc1234"}}}"#,
+        r#"{"version":2,"plugins":{"github.com/user/repo":{"source":"user/repo","tracking":{"type":"branch","value":"main"},"commit":"abc1234"}}}"#,
     ).unwrap();
 
     Command::cargo_bin("lazytmux")
@@ -50,7 +50,7 @@ plugin "catppuccin/tmux"
 
     // Write empty lockfile
     let lock_path = config_dir.join("lazylock.json");
-    std::fs::write(&lock_path, r#"{"version":1,"plugins":{}}"#).unwrap();
+    std::fs::write(&lock_path, r#"{"version":2,"plugins":{}}"#).unwrap();
 
     Command::cargo_bin("lazytmux")
         .unwrap()
@@ -75,7 +75,7 @@ fn list_warns_before_table_when_lock_metadata_is_stale() {
     std::fs::write(&config_path, r#"plugin "user/repo" build="make install""#).unwrap();
 
     let lock_path = config_dir.join("lazylock.json");
-    let stale_lock = r#"{"version":1,"plugins":{"github.com/user/repo":{"source":"user/repo","tracking":{"type":"branch","value":"main"},"commit":"abc1234"}}}"#;
+    let stale_lock = r#"{"version":2,"plugins":{"github.com/user/repo":{"source":"user/repo","tracking":{"type":"branch","value":"main"},"commit":"abc1234"}}}"#;
     std::fs::write(&lock_path, stale_lock).unwrap();
 
     Command::cargo_bin("lazytmux")
@@ -105,7 +105,7 @@ fn list_does_not_mutate_stale_lockfile() {
     std::fs::write(&config_path, r#"plugin "user/repo""#).unwrap();
 
     let lock_path = config_dir.join("lazylock.json");
-    let original = r#"{"version":1,"plugins":{"github.com/user/repo":{"source":"user/repo","tracking":{"type":"branch","value":"main"},"commit":"abc1234"}}}"#;
+    let original = r#"{"version":2,"plugins":{"github.com/user/repo":{"source":"user/repo","tracking":{"type":"branch","value":"main"},"commit":"abc1234"}}}"#;
     std::fs::write(&lock_path, original).unwrap();
 
     Command::cargo_bin("lazytmux")

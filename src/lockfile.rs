@@ -127,6 +127,12 @@ pub fn read_lockfile(path: &Path) -> Result<LockFile> {
         .with_context(|| format!("failed to read lockfile: {}", path.display()))?;
     let lock: LockFile = serde_json::from_str(&content)
         .with_context(|| format!("failed to parse lockfile: {}", path.display()))?;
+    anyhow::ensure!(
+        lock.version == LOCKFILE_VERSION,
+        "unsupported lockfile version: {} (expected {})",
+        lock.version,
+        LOCKFILE_VERSION
+    );
     Ok(lock)
 }
 
