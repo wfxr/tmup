@@ -70,11 +70,16 @@ async fn main() -> Result<()> {
     }
 }
 
+fn resolve_runtime_paths() -> Result<Paths> {
+    let mut paths = Paths::resolve()?;
+    let config_path = resolve_config_path(&paths)?;
+    paths.set_config_path(config_path)?;
+    Ok(paths)
+}
+
 fn load_config(paths: &Paths) -> Result<lazytmux::model::Config> {
-    // Try config paths in order
-    let config_path = resolve_config_path(paths)?;
-    let content = std::fs::read_to_string(&config_path)
-        .with_context(|| format!("failed to read config: {}", config_path.display()))?;
+    let content = std::fs::read_to_string(&paths.config_path)
+        .with_context(|| format!("failed to read config: {}", paths.config_path.display()))?;
     config::parse_config(&content)
 }
 
@@ -116,7 +121,7 @@ fn load_lockfile(paths: &Paths) -> Result<lockfile::LockFile> {
 /// The lock is held from start to finish so no concurrent writer can modify
 /// plugin state during init.
 async fn run_init() -> Result<()> {
-    let paths = Paths::resolve()?;
+    let paths = resolve_runtime_paths()?;
     paths.ensure_dirs()?;
     let cfg = load_config(&paths)?;
 
@@ -192,7 +197,7 @@ async fn run_init_write(
 }
 
 async fn run_install(id: Option<String>) -> Result<()> {
-    let paths = Paths::resolve()?;
+    let paths = resolve_runtime_paths()?;
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another lazytmux operation is in progress")?;
     let cfg = load_config(&paths)?;
@@ -202,7 +207,7 @@ async fn run_install(id: Option<String>) -> Result<()> {
 }
 
 async fn run_sync(id: Option<String>) -> Result<()> {
-    let paths = Paths::resolve()?;
+    let paths = resolve_runtime_paths()?;
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another lazytmux operation is in progress")?;
     let cfg = load_config(&paths)?;
@@ -211,7 +216,7 @@ async fn run_sync(id: Option<String>) -> Result<()> {
 }
 
 async fn run_update(id: Option<String>) -> Result<()> {
-    let paths = Paths::resolve()?;
+    let paths = resolve_runtime_paths()?;
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another lazytmux operation is in progress")?;
     let cfg = load_config(&paths)?;
@@ -221,7 +226,7 @@ async fn run_update(id: Option<String>) -> Result<()> {
 }
 
 async fn run_restore(id: Option<String>) -> Result<()> {
-    let paths = Paths::resolve()?;
+    let paths = resolve_runtime_paths()?;
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another lazytmux operation is in progress")?;
     let cfg = load_config(&paths)?;
@@ -231,7 +236,7 @@ async fn run_restore(id: Option<String>) -> Result<()> {
 }
 
 async fn run_clean() -> Result<()> {
-    let paths = Paths::resolve()?;
+    let paths = resolve_runtime_paths()?;
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another lazytmux operation is in progress")?;
     let cfg = load_config(&paths)?;
@@ -241,7 +246,7 @@ async fn run_clean() -> Result<()> {
 }
 
 fn run_list() -> Result<()> {
-    let paths = Paths::resolve()?;
+    let paths = resolve_runtime_paths()?;
     let cfg = load_config(&paths)?;
     let lock = load_lockfile(&paths)?;
     let statuses = plugin::list(&cfg, &lock, &paths)?;

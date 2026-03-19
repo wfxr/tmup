@@ -106,6 +106,10 @@ lazytmux uses [KDL v2](https://kdl.dev) syntax. Config file search order:
 3. `~/.config/tmux/lazy.kdl`
 4. `~/.tmux/lazy.kdl`
 
+The active `lazylock.json` always lives next to the selected config file. For
+example, if `LAZY_TMUX_CONFIG=/path/to/custom.kdl`, lazytmux reads and writes
+`/path/to/lazylock.json`.
+
 ### Full example
 
 ```kdl
@@ -256,6 +260,8 @@ before the table without mutating anything.
 
 ## Directory Layout
 
+Default layout when using `~/.config/tmux/lazy.kdl`:
+
 ```
 ~/.config/tmux/
   ├── lazy.kdl                          # configuration
@@ -273,6 +279,11 @@ before the table without mutating anything.
   ├── operations.lock                   # cross-process mutex
   └── failures/                         # build failure markers
 ```
+
+Managed scope note: lazytmux only reconciles and cleans remote plugin
+directories it manages under `~/.local/share/lazytmux/plugins/`. Manually
+cloned repos, ad-hoc edits inside that tree, and symlink-based layouts there
+are outside the current support contract.
 
 Plugin directories use the full `host/owner/repo` path (like Go modules) to
 avoid basename collisions between `user1/tmux-foo` and `user2/tmux-foo`.
