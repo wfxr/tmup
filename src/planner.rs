@@ -197,15 +197,24 @@ pub fn compute_statuses(
                 });
             }
             PluginSource::Local { path } => {
+                let local_path = Path::new(path);
+                let (state, last_result) = if !local_path.exists() {
+                    (PluginState::Missing, LastResult::None)
+                } else if local_path.is_dir() {
+                    (PluginState::Local, LastResult::Ok)
+                } else {
+                    (PluginState::Broken, LastResult::None)
+                };
+
                 statuses.push(PluginStatus {
-                    id:             path.clone(),
-                    name:           spec.name.clone(),
-                    source:         path.clone(),
-                    kind:           "local".into(),
-                    state:          PluginState::Local,
-                    last_result:    LastResult::Ok,
+                    id: path.clone(),
+                    name: spec.name.clone(),
+                    source: path.clone(),
+                    kind: "local".into(),
+                    state,
+                    last_result,
                     current_commit: None,
-                    lock_commit:    None,
+                    lock_commit: None,
                 });
             }
         }
@@ -257,7 +266,7 @@ pub fn plan_init(
                     if commit != &lock_entry.commit {
                         to_restore.push(id.to_string());
                     }
-                } else {
+                } else if config.options.auto_install {
                     // Healthy but no lock entry — needs a full install to create lock state
                     to_install.push(id.to_string());
                 },
