@@ -206,6 +206,31 @@ async fn sync_installs_new_remote_plugin_and_persists_metadata() {
 }
 
 #[tokio::test]
+async fn sync_persists_canonical_source_in_lockfile() {
+    let dir = tempdir().unwrap();
+    let (bare, _commit) = make_bare_repo(&dir.path().join("repo"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let cfg = make_config(vec![make_plugin(
+        "https://example.com/test/plugin.git",
+        "example.com/test/plugin",
+        &clone_url,
+        Tracking::DefaultBranch,
+        None,
+    )]);
+    let mut lock = LockFile::new();
+
+    sync::run(&cfg, &mut lock, &paths, None, SyncPolicy::SYNC)
+        .await
+        .unwrap();
+
+    let entry = lock.plugins.get("example.com/test/plugin").unwrap();
+    assert_eq!(entry.source, "example.com/test/plugin");
+}
+
+#[tokio::test]
 async fn sync_reconciles_branch_to_tag_and_commit_transitions() {
     let dir = tempdir().unwrap();
     let (bare, commit_a) = make_bare_repo(&dir.path().join("repo"));
