@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use etcetera::BaseStrategy;
 use sha2::{Digest, Sha256};
 use std::{
@@ -76,11 +76,12 @@ impl Paths {
 
     /// Get the install directory for a remote plugin by id.
     pub fn plugin_dir(&self, id: &str) -> PathBuf {
-        self.plugin_root.join(id)
+        self.plugin_root.join(checked_plugin_id(id))
     }
 
     /// Create a staging directory for a plugin operation.
     pub fn staging_dir(&self, id: &str) -> PathBuf {
+        let id = checked_plugin_id(id);
         let hash = &build_command_hash(id)[..12];
         let pid = std::process::id();
         self.staging_root.join(format!("{hash}-{pid}"))
@@ -88,10 +89,27 @@ impl Paths {
 
     /// Create a backup directory path for a plugin.
     pub fn backup_dir(&self, id: &str) -> PathBuf {
+        let id = checked_plugin_id(id);
         let hash = &build_command_hash(id)[..12];
         let pid = std::process::id();
         self.backup_root.join(format!("{hash}-{pid}"))
     }
+}
+
+pub(crate) fn validate_plugin_id(id: &str) -> Result<()> {
+    ensure!(!id.is_empty(), "unsafe plugin id: empty");
+    for segment in id.split('/') {
+        ensure!(
+            !segment.is_empty() && segment != "." && segment != ".." && !segment.contains('\\'),
+            "unsafe plugin id segment: {segment:?}"
+        );
+    }
+    Ok(())
+}
+
+fn checked_plugin_id(id: &str) -> &str {
+    validate_plugin_id(id).expect("plugin ids must be validated before path construction");
+    id
 }
 
 /// SHA-256 hash of a string, returned as hex.
