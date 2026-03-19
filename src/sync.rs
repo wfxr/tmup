@@ -4,9 +4,10 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 use crate::lockfile::{
-    LockEntry, LockFile, config_fingerprint, remote_plugin_config_hash, write_lockfile_atomic,
+    LockEntry, LockFile, TrackingRecord, config_fingerprint, remote_plugin_config_hash,
+    write_lockfile_atomic,
 };
-use crate::model::{Config, PluginSource, PluginSpec};
+use crate::model::{Config, PluginSource, PluginSpec, Tracking};
 use crate::state::{self, FailureMarker, Paths, build_command_hash, timestamp_now};
 use crate::{git, planner, plugin};
 
@@ -73,7 +74,8 @@ pub async fn run(
             continue;
         }
 
-        match resolve_desired_plugin(spec, desired_hash.clone(), paths).await {
+        let current_entry = lock.plugins.get(id);
+        match resolve_desired_plugin(spec, current_entry, desired_hash.clone(), paths).await {
             Ok(resolved) => {
                 if let Err(err) = reconcile_plugin(spec, lock, paths, resolved).await {
                     failures.push(format!("{id}: {err}"));
@@ -154,6 +156,7 @@ struct ResolvedPlugin {
 
 async fn resolve_desired_plugin(
     spec: &PluginSpec,
+    current_entry: Option<&LockEntry>,
     config_hash: String,
     paths: &Paths,
 ) -> Result<ResolvedPlugin> {
@@ -164,7 +167,14 @@ async fn resolve_desired_plugin(
     let staging_dir = paths.staging_dir(id);
     let prep = async {
         git::clone_repo(clone_url, &staging_dir).await?;
-        let (commit, tracking) = plugin::resolve_tracking(&staging_dir, &spec.tracking).await?;
+
+        let (commit, tracking) = if let Some(entry) = current_entry
+            && tracks_same_revision(spec, &entry.tracking)
+        {
+            (entry.commit.clone(), entry.tracking.clone())
+        } else {
+            plugin::resolve_tracking(&staging_dir, &spec.tracking).await?
+        };
         git::checkout(&staging_dir, &commit).await?;
         Ok::<_, anyhow::Error>(LockEntry { tracking, commit, config_hash: Some(config_hash) })
     }
@@ -176,6 +186,15 @@ async fn resolve_desired_plugin(
             let _ = std::fs::remove_dir_all(&staging_dir);
             Err(err)
         }
+    }
+}
+
+fn tracks_same_revision(spec: &PluginSpec, locked: &TrackingRecord) -> bool {
+    match &spec.tracking {
+        Tracking::DefaultBranch => locked.kind == "default-branch",
+        Tracking::Branch(branch) => locked.kind == "branch" && locked.value == *branch,
+        Tracking::Tag(tag) => locked.kind == "tag" && locked.value == *tag,
+        Tracking::Commit(commit) => locked.kind == "commit" && locked.value == *commit,
     }
 }
 
