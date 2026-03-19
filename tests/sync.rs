@@ -147,6 +147,36 @@ async fn sync_reconciles_branch_to_tag_and_commit_transitions() {
 }
 
 #[tokio::test]
+async fn sync_prefers_tag_ref_when_branch_and_tag_names_conflict() {
+    let dir = tempdir().unwrap();
+    let (bare, tagged_commit) = make_bare_repo(&dir.path().join("repo"));
+    push_tag(&bare, "same", &tagged_commit);
+    let branch_commit = push_branch_commit(&bare, "same", "branch-head");
+
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let cfg = make_config(vec![make_plugin(
+        "test/plugin",
+        "example.com/test/plugin",
+        &clone_url,
+        Tracking::Tag("same".into()),
+        None,
+    )]);
+    let mut lock = LockFile::new();
+
+    sync::run(&cfg, &mut lock, &paths, None, SyncPolicy::SYNC).await.unwrap();
+
+    let entry = lock.plugins.get("example.com/test/plugin").unwrap();
+    assert_eq!(entry.tracking.kind, "tag");
+    assert_eq!(entry.tracking.value, "same");
+    assert_eq!(entry.commit, tagged_commit);
+    assert_ne!(entry.commit, branch_commit);
+    assert_eq!(plugin_head(&paths, "example.com/test/plugin"), tagged_commit);
+}
+
+#[tokio::test]
 async fn sync_updates_only_the_targeted_plugin_id() {
     let dir = tempdir().unwrap();
     let (bare_a, commit_a) = make_bare_repo(&dir.path().join("repo-a"));

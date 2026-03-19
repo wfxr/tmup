@@ -35,8 +35,7 @@ fn make_config_from_plugin(plugin: PluginSpec) -> Config {
 fn init_read_only_path_detected_when_aligned() {
     let config = parse_config(r#"plugin "user/repo""#).unwrap();
     let mut lock = LockFile::new();
-    lock.plugins
-        .insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
+    lock.plugins.insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
     let health: HashMap<String, RepoHealth> =
         [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "abc123".into() })].into();
 
@@ -73,8 +72,7 @@ plugin "user/repo"
     )
     .unwrap();
     let mut lock = LockFile::new();
-    lock.plugins
-        .insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
+    lock.plugins.insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
     // Between preflight and lock acquisition, plugin was installed
     let health: HashMap<String, RepoHealth> =
         [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "abc123".into() })].into();

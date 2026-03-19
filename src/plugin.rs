@@ -3,15 +3,14 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::git;
 use crate::lockfile::{
     LockEntry, LockFile, TrackingRecord, config_fingerprint, remote_plugin_config_hash,
     write_lockfile_atomic,
 };
 use crate::model::{Config, PluginSource, Tracking};
 use crate::planner::{self, PluginStatus, collect_failed_builds};
-use crate::short_hash;
 use crate::state::{self, FailureKey, FailureMarker, Paths, build_command_hash, timestamp_now};
+use crate::{git, short_hash};
 
 /// Install missing remote plugins. Lock-first: uses lock entry if present.
 ///
@@ -95,11 +94,7 @@ pub async fn install(
             Ok(()) => {
                 lock.plugins.insert(
                     id.clone(),
-                    LockEntry {
-                        tracking: tracking_record,
-                        commit,
-                        config_hash,
-                    },
+                    LockEntry { tracking: tracking_record, commit, config_hash },
                 );
             }
             Err(e) => {
@@ -215,11 +210,7 @@ pub async fn update(
             Ok(()) => {
                 lock.plugins.insert(
                     id.clone(),
-                    LockEntry {
-                        tracking: tracking_record,
-                        commit: new_commit,
-                        config_hash,
-                    },
+                    LockEntry { tracking: tracking_record, commit: new_commit, config_hash },
                 );
             }
             Err(e) => {
@@ -388,8 +379,7 @@ pub(crate) async fn resolve_tracking(
             Ok((commit, TrackingRecord { kind: "branch".into(), value: branch.clone() }))
         }
         Tracking::Tag(tag) => {
-            git::checkout(repo, tag).await?;
-            let commit = git::head_commit(repo).await?;
+            let commit = git::resolve_tag(repo, tag).await?;
             Ok((commit, TrackingRecord { kind: "tag".into(), value: tag.clone() }))
         }
         Tracking::Commit(c) => {

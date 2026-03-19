@@ -8,10 +8,7 @@ fn round_trips_lockfile_json() {
     let mut lock = LockFile::new();
     lock.plugins.insert(
         "github.com/tmux-plugins/tmux-sensible".into(),
-        LockEntry::branch(
-            "main",
-            "abc1234567890abcdef1234567890abcdef1234",
-        ),
+        LockEntry::branch("main", "abc1234567890abcdef1234567890abcdef1234"),
     );
 
     write_lockfile_atomic(&path, &lock).unwrap();
@@ -33,12 +30,8 @@ fn round_trips_multiple_plugins() {
         "github.com/tmux-plugins/tmux-sensible".into(),
         LockEntry::branch("main", "aaa111"),
     );
-    lock.plugins.insert(
-        "github.com/catppuccin/tmux".into(),
-        LockEntry::tag("v1.0", "bbb222"),
-    );
-    lock.plugins
-        .insert("github.com/user/pinned".into(), LockEntry::commit("ccc333"));
+    lock.plugins.insert("github.com/catppuccin/tmux".into(), LockEntry::tag("v1.0", "bbb222"));
+    lock.plugins.insert("github.com/user/pinned".into(), LockEntry::commit("ccc333"));
 
     write_lockfile_atomic(&path, &lock).unwrap();
     let reread = read_lockfile(&path).unwrap();
@@ -103,10 +96,7 @@ fn writes_v2_lockfile_with_sync_metadata_and_default_branch_tracking() {
     let mut lock = LockFile::new();
     lock.config_fingerprint = Some("fingerprint-all".into());
 
-    let mut entry = LockEntry::default_branch(
-        "main",
-        "abc1234567890abcdef1234567890abcdef1234",
-    );
+    let mut entry = LockEntry::default_branch("main", "abc1234567890abcdef1234567890abcdef1234");
     entry.config_hash = Some("fingerprint-plugin".into());
     lock.plugins.insert("github.com/tmux-plugins/tmux-sensible".into(), entry);
 
