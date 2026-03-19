@@ -167,7 +167,6 @@ async fn resolve_desired_plugin(
         let (commit, tracking) = plugin::resolve_tracking(&staging_dir, &spec.tracking).await?;
         git::checkout(&staging_dir, &commit).await?;
         Ok::<_, anyhow::Error>(LockEntry {
-            source: id.clone(),
             tracking,
             commit,
             config_hash: Some(config_hash),

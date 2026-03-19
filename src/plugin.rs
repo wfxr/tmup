@@ -10,6 +10,7 @@ use crate::lockfile::{
 };
 use crate::model::{Config, PluginSource, Tracking};
 use crate::planner::{self, PluginStatus, collect_failed_builds};
+use crate::short_hash;
 use crate::state::{self, FailureKey, FailureMarker, Paths, build_command_hash, timestamp_now};
 
 /// Install missing remote plugins. Lock-first: uses lock entry if present.
@@ -92,13 +93,9 @@ pub async fn install(
 
         match publish_and_track(paths, id, &commit, &staging, &target_dir, spec.build.as_deref()) {
             Ok(()) => {
-                // Lock entry source stores the canonical remote id (e.g.
-                // "github.com/user/repo"), not the raw config source string,
-                // so that equivalent spellings produce identical lockfile entries.
                 lock.plugins.insert(
                     id.clone(),
                     LockEntry {
-                        source: id.clone(),
                         tracking: tracking_record,
                         commit,
                         config_hash,
@@ -196,7 +193,6 @@ pub async fn update(
             lock.plugins.insert(
                 id.clone(),
                 LockEntry {
-                    source: id.clone(),
                     tracking: tracking_record,
                     commit: new_commit,
                     config_hash: config_hash.clone(),
@@ -220,7 +216,6 @@ pub async fn update(
                 lock.plugins.insert(
                     id.clone(),
                     LockEntry {
-                        source: id.clone(),
                         tracking: tracking_record,
                         commit: new_commit,
                         config_hash,
@@ -450,11 +445,6 @@ fn publish_and_track(
             Err(e)
         }
     }
-}
-
-/// Return the first 7 characters of a commit hash for display.
-fn short_hash(hash: &str) -> &str {
-    &hash[..7.min(hash.len())]
 }
 
 fn cleanup_empty_parents(path: &std::path::Path, stop_at: &std::path::Path) {

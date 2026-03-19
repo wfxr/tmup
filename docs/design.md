@@ -404,13 +404,11 @@ it prints a warning before the table and does not mutate `lazylock.json`.
   "config_fingerprint": "b4a0d7c2...",
   "plugins": {
     "github.com/tmux-plugins/tmux-sensible": {
-      "source": "tmux-plugins/tmux-sensible",
       "tracking": { "type": "default-branch", "value": "main" },
       "commit": "abc1234567890abcdef1234567890abcdef1234",
       "config_hash": "c78128e1..."
     },
     "github.com/tmux-plugins/tmux-resurrect": {
-      "source": "tmux-plugins/tmux-resurrect",
       "tracking": { "type": "branch", "value": "master" },
       "commit": "def5678901234567890abcdef1234567890abcd",
       "config_hash": "89ce7bd4..."

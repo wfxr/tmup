@@ -274,7 +274,7 @@ fn build_health_map(
 }
 
 fn short_commit(hash: Option<&str>) -> &str {
-    hash.map(|c| &c[..7.min(c.len())]).unwrap_or("-")
+    hash.map(lazytmux::short_hash).unwrap_or("-")
 }
 
 fn dirs_home() -> std::path::PathBuf {
