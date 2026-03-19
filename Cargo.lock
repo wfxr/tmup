@@ -398,7 +398,6 @@ dependencies = [
  "sha2",
  "shellexpand",
  "tempfile",
- "thiserror",
  "tokio",
 ]
 

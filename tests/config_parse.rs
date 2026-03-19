@@ -62,22 +62,10 @@ fn parses_tracking_selectors() {
     let commit = parse_config(r#"plugin "user/repo" commit="abc123""#).unwrap();
     let default = parse_config(r#"plugin "user/repo""#).unwrap();
 
-    assert!(matches!(
-        branch.plugins[0].tracking,
-        lazytmux::model::Tracking::Branch(_)
-    ));
-    assert!(matches!(
-        tag.plugins[0].tracking,
-        lazytmux::model::Tracking::Tag(_)
-    ));
-    assert!(matches!(
-        commit.plugins[0].tracking,
-        lazytmux::model::Tracking::Commit(_)
-    ));
-    assert!(matches!(
-        default.plugins[0].tracking,
-        lazytmux::model::Tracking::DefaultBranch
-    ));
+    assert!(matches!(branch.plugins[0].tracking, lazytmux::model::Tracking::Branch(_)));
+    assert!(matches!(tag.plugins[0].tracking, lazytmux::model::Tracking::Tag(_)));
+    assert!(matches!(commit.plugins[0].tracking, lazytmux::model::Tracking::Commit(_)));
+    assert!(matches!(default.plugins[0].tracking, lazytmux::model::Tracking::DefaultBranch));
 }
 
 #[test]
@@ -129,10 +117,7 @@ fn rejects_wrong_type_build() {
 #[test]
 fn rejects_local_with_remote_style_path() {
     let err = parse_config(r#"plugin "user/repo" local=#true"#).unwrap_err();
-    assert!(
-        err.to_string().contains("must expand to an absolute path"),
-        "{err}"
-    );
+    assert!(err.to_string().contains("must expand to an absolute path"), "{err}");
 }
 
 #[test]
@@ -156,8 +141,5 @@ fn expands_env_var_local_paths() {
 #[test]
 fn rejects_relative_local_paths_after_expansion() {
     let err = parse_config(r#"plugin "./local-plugin" local=#true"#).unwrap_err();
-    assert!(
-        err.to_string().contains("must expand to an absolute path"),
-        "{err}"
-    );
+    assert!(err.to_string().contains("must expand to an absolute path"), "{err}");
 }

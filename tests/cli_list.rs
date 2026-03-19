@@ -132,11 +132,8 @@ fn list_marks_missing_local_plugin_as_missing() {
 
     let missing_local = dir.path().join("missing-plugin");
     let config_path = config_dir.join("lazy.kdl");
-    std::fs::write(
-        &config_path,
-        format!(r#"plugin "{}" local=#true"#, missing_local.display()),
-    )
-    .unwrap();
+    std::fs::write(&config_path, format!(r#"plugin "{}" local=#true"#, missing_local.display()))
+        .unwrap();
 
     Command::cargo_bin("lazytmux")
         .unwrap()
@@ -147,9 +144,7 @@ fn list_marks_missing_local_plugin_as_missing() {
         .env("XDG_STATE_HOME", &state_home)
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            missing_local.to_string_lossy().as_ref(),
-        ))
+        .stdout(predicate::str::contains(missing_local.to_string_lossy().as_ref()))
         .stdout(predicate::str::contains("missing"))
         .stdout(predicate::str::contains("none"));
 }

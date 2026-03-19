@@ -1,9 +1,7 @@
 use std::path::Path;
 
-use crate::{
-    model::{Config, PluginSource},
-    tmux::TmuxCommand,
-};
+use crate::model::{Config, PluginSource};
+use crate::tmux::TmuxCommand;
 
 /// Build the full load plan: set env, then for each plugin set opts + run *.tmux files.
 pub fn build_load_plan(config: &Config, plugin_root: &Path) -> Vec<TmuxCommand> {
@@ -12,7 +10,7 @@ pub fn build_load_plan(config: &Config, plugin_root: &Path) -> Vec<TmuxCommand> 
     // 1. Set TMUX_PLUGIN_MANAGER_PATH with trailing slash
     let root_str = format!("{}/", plugin_root.display());
     plan.push(TmuxCommand::SetEnvironment {
-        key:   "TMUX_PLUGIN_MANAGER_PATH".into(),
+        key: "TMUX_PLUGIN_MANAGER_PATH".into(),
         value: root_str,
     });
 
@@ -21,7 +19,7 @@ pub fn build_load_plan(config: &Config, plugin_root: &Path) -> Vec<TmuxCommand> 
         // Apply opt settings
         for (key, value) in &spec.opts {
             plan.push(TmuxCommand::SetOption {
-                key:   format!("{}{}", spec.opt_prefix, key),
+                key: format!("{}{}", spec.opt_prefix, key),
                 value: value.clone(),
             });
         }

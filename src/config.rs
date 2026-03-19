@@ -1,11 +1,11 @@
+use std::collections::HashSet;
+use std::path::Path;
+
 use anyhow::{Context, Result, bail, ensure};
 use kdl::KdlDocument;
-use std::{collections::HashSet, path::Path};
 
-use crate::{
-    model::{Config, Options, PluginSource, PluginSpec, Tracking},
-    state::validate_plugin_id,
-};
+use crate::model::{Config, Options, PluginSource, PluginSpec, Tracking};
+use crate::state::validate_plugin_id;
 
 pub fn parse_config(input: &str) -> Result<Config> {
     let doc: KdlDocument = input.parse().context("failed to parse KDL")?;
@@ -68,10 +68,7 @@ fn parse_plugin(node: &kdl::KdlNode) -> Result<PluginSpec> {
     let build = get_string(node, &raw, "build")?;
 
     // Parse tracking selector
-    let selector_count = [&branch, &tag, &commit]
-        .iter()
-        .filter(|v| v.is_some())
-        .count();
+    let selector_count = [&branch, &tag, &commit].iter().filter(|v| v.is_some()).count();
     ensure!(
         selector_count <= 1,
         "plugin \"{raw}\": branch, tag, commit are mutually exclusive (got {selector_count})"
@@ -109,14 +106,6 @@ fn parse_plugin(node: &kdl::KdlNode) -> Result<PluginSpec> {
                 // but we already handle it as a property; skip
             }
         }
-    }
-
-    // Also allow build as a child node
-    if build.is_none()
-        && let Some(children) = node.children()
-        && let Some(build_arg) = children.get_arg("build")
-    {
-        let _ = build_arg; // already handled above via property
     }
 
     let build = build.or_else(|| {
@@ -177,19 +166,15 @@ fn parse_plugin(node: &kdl::KdlNode) -> Result<PluginSpec> {
 pub fn normalize_remote_source(raw: &str) -> Result<(String, String)> {
     // SSH URL: git@host:owner/repo.git
     if let Some(rest) = raw.strip_prefix("git@") {
-        let (host, path) = rest
-            .split_once(':')
-            .context("invalid SSH URL: missing ':'")?;
+        let (host, path) = rest.split_once(':').context("invalid SSH URL: missing ':'")?;
         let id = normalize_remote_id(host, path)?;
         return Ok((id, raw.to_string()));
     }
 
     // HTTPS/HTTP URL
     if raw.starts_with("https://") || raw.starts_with("http://") {
-        let without_scheme = raw
-            .strip_prefix("https://")
-            .or_else(|| raw.strip_prefix("http://"))
-            .unwrap();
+        let without_scheme =
+            raw.strip_prefix("https://").or_else(|| raw.strip_prefix("http://")).unwrap();
         let (host, path) = without_scheme
             .split_once('/')
             .context("invalid remote URL: missing repository path")?;
@@ -220,10 +205,7 @@ fn normalize_remote_id(host: &str, path: &str) -> Result<String> {
     );
     let path = path.trim_end_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
-    ensure!(
-        !path.is_empty(),
-        "invalid remote URL: missing repository path"
-    );
+    ensure!(!path.is_empty(), "invalid remote URL: missing repository path");
     let id = format!("{host}/{path}");
     validate_plugin_id(&id)?;
     Ok(id)

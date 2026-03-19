@@ -1,26 +1,25 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
 use anyhow::{Context, Result, ensure};
 use etcetera::BaseStrategy;
 use sha2::{Digest, Sha256};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
 
 /// All filesystem paths used by lazytmux.
 #[derive(Debug, Clone)]
 pub struct Paths {
     /// Root for plugin checkouts: {data}/plugins/
-    pub plugin_root:   PathBuf,
+    pub plugin_root: PathBuf,
     /// Staging area for in-progress installs: {data}/.staging/
-    pub staging_root:  PathBuf,
+    pub staging_root: PathBuf,
     /// Backup area for replace rollback: {data}/.backup/
-    pub backup_root:   PathBuf,
+    pub backup_root: PathBuf,
     /// Lock file for serializing write operations: {state}/operations.lock
-    pub lock_path:     PathBuf,
+    pub lock_path: PathBuf,
     /// Build failure markers: {state}/failures/
     pub failures_root: PathBuf,
     /// Active config file path
-    pub config_path:   PathBuf,
+    pub config_path: PathBuf,
     /// Active lock file (usually next to the active config file)
     pub lockfile_path: PathBuf,
 }
@@ -37,12 +36,12 @@ impl Paths {
         let config_dir = base_dirs.config_dir().join("tmux");
 
         Ok(Self {
-            plugin_root:   data_dir.join("plugins"),
-            staging_root:  data_dir.join(".staging"),
-            backup_root:   data_dir.join(".backup"),
-            lock_path:     state_dir.join("operations.lock"),
+            plugin_root: data_dir.join("plugins"),
+            staging_root: data_dir.join(".staging"),
+            backup_root: data_dir.join(".backup"),
+            lock_path: state_dir.join("operations.lock"),
             failures_root: state_dir.join("failures"),
-            config_path:   config_dir.join("lazy.kdl"),
+            config_path: config_dir.join("lazy.kdl"),
             lockfile_path: config_dir.join("lazylock.json"),
         })
     }
@@ -52,22 +51,19 @@ impl Paths {
         let data = data_root.into();
         let state = state_root.into();
         Self {
-            plugin_root:   data.join("plugins"),
-            staging_root:  data.join(".staging"),
-            backup_root:   data.join(".backup"),
-            lock_path:     state.join("operations.lock"),
+            plugin_root: data.join("plugins"),
+            staging_root: data.join(".staging"),
+            backup_root: data.join(".backup"),
+            lock_path: state.join("operations.lock"),
             failures_root: state.join("failures"),
-            config_path:   state.join("lazy.kdl"),
+            config_path: state.join("lazy.kdl"),
             lockfile_path: state.join("lazylock.json"),
         }
     }
 
     pub fn set_config_path(&mut self, config_path: PathBuf) -> Result<()> {
         let config_dir = config_path.parent().with_context(|| {
-            format!(
-                "config path has no parent directory: {}",
-                config_path.display()
-            )
+            format!("config path has no parent directory: {}", config_path.display())
         })?;
         self.lockfile_path = config_dir.join("lazylock.json");
         self.config_path = config_path;
@@ -134,18 +130,14 @@ pub fn build_command_hash(input: &str) -> String {
 /// Key for identifying a known build failure, used to suppress auto-retry.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FailureKey {
-    pub plugin_id:  String,
-    pub commit:     String,
+    pub plugin_id: String,
+    pub commit: String,
     pub build_hash: String,
 }
 
 impl FailureKey {
     pub fn new(plugin_id: &str, commit: &str, build_hash: &str) -> Self {
-        Self {
-            plugin_id:  plugin_id.into(),
-            commit:     commit.into(),
-            build_hash: build_hash.into(),
-        }
+        Self { plugin_id: plugin_id.into(), commit: commit.into(), build_hash: build_hash.into() }
     }
 
     /// Derive the filename for persisting this failure marker.
@@ -159,11 +151,11 @@ impl FailureKey {
 /// A persisted record of a build failure.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FailureMarker {
-    pub plugin_id:      String,
-    pub commit:         String,
-    pub build_hash:     String,
-    pub build_command:  String,
-    pub failed_at:      String,
+    pub plugin_id: String,
+    pub commit: String,
+    pub build_hash: String,
+    pub build_command: String,
+    pub failed_at: String,
     pub stderr_summary: String,
 }
 
@@ -194,10 +186,11 @@ pub fn read_failure_markers(failures_root: &Path) -> Result<Vec<FailureMarker>> 
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("json") {
             match fs::read_to_string(&path) {
-                Ok(content) =>
+                Ok(content) => {
                     if let Ok(marker) = serde_json::from_str::<FailureMarker>(&content) {
                         markers.push(marker);
-                    },
+                    }
+                }
                 Err(_) => continue,
             }
         }
@@ -230,6 +223,13 @@ pub fn has_failure_marker(failures_root: &Path, key: &FailureKey) -> Result<bool
     Ok(path.exists())
 }
 
+/// Current wall-clock timestamp for failure markers.
+pub fn timestamp_now() -> String {
+    let now =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    format!("{}s-since-epoch", now.as_secs())
+}
+
 /// Operation lock using fd-lock for cross-process mutual exclusion.
 ///
 /// Uses `flock(LOCK_EX)` under the hood. The lock is released when the
@@ -254,9 +254,7 @@ impl OperationLock {
     pub fn acquire(lock_path: &Path) -> Result<OperationLockGuard> {
         let file = Self::open_lock_file(lock_path)?;
         let mut lock = fd_lock::RwLock::new(file);
-        let guard = lock
-            .write()
-            .map_err(|e| anyhow::anyhow!("failed to acquire lock: {e}"))?;
+        let guard = lock.write().map_err(|e| anyhow::anyhow!("failed to acquire lock: {e}"))?;
         // Forget the guard so LOCK_UN is not called on drop.
         // The OS-level flock remains held via the fd inside `lock`.
         // Dropping `lock` later closes the fd and releases the flock.
@@ -278,32 +276,7 @@ impl OperationLock {
                 false
             }
         };
-        if acquired {
-            Ok(Some(OperationLockGuard { _lock: lock }))
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Check if a writer is currently active (without acquiring).
-    pub fn is_writer_active(lock_path: &Path) -> Result<bool> {
-        if !lock_path.exists() {
-            return Ok(false);
-        }
-        let file = match fs::OpenOptions::new()
-            .create(false)
-            .read(true)
-            .write(true)
-            .open(lock_path)
-        {
-            Ok(f) => f,
-            Err(_) => return Ok(false),
-        };
-        let mut lock = fd_lock::RwLock::new(file);
-        match lock.try_write() {
-            Ok(_guard) => Ok(false), // we got it, so no one else has it
-            Err(_) => Ok(true),      // someone else holds it
-        }
+        if acquired { Ok(Some(OperationLockGuard { _lock: lock })) } else { Ok(None) }
     }
 }
 

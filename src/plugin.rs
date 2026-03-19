@@ -1,31 +1,15 @@
-use anyhow::{Context, Result};
 use std::collections::HashSet;
 
-use crate::{
-    git,
-    lockfile::{
-        LockEntry,
-        LockFile,
-        TrackingRecord,
-        config_fingerprint,
-        remote_plugin_config_hash,
-        write_lockfile_atomic,
-    },
-    model::{Config, PluginSource, Tracking},
-    planner::{self, PluginStatus, collect_failed_builds},
-    state::{self, FailureKey, FailureMarker, Paths, build_command_hash},
-};
+use anyhow::{Context, Result};
 
-/// Validate that a target id matches at least one remote plugin in config.
-fn validate_target_id(config: &Config, target_id: Option<&str>) -> Result<()> {
-    if let Some(target) = target_id {
-        let exists = config.plugins.iter().any(|p| p.remote_id() == Some(target));
-        if !exists {
-            anyhow::bail!("unknown plugin id: \"{target}\"");
-        }
-    }
-    Ok(())
-}
+use crate::git;
+use crate::lockfile::{
+    LockEntry, LockFile, TrackingRecord, config_fingerprint, remote_plugin_config_hash,
+    write_lockfile_atomic,
+};
+use crate::model::{Config, PluginSource, Tracking};
+use crate::planner::{self, PluginStatus, collect_failed_builds};
+use crate::state::{self, FailureKey, FailureMarker, Paths, build_command_hash, timestamp_now};
 
 /// Install missing remote plugins. Lock-first: uses lock entry if present.
 ///
@@ -38,7 +22,7 @@ pub async fn install(
     target_id: Option<&str>,
     skip_known_failures: bool,
 ) -> Result<()> {
-    validate_target_id(config, target_id)?;
+    config.validate_target_id(target_id)?;
     paths.ensure_dirs()?;
     let mut failures: Vec<String> = Vec::new();
 
@@ -118,12 +102,15 @@ pub async fn install(
         match result {
             Ok(()) => {
                 // Update lock
-                lock.plugins.insert(id.clone(), LockEntry {
-                    source: id.clone(),
-                    tracking: tracking_record,
-                    commit,
-                    config_hash,
-                });
+                lock.plugins.insert(
+                    id.clone(),
+                    LockEntry {
+                        source: id.clone(),
+                        tracking: tracking_record,
+                        commit,
+                        config_hash,
+                    },
+                );
                 // Clear failure markers on success
                 state::clear_failure_markers(&paths.failures_root, id)?;
             }
@@ -132,11 +119,11 @@ pub async fn install(
                 if let Some(build_cmd) = &spec.build {
                     let bh = build_command_hash(build_cmd);
                     let marker = FailureMarker {
-                        plugin_id:      id.clone(),
-                        commit:         commit.clone(),
-                        build_hash:     bh,
-                        build_command:  build_cmd.clone(),
-                        failed_at:      timestamp_now(),
+                        plugin_id: id.clone(),
+                        commit: commit.clone(),
+                        build_hash: bh,
+                        build_command: build_cmd.clone(),
+                        failed_at: timestamp_now(),
                         stderr_summary: format!("{e}"),
                     };
                     let _ = state::write_failure_marker(&paths.failures_root, &marker);
@@ -169,7 +156,7 @@ pub async fn update(
     paths: &Paths,
     target_id: Option<&str>,
 ) -> Result<()> {
-    validate_target_id(config, target_id)?;
+    config.validate_target_id(target_id)?;
     paths.ensure_dirs()?;
     let mut failures: Vec<String> = Vec::new();
 
@@ -223,22 +210,22 @@ pub async fn update(
         };
 
         // Check if the disk HEAD already matches new_commit.
-        let disk_commit = if target_dir.exists() {
-            git::head_commit(&target_dir).await.ok()
-        } else {
-            None
-        };
+        let disk_commit =
+            if target_dir.exists() { git::head_commit(&target_dir).await.ok() } else { None };
         let revision_changed = disk_commit.as_deref() != Some(new_commit.as_str());
 
         // Already at the target commit — just update the lock, skip publish.
         if !revision_changed && target_dir.exists() {
             let _ = std::fs::remove_dir_all(&staging);
-            lock.plugins.insert(id.clone(), LockEntry {
-                source:      id.clone(),
-                tracking:    tracking_record,
-                commit:      new_commit,
-                config_hash: config_hash.clone(),
-            });
+            lock.plugins.insert(
+                id.clone(),
+                LockEntry {
+                    source: id.clone(),
+                    tracking: tracking_record,
+                    commit: new_commit,
+                    config_hash: config_hash.clone(),
+                },
+            );
             // A no-op update is still a successful operation — clear any
             // stale failure markers so `list` doesn't show build-failed.
             state::clear_failure_markers(&paths.failures_root, id)?;
@@ -258,23 +245,26 @@ pub async fn update(
 
         match result {
             Ok(()) => {
-                lock.plugins.insert(id.clone(), LockEntry {
-                    source: id.clone(),
-                    tracking: tracking_record,
-                    commit: new_commit,
-                    config_hash,
-                });
+                lock.plugins.insert(
+                    id.clone(),
+                    LockEntry {
+                        source: id.clone(),
+                        tracking: tracking_record,
+                        commit: new_commit,
+                        config_hash,
+                    },
+                );
                 state::clear_failure_markers(&paths.failures_root, id)?;
             }
             Err(e) => {
                 if let Some(build_cmd) = &spec.build {
                     let bh = build_command_hash(build_cmd);
                     let marker = FailureMarker {
-                        plugin_id:      id.clone(),
-                        commit:         new_commit.clone(),
-                        build_hash:     bh,
-                        build_command:  build_cmd.clone(),
-                        failed_at:      timestamp_now(),
+                        plugin_id: id.clone(),
+                        commit: new_commit.clone(),
+                        build_hash: bh,
+                        build_command: build_cmd.clone(),
+                        failed_at: timestamp_now(),
                         stderr_summary: format!("{e}"),
                     };
                     let _ = state::write_failure_marker(&paths.failures_root, &marker);
@@ -306,7 +296,7 @@ pub async fn restore(
     paths: &Paths,
     target_id: Option<&str>,
 ) -> Result<()> {
-    validate_target_id(config, target_id)?;
+    config.validate_target_id(target_id)?;
     paths.ensure_dirs()?;
     let mut failures: Vec<String> = Vec::new();
 
@@ -329,11 +319,8 @@ pub async fn restore(
         let target_dir = paths.plugin_dir(id);
 
         // Check if revision would actually change
-        let current_commit = if target_dir.exists() {
-            git::head_commit(&target_dir).await.ok()
-        } else {
-            None
-        };
+        let current_commit =
+            if target_dir.exists() { git::head_commit(&target_dir).await.ok() } else { None };
         let revision_changed = current_commit.as_deref() != Some(&entry.commit);
 
         // Already at the correct commit — nothing to do
@@ -380,11 +367,11 @@ pub async fn restore(
                 if let Some(build_cmd) = &spec.build {
                     let bh = build_command_hash(build_cmd);
                     let marker = FailureMarker {
-                        plugin_id:      id.clone(),
-                        commit:         entry.commit.clone(),
-                        build_hash:     bh,
-                        build_command:  build_cmd.clone(),
-                        failed_at:      timestamp_now(),
+                        plugin_id: id.clone(),
+                        commit: entry.commit.clone(),
+                        build_hash: bh,
+                        build_command: build_cmd.clone(),
+                        failed_at: timestamp_now(),
                         stderr_summary: format!("{e}"),
                     };
                     let _ = state::write_failure_marker(&paths.failures_root, &marker);
@@ -410,11 +397,7 @@ pub async fn restore(
 /// Remove undeclared managed remote plugins.
 pub fn clean(config: &Config, paths: &Paths) -> Result<()> {
     let managed_ids = planner::scan_managed_plugin_ids(&paths.plugin_root);
-    let declared_ids: HashSet<&str> = config
-        .plugins
-        .iter()
-        .filter_map(|p| p.remote_id())
-        .collect();
+    let declared_ids: HashSet<&str> = config.plugins.iter().filter_map(|p| p.remote_id()).collect();
 
     let mut undeclared: Vec<&str> = managed_ids
         .iter()
@@ -448,12 +431,7 @@ pub fn list(config: &Config, lock: &LockFile, paths: &Paths) -> Result<Vec<Plugi
     let markers = state::read_failure_markers(&paths.failures_root)?;
     let failed_builds = collect_failed_builds(&markers);
 
-    Ok(planner::compute_statuses(
-        config,
-        lock,
-        &health_map,
-        &failed_builds,
-    ))
+    Ok(planner::compute_statuses(config, lock, &health_map, &failed_builds))
 }
 
 /// Check if a build failure key is known (for init auto-retry suppression).
@@ -475,30 +453,20 @@ pub(crate) async fn resolve_tracking(
     match tracking {
         Tracking::Branch(branch) => {
             let commit = git::resolve_remote_branch(repo, branch).await?;
-            Ok((commit, TrackingRecord {
-                kind:  "branch".into(),
-                value: branch.clone(),
-            }))
+            Ok((commit, TrackingRecord { kind: "branch".into(), value: branch.clone() }))
         }
         Tracking::Tag(tag) => {
             git::checkout(repo, tag).await?;
             let commit = git::head_commit(repo).await?;
-            Ok((commit, TrackingRecord {
-                kind:  "tag".into(),
-                value: tag.clone(),
-            }))
+            Ok((commit, TrackingRecord { kind: "tag".into(), value: tag.clone() }))
         }
-        Tracking::Commit(c) => Ok((c.clone(), TrackingRecord {
-            kind:  "commit".into(),
-            value: c.clone(),
-        })),
+        Tracking::Commit(c) => {
+            Ok((c.clone(), TrackingRecord { kind: "commit".into(), value: c.clone() }))
+        }
         Tracking::DefaultBranch => {
             let branch = git::default_branch(repo).await?;
             let commit = git::resolve_remote_branch(repo, &branch).await?;
-            Ok((commit, TrackingRecord {
-                kind:  "default-branch".into(),
-                value: branch,
-            }))
+            Ok((commit, TrackingRecord { kind: "default-branch".into(), value: branch }))
         }
     }
 }
@@ -509,10 +477,7 @@ fn cleanup_empty_parents(path: &std::path::Path, stop_at: &std::path::Path) {
         if dir == stop_at {
             break;
         }
-        if std::fs::read_dir(dir)
-            .map(|mut d| d.next().is_none())
-            .unwrap_or(false)
-        {
+        if std::fs::read_dir(dir).map(|mut d| d.next().is_none()).unwrap_or(false) {
             let _ = std::fs::remove_dir(dir);
             current = dir.parent();
         } else {
@@ -532,11 +497,4 @@ fn remove_managed_entry(path: &std::path::Path) -> Result<()> {
             .with_context(|| format!("failed to remove {}", path.display()))?;
     }
     Ok(())
-}
-
-fn timestamp_now() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("{}s-since-epoch", now.as_secs())
 }

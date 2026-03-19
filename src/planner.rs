@@ -1,15 +1,11 @@
-use std::{
-    collections::{HashMap, HashSet},
-    fmt,
-    path::Path,
-};
+use std::collections::{HashMap, HashSet};
+use std::fmt;
+use std::path::Path;
 
-use crate::{
-    git,
-    lockfile::LockFile,
-    model::{Config, PluginSource, Tracking},
-    state::build_command_hash,
-};
+use crate::git;
+use crate::lockfile::LockFile;
+use crate::model::{Config, PluginSource, Tracking};
+use crate::state::build_command_hash;
 
 /// Health of a declared plugin's target directory on disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,14 +84,14 @@ impl fmt::Display for LastResult {
 /// A row of plugin status for list display.
 #[derive(Debug, Clone)]
 pub struct PluginStatus {
-    pub id:             String,
-    pub name:           String,
-    pub source:         String,
-    pub kind:           String,
-    pub state:          PluginState,
-    pub last_result:    LastResult,
+    pub id: String,
+    pub name: String,
+    pub source: String,
+    pub kind: String,
+    pub state: PluginState,
+    pub last_result: LastResult,
     pub current_commit: Option<String>,
-    pub lock_commit:    Option<String>,
+    pub lock_commit: Option<String>,
 }
 
 /// Plan for write operations during init.
@@ -106,7 +102,7 @@ pub struct WritePlan {
     /// Remote plugins that need to be restored (installed but at wrong commit).
     pub to_restore: Vec<String>,
     /// Remote plugins that should be cleaned (undeclared).
-    pub to_clean:   Vec<String>,
+    pub to_clean: Vec<String>,
 }
 
 /// Set of `(plugin_id, build_hash)` pairs that have uncleared failure markers.
@@ -116,10 +112,7 @@ pub type FailedBuilds = HashSet<(String, String)>;
 
 /// Collect `(plugin_id, build_hash)` pairs from failure markers.
 pub fn collect_failed_builds(markers: &[crate::state::FailureMarker]) -> FailedBuilds {
-    markers
-        .iter()
-        .map(|m| (m.plugin_id.clone(), m.build_hash.clone()))
-        .collect()
+    markers.iter().map(|m| (m.plugin_id.clone(), m.build_hash.clone())).collect()
 }
 
 /// Compute plugin statuses from config, lock, repo health, and failure markers.
@@ -134,10 +127,7 @@ pub fn compute_statuses(
     for spec in &config.plugins {
         match &spec.source {
             PluginSource::Remote { raw, id, .. } => {
-                let health = health_map
-                    .get(id.as_str())
-                    .cloned()
-                    .unwrap_or(RepoHealth::Missing);
+                let health = health_map.get(id.as_str()).cloned().unwrap_or(RepoHealth::Missing);
 
                 let lock_entry = lock.plugins.get(id.as_str());
 
@@ -233,11 +223,7 @@ pub fn plan_init(
     health_map: &HashMap<String, RepoHealth>,
     managed_ids: &HashSet<String>,
 ) -> Option<WritePlan> {
-    let declared_ids: HashSet<&str> = config
-        .plugins
-        .iter()
-        .filter_map(|p| p.remote_id())
-        .collect();
+    let declared_ids: HashSet<&str> = config.plugins.iter().filter_map(|p| p.remote_id()).collect();
 
     let mut to_install = Vec::new();
     let mut to_restore = Vec::new();
@@ -251,17 +237,19 @@ pub fn plan_init(
         let health = health_map.get(id).cloned().unwrap_or(RepoHealth::Missing);
 
         match health {
-            RepoHealth::Missing =>
+            RepoHealth::Missing => {
                 if config.options.auto_install {
                     to_install.push(id.to_string());
-                },
-            RepoHealth::Broken =>
+                }
+            }
+            RepoHealth::Broken => {
                 if lock.plugins.contains_key(id) {
                     to_restore.push(id.to_string());
                 } else if config.options.auto_install {
                     to_install.push(id.to_string());
-                },
-            RepoHealth::Healthy { ref commit } =>
+                }
+            }
+            RepoHealth::Healthy { ref commit } => {
                 if let Some(lock_entry) = lock.plugins.get(id) {
                     if commit != &lock_entry.commit {
                         to_restore.push(id.to_string());
@@ -269,17 +257,14 @@ pub fn plan_init(
                 } else if config.options.auto_install {
                     // Healthy but no lock entry — needs a full install to create lock state
                     to_install.push(id.to_string());
-                },
+                }
+            }
         }
     }
 
     // Check what needs cleaning — use managed_ids (disk), sorted for determinism
     let mut to_clean: Vec<String> = if config.options.auto_clean {
-        managed_ids
-            .iter()
-            .filter(|id| !declared_ids.contains(id.as_str()))
-            .cloned()
-            .collect()
+        managed_ids.iter().filter(|id| !declared_ids.contains(id.as_str())).cloned().collect()
     } else {
         Vec::new()
     };
@@ -287,11 +272,7 @@ pub fn plan_init(
 
     let needs_write = !to_install.is_empty() || !to_restore.is_empty() || !to_clean.is_empty();
 
-    if needs_write {
-        Some(WritePlan { to_install, to_restore, to_clean })
-    } else {
-        None
-    }
+    if needs_write { Some(WritePlan { to_install, to_restore, to_clean }) } else { None }
 }
 
 /// Discover managed plugin IDs on disk (directories containing `.git`).

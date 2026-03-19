@@ -8,9 +8,9 @@ pub struct Config {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
-    pub concurrency:  usize,
+    pub concurrency: usize,
     pub auto_install: bool,
-    pub auto_clean:   bool,
+    pub auto_clean: bool,
 }
 
 impl Default for Options {
@@ -23,9 +23,9 @@ impl Default for Options {
 pub enum PluginSource {
     Remote {
         /// Raw source string from config (e.g. "tmux-plugins/tmux-sensible")
-        raw:       String,
+        raw: String,
         /// Canonical id (e.g. "github.com/tmux-plugins/tmux-sensible")
-        id:        String,
+        id: String,
         /// Resolved clone URL
         clone_url: String,
     },
@@ -44,12 +44,25 @@ pub enum Tracking {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginSpec {
-    pub source:     PluginSource,
-    pub name:       String,
+    pub source: PluginSource,
+    pub name: String,
     pub opt_prefix: String,
-    pub tracking:   Tracking,
-    pub build:      Option<String>,
-    pub opts:       Vec<(String, String)>,
+    pub tracking: Tracking,
+    pub build: Option<String>,
+    pub opts: Vec<(String, String)>,
+}
+
+impl Config {
+    /// Validate that a target id matches at least one remote plugin in config.
+    pub fn validate_target_id(&self, target_id: Option<&str>) -> anyhow::Result<()> {
+        if let Some(target) = target_id {
+            let exists = self.plugins.iter().any(|p| p.remote_id() == Some(target));
+            if !exists {
+                anyhow::bail!("unknown plugin id: \"{target}\"");
+            }
+        }
+        Ok(())
+    }
 }
 
 impl PluginSpec {

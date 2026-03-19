@@ -1,48 +1,42 @@
-use anyhow::Result;
-use std::{collections::BTreeMap, path::PathBuf};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 
-use crate::{
-    git,
-    lockfile::{
-        LockEntry,
-        LockFile,
-        config_fingerprint,
-        remote_plugin_config_hash,
-        write_lockfile_atomic,
-    },
-    model::{Config, PluginSource, PluginSpec},
-    planner,
-    plugin,
-    state::{self, FailureMarker, Paths, build_command_hash},
+use anyhow::Result;
+
+use crate::lockfile::{
+    LockEntry, LockFile, config_fingerprint, remote_plugin_config_hash, write_lockfile_atomic,
 };
+use crate::model::{Config, PluginSource, PluginSpec};
+use crate::state::{self, FailureMarker, Paths, build_command_hash, timestamp_now};
+use crate::{git, planner, plugin};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyncPolicy {
-    pub install_new_plugins:     bool,
+    pub install_new_plugins: bool,
     pub repair_existing_plugins: bool,
-    pub prune_removed_plugins:   bool,
+    pub prune_removed_plugins: bool,
 }
 
 impl SyncPolicy {
     pub const SYNC: Self = Self {
-        install_new_plugins:     true,
+        install_new_plugins: true,
         repair_existing_plugins: true,
-        prune_removed_plugins:   true,
+        prune_removed_plugins: true,
     };
     pub const INSTALL: Self = Self::SYNC;
     pub const UPDATE: Self = Self::SYNC;
     pub const RESTORE: Self = Self::SYNC;
     pub const CLEAN: Self = Self {
-        install_new_plugins:     false,
+        install_new_plugins: false,
         repair_existing_plugins: false,
-        prune_removed_plugins:   true,
+        prune_removed_plugins: true,
     };
 
     pub fn init(auto_install: bool) -> Self {
         Self {
-            install_new_plugins:     auto_install,
+            install_new_plugins: auto_install,
             repair_existing_plugins: true,
-            prune_removed_plugins:   true,
+            prune_removed_plugins: true,
         }
     }
 }
@@ -54,7 +48,7 @@ pub async fn run(
     target_id: Option<&str>,
     policy: SyncPolicy,
 ) -> Result<()> {
-    validate_target_id(config, target_id)?;
+    config.validate_target_id(target_id)?;
 
     let desired_hashes = desired_remote_hashes(config);
     let mut failures = Vec::new();
@@ -66,30 +60,25 @@ pub async fn run(
         let id = spec.remote_id().unwrap();
         let desired_hash = desired_hashes.get(id).cloned().unwrap();
 
-        if lock
-            .plugins
-            .get(id)
-            .and_then(|entry| entry.config_hash.as_deref())
+        if lock.plugins.get(id).and_then(|entry| entry.config_hash.as_deref())
             == Some(desired_hash.as_str())
         {
             continue;
         }
 
         let is_new = !lock.plugins.contains_key(id);
-        let can_reconcile = if is_new {
-            policy.install_new_plugins
-        } else {
-            policy.repair_existing_plugins
-        };
+        let can_reconcile =
+            if is_new { policy.install_new_plugins } else { policy.repair_existing_plugins };
         if !can_reconcile {
             continue;
         }
 
         match resolve_desired_plugin(spec, desired_hash.clone(), paths).await {
-            Ok(resolved) =>
+            Ok(resolved) => {
                 if let Err(err) = reconcile_plugin(spec, lock, paths, resolved).await {
                     failures.push(format!("{id}: {err}"));
-                },
+                }
+            }
             Err(err) => failures.push(format!("{id}: {err}")),
         }
     }
@@ -104,11 +93,7 @@ pub async fn run(
     }
 
     if !failures.is_empty() {
-        anyhow::bail!(
-            "{} plugin(s) failed to sync:\n  {}",
-            failures.len(),
-            failures.join("\n  ")
-        );
+        anyhow::bail!("{} plugin(s) failed to sync:\n  {}", failures.len(), failures.join("\n  "));
     }
 
     Ok(())
@@ -121,7 +106,7 @@ pub async fn run_and_write(
     target_id: Option<&str>,
     policy: SyncPolicy,
 ) -> Result<()> {
-    validate_target_id(config, target_id)?;
+    config.validate_target_id(target_id)?;
     let sync_result = run(config, lock, paths, target_id, policy).await;
     write_lockfile_atomic(&paths.lockfile_path, lock)?;
     sync_result
@@ -148,9 +133,7 @@ pub fn lock_matches_config(config: &Config, lock: &LockFile) -> bool {
     }
 
     desired.into_iter().all(|(id, expected_hash)| {
-        lock.plugins
-            .get(&id)
-            .and_then(|entry| entry.config_hash.as_deref())
+        lock.plugins.get(&id).and_then(|entry| entry.config_hash.as_deref())
             == Some(expected_hash.as_str())
     })
 }
@@ -159,35 +142,14 @@ fn desired_remote_hashes(config: &Config) -> BTreeMap<String, String> {
     config
         .plugins
         .iter()
-        .filter_map(|spec| {
-            Some((
-                spec.remote_id()?.to_string(),
-                remote_plugin_config_hash(spec)?,
-            ))
-        })
+        .filter_map(|spec| Some((spec.remote_id()?.to_string(), remote_plugin_config_hash(spec)?)))
         .collect()
 }
 
-fn validate_target_id(config: &Config, target_id: Option<&str>) -> Result<()> {
-    let Some(target) = target_id else {
-        return Ok(());
-    };
-
-    let exists = config
-        .plugins
-        .iter()
-        .any(|spec| spec.remote_id() == Some(target));
-    if !exists {
-        anyhow::bail!("unknown plugin id: \"{target}\"");
-    }
-
-    Ok(())
-}
-
 struct ResolvedPlugin {
-    id:          String,
+    id: String,
     staging_dir: PathBuf,
-    entry:       LockEntry,
+    entry: LockEntry,
 }
 
 async fn resolve_desired_plugin(
@@ -247,10 +209,7 @@ async fn reconcile_plugin(
     let needs_republish =
         same_commit_config_change_requires_republish(current_entry.as_ref(), &entry);
     let needs_publish = current_entry.is_none()
-        || matches!(
-            health,
-            planner::RepoHealth::Missing | planner::RepoHealth::Broken
-        )
+        || matches!(health, planner::RepoHealth::Missing | planner::RepoHealth::Broken)
         || !same_commit
         || needs_republish;
 
@@ -310,19 +269,12 @@ fn record_failure_marker(
     };
 
     let marker = FailureMarker {
-        plugin_id:      id.to_string(),
-        commit:         commit.to_string(),
-        build_hash:     build_command_hash(build_cmd),
-        build_command:  build_cmd.clone(),
-        failed_at:      timestamp_now(),
+        plugin_id: id.to_string(),
+        commit: commit.to_string(),
+        build_hash: build_command_hash(build_cmd),
+        build_command: build_cmd.clone(),
+        failed_at: timestamp_now(),
         stderr_summary: format!("{err}"),
     };
     state::write_failure_marker(&paths.failures_root, &marker)
-}
-
-fn timestamp_now() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("{}s-since-epoch", now.as_secs())
 }

@@ -1,4 +1,6 @@
-use lazytmux::{config::parse_config, loader::build_load_plan, tmux::TmuxCommand};
+use lazytmux::config::parse_config;
+use lazytmux::loader::build_load_plan;
+use lazytmux::tmux::TmuxCommand;
 use tempfile::tempdir;
 
 #[test]
@@ -29,35 +31,18 @@ plugin "user/plugin-a" opt-prefix="pa_" {
     );
 
     // 2. Second should be the opt
-    assert_eq!(plan[1], TmuxCommand::SetOption {
-        key:   "pa_theme".into(),
-        value: "dark".into(),
-    });
+    assert_eq!(plan[1], TmuxCommand::SetOption { key: "pa_theme".into(), value: "dark".into() });
 
     // 3. *.tmux files in sorted order
     match &plan[2] {
         TmuxCommand::RunShell { script } => {
-            assert!(
-                script
-                    .file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .starts_with("00-")
-            );
+            assert!(script.file_name().unwrap().to_str().unwrap().starts_with("00-"));
         }
         other => panic!("expected RunShell, got {other:?}"),
     }
     match &plan[3] {
         TmuxCommand::RunShell { script } => {
-            assert!(
-                script
-                    .file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .starts_with("10-")
-            );
+            assert!(script.file_name().unwrap().to_str().unwrap().starts_with("10-"));
         }
         other => panic!("expected RunShell, got {other:?}"),
     }
@@ -144,8 +129,11 @@ plugin "catppuccin/tmux" opt-prefix="catppuccin_" {
         })
         .collect();
 
-    assert_eq!(opts, vec![
-        ("catppuccin_flavor".into(), "mocha".into()),
-        ("catppuccin_window_text".into(), "#W".into()),
-    ]);
+    assert_eq!(
+        opts,
+        vec![
+            ("catppuccin_flavor".into(), "mocha".into()),
+            ("catppuccin_window_text".into(), "#W".into()),
+        ]
+    );
 }
