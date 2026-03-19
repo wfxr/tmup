@@ -33,7 +33,7 @@ fn read_only_init_plan_when_all_installed() {
     let config = make_config(r#"plugin "user/repo""#);
     let mut lock = LockFile::new();
     lock.plugins
-        .insert("github.com/user/repo".into(), LockEntry::branch("user/repo", "main", "abc123"));
+        .insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
     let health: HashMap<String, RepoHealth> =
         [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "abc123".into() })].into();
 
@@ -69,7 +69,7 @@ plugin "user/repo"
     );
     let mut lock = LockFile::new();
     lock.plugins
-        .insert("github.com/user/repo".into(), LockEntry::branch("user/repo", "main", "abc123"));
+        .insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
     let health: HashMap<String, RepoHealth> =
         [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "abc123".into() })].into();
     let managed_ids: HashSet<String> =
@@ -87,7 +87,7 @@ fn restore_plan_when_installed_commit_drifted() {
     let config = make_config(r#"plugin "user/repo""#);
     let mut lock = LockFile::new();
     lock.plugins
-        .insert("github.com/user/repo".into(), LockEntry::branch("user/repo", "main", "abc123"));
+        .insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
     // Installed at a different commit than the lock
     let health: HashMap<String, RepoHealth> =
         [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "def456".into() })].into();
@@ -104,7 +104,7 @@ fn build_failure_keeps_state_and_result_separate() {
     let config = make_config(r#"plugin "user/repo" build="make""#);
     let mut lock = LockFile::new();
     lock.plugins
-        .insert("github.com/user/repo".into(), LockEntry::branch("user/repo", "main", "abc123"));
+        .insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
     let health: HashMap<String, RepoHealth> =
         [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "abc123".into() })].into();
 
@@ -130,7 +130,7 @@ fn missing_plugin_with_build_failure_shows_missing_and_failed() {
     let config = make_config(r#"plugin "user/repo" build="make""#);
     let mut lock = LockFile::new();
     lock.plugins
-        .insert("github.com/user/repo".into(), LockEntry::branch("user/repo", "main", "abc123"));
+        .insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
     let health: HashMap<String, RepoHealth> = HashMap::new();
 
     let bh = build_command_hash("make");
@@ -204,7 +204,7 @@ fn pinned_tag_status() {
     let config = make_config(r#"plugin "user/repo" tag="v1.0""#);
     let mut lock = LockFile::new();
     lock.plugins
-        .insert("github.com/user/repo".into(), LockEntry::tag("user/repo", "v1.0", "abc123"));
+        .insert("github.com/user/repo".into(), LockEntry::tag("v1.0", "abc123"));
     let health: HashMap<String, RepoHealth> =
         [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "abc123".into() })].into();
     let failed_builds = HashSet::new();
@@ -218,7 +218,7 @@ fn pinned_tag_with_drifted_head_shows_outdated() {
     let config = make_config(r#"plugin "user/repo" tag="v1.0""#);
     let mut lock = LockFile::new();
     lock.plugins
-        .insert("github.com/user/repo".into(), LockEntry::tag("user/repo", "v1.0", "abc123"));
+        .insert("github.com/user/repo".into(), LockEntry::tag("v1.0", "abc123"));
     let health: HashMap<String, RepoHealth> =
         [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "def456".into() })].into();
     let failed_builds = HashSet::new();
@@ -233,7 +233,7 @@ fn pinned_tag_with_drifted_head_shows_outdated() {
 fn pinned_commit_with_drifted_head_shows_outdated() {
     let config = make_config(r#"plugin "user/repo" commit="abc123""#);
     let mut lock = LockFile::new();
-    lock.plugins.insert("github.com/user/repo".into(), LockEntry::commit("user/repo", "abc123"));
+    lock.plugins.insert("github.com/user/repo".into(), LockEntry::commit("abc123"));
     let health: HashMap<String, RepoHealth> =
         [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "def456".into() })].into();
     let failed_builds = HashSet::new();
@@ -249,7 +249,7 @@ fn outdated_state_when_installed_commit_differs_from_lock() {
     let config = make_config(r#"plugin "user/repo""#);
     let mut lock = LockFile::new();
     lock.plugins
-        .insert("github.com/user/repo".into(), LockEntry::branch("user/repo", "main", "abc123"));
+        .insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
     let health: HashMap<String, RepoHealth> =
         [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "def456".into() })].into();
     let failed_builds = HashSet::new();
@@ -347,7 +347,7 @@ fn broken_repo_shows_broken_in_list() {
     let config = make_config(r#"plugin "user/repo""#);
     let mut lock = LockFile::new();
     lock.plugins
-        .insert("github.com/user/repo".into(), LockEntry::branch("user/repo", "main", "abc123"));
+        .insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
     let health: HashMap<String, RepoHealth> =
         [("github.com/user/repo".into(), RepoHealth::Broken)].into();
     let failed_builds = HashSet::new();
@@ -361,7 +361,7 @@ fn init_plans_restore_for_broken_plugin_with_lock() {
     let config = make_config(r#"plugin "user/repo""#);
     let mut lock = LockFile::new();
     lock.plugins
-        .insert("github.com/user/repo".into(), LockEntry::branch("user/repo", "main", "abc123"));
+        .insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
     let health: HashMap<String, RepoHealth> =
         [("github.com/user/repo".into(), RepoHealth::Broken)].into();
     let plan = plan_init(&config, &lock, &health, &HashSet::new());

@@ -53,7 +53,6 @@ async fn restore_same_commit_preserves_build_artifacts() {
     lock.plugins.insert(
         "example.com/test/plugin".into(),
         LockEntry {
-            source: "test/plugin".into(),
             tracking: TrackingRecord { kind: "branch".into(), value: "main".into() },
             commit: commit.clone(),
             config_hash: None,
@@ -94,7 +93,6 @@ async fn restore_build_failure_returns_error() {
     lock.plugins.insert(
         "example.com/test/plugin".into(),
         LockEntry {
-            source: "test/plugin".into(),
             tracking: TrackingRecord { kind: "branch".into(), value: "main".into() },
             commit: commit.clone(),
             config_hash: None,

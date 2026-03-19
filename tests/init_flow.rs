@@ -36,7 +36,7 @@ fn init_read_only_path_detected_when_aligned() {
     let config = parse_config(r#"plugin "user/repo""#).unwrap();
     let mut lock = LockFile::new();
     lock.plugins
-        .insert("github.com/user/repo".into(), LockEntry::branch("user/repo", "main", "abc123"));
+        .insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
     let health: HashMap<String, RepoHealth> =
         [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "abc123".into() })].into();
 
@@ -74,7 +74,7 @@ plugin "user/repo"
     .unwrap();
     let mut lock = LockFile::new();
     lock.plugins
-        .insert("github.com/user/repo".into(), LockEntry::branch("user/repo", "main", "abc123"));
+        .insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
     // Between preflight and lock acquisition, plugin was installed
     let health: HashMap<String, RepoHealth> =
         [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "abc123".into() })].into();
@@ -162,7 +162,7 @@ async fn init_preflight_sync_failure_preserves_previous_lock_snapshot() {
         make_plugin(&clone_url, Tracking::DefaultBranch, Some("touch built-v2; exit 1"));
 
     let mut lock = LockFile::new();
-    let mut entry = LockEntry::default_branch("test/plugin", "main", &commit);
+    let mut entry = LockEntry::default_branch("main", &commit);
     entry.config_hash = remote_plugin_config_hash(&old_plugin);
     lock.plugins.insert("example.com/test/plugin".into(), entry);
     lock.config_fingerprint = Some(config_fingerprint(&make_config_from_plugin(old_plugin)));

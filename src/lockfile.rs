@@ -21,7 +21,6 @@ pub struct LockFile {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LockEntry {
-    pub source: String,
     pub tracking: TrackingRecord,
     pub commit: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -36,36 +35,32 @@ pub struct TrackingRecord {
 }
 
 impl LockEntry {
-    pub fn branch(source: &str, branch: &str, commit: &str) -> Self {
+    pub fn branch(branch: &str, commit: &str) -> Self {
         Self {
-            source: source.into(),
             tracking: TrackingRecord { kind: "branch".into(), value: branch.into() },
             commit: commit.into(),
             config_hash: None,
         }
     }
 
-    pub fn tag(source: &str, tag: &str, commit: &str) -> Self {
+    pub fn tag(tag: &str, commit: &str) -> Self {
         Self {
-            source: source.into(),
             tracking: TrackingRecord { kind: "tag".into(), value: tag.into() },
             commit: commit.into(),
             config_hash: None,
         }
     }
 
-    pub fn commit(source: &str, commit: &str) -> Self {
+    pub fn commit(commit: &str) -> Self {
         Self {
-            source: source.into(),
             tracking: TrackingRecord { kind: "commit".into(), value: commit.into() },
             commit: commit.into(),
             config_hash: None,
         }
     }
 
-    pub fn default_branch(source: &str, branch: &str, commit: &str) -> Self {
+    pub fn default_branch(branch: &str, commit: &str) -> Self {
         Self {
-            source: source.into(),
             tracking: TrackingRecord { kind: "default-branch".into(), value: branch.into() },
             commit: commit.into(),
             config_hash: None,

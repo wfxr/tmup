@@ -9,7 +9,6 @@ fn round_trips_lockfile_json() {
     lock.plugins.insert(
         "github.com/tmux-plugins/tmux-sensible".into(),
         LockEntry::branch(
-            "tmux-plugins/tmux-sensible",
             "main",
             "abc1234567890abcdef1234567890abcdef1234",
         ),
@@ -20,7 +19,6 @@ fn round_trips_lockfile_json() {
     assert_eq!(reread.version, 2);
     assert_eq!(reread.plugins.len(), 1);
     let entry = &reread.plugins["github.com/tmux-plugins/tmux-sensible"];
-    assert_eq!(entry.source, "tmux-plugins/tmux-sensible");
     assert_eq!(entry.tracking.kind, "branch");
     assert_eq!(entry.tracking.value, "main");
     assert_eq!(entry.commit, "abc1234567890abcdef1234567890abcdef1234");
@@ -33,14 +31,14 @@ fn round_trips_multiple_plugins() {
     let mut lock = LockFile::new();
     lock.plugins.insert(
         "github.com/tmux-plugins/tmux-sensible".into(),
-        LockEntry::branch("tmux-plugins/tmux-sensible", "main", "aaa111"),
+        LockEntry::branch("main", "aaa111"),
     );
     lock.plugins.insert(
         "github.com/catppuccin/tmux".into(),
-        LockEntry::tag("catppuccin/tmux", "v1.0", "bbb222"),
+        LockEntry::tag("v1.0", "bbb222"),
     );
     lock.plugins
-        .insert("github.com/user/pinned".into(), LockEntry::commit("user/pinned", "ccc333"));
+        .insert("github.com/user/pinned".into(), LockEntry::commit("ccc333"));
 
     write_lockfile_atomic(&path, &lock).unwrap();
     let reread = read_lockfile(&path).unwrap();
@@ -61,8 +59,8 @@ fn plugins_are_sorted_by_key() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("lazylock.json");
     let mut lock = LockFile::new();
-    lock.plugins.insert("github.com/z/z".into(), LockEntry::branch("z/z", "main", "aaa"));
-    lock.plugins.insert("github.com/a/a".into(), LockEntry::branch("a/a", "main", "bbb"));
+    lock.plugins.insert("github.com/z/z".into(), LockEntry::branch("main", "aaa"));
+    lock.plugins.insert("github.com/a/a".into(), LockEntry::branch("main", "bbb"));
 
     write_lockfile_atomic(&path, &lock).unwrap();
     let content = std::fs::read_to_string(&path).unwrap();
@@ -106,7 +104,6 @@ fn writes_v2_lockfile_with_sync_metadata_and_default_branch_tracking() {
     lock.config_fingerprint = Some("fingerprint-all".into());
 
     let mut entry = LockEntry::default_branch(
-        "tmux-plugins/tmux-sensible",
         "main",
         "abc1234567890abcdef1234567890abcdef1234",
     );
@@ -132,11 +129,11 @@ fn writing_v2_lockfile_remains_deterministic() {
     let mut lock = LockFile::new();
     lock.config_fingerprint = Some("fingerprint-all".into());
 
-    let mut entry_a = LockEntry::branch("z/z", "main", "aaa111");
+    let mut entry_a = LockEntry::branch("main", "aaa111");
     entry_a.config_hash = Some("hash-z".into());
     lock.plugins.insert("github.com/z/z".into(), entry_a);
 
-    let mut entry_b = LockEntry::default_branch("a/a", "master", "bbb222");
+    let mut entry_b = LockEntry::default_branch("master", "bbb222");
     entry_b.config_hash = Some("hash-a".into());
     lock.plugins.insert("github.com/a/a".into(), entry_b);
 

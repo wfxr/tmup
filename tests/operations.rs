@@ -94,11 +94,11 @@ plugin "user/repo-b" build="make"
     let mut lock = LockFile::new();
     lock.plugins.insert(
         "github.com/user/repo-a".into(),
-        LockEntry::branch("user/repo-a", "main", "aaa111"),
+        LockEntry::branch("main", "aaa111"),
     );
     lock.plugins.insert(
         "github.com/user/repo-b".into(),
-        LockEntry::branch("user/repo-b", "main", "bbb222"),
+        LockEntry::branch("main", "bbb222"),
     );
 
     // Simulate repo-a installed (real git repo), repo-b missing
@@ -108,7 +108,7 @@ plugin "user/repo-b" build="make"
     // Update lock to match the real commit so state is Installed, not Outdated
     lock.plugins.insert(
         "github.com/user/repo-a".into(),
-        LockEntry::branch("user/repo-a", "main", &commit_a),
+        LockEntry::branch("main", &commit_a),
     );
 
     let statuses = plugin::list(&config, &lock, &paths).unwrap();
@@ -242,7 +242,7 @@ fn list_shows_broken_for_dir_without_git() {
     let config = parse_config(r#"plugin "user/repo""#).unwrap();
     let mut lock = LockFile::new();
     lock.plugins
-        .insert("github.com/user/repo".into(), LockEntry::branch("user/repo", "main", "abc123"));
+        .insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
 
     // Create target dir but no .git — simulates a broken/corrupt install
     let plugin_dir = paths.plugin_dir("github.com/user/repo");
@@ -293,7 +293,7 @@ fn list_shows_both_state_and_last_result_for_build_failure() {
     let config = parse_config(r#"plugin "user/repo" build="make""#).unwrap();
     let mut lock = LockFile::new();
     lock.plugins
-        .insert("github.com/user/repo".into(), LockEntry::branch("user/repo", "main", "abc123"));
+        .insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
 
     // Plugin is installed (real git repo) but has a build failure marker
     let plugin_dir = paths.plugin_dir("github.com/user/repo");
@@ -301,7 +301,7 @@ fn list_shows_both_state_and_last_result_for_build_failure() {
 
     // Update lock to match the real commit
     lock.plugins
-        .insert("github.com/user/repo".into(), LockEntry::branch("user/repo", "main", &commit));
+        .insert("github.com/user/repo".into(), LockEntry::branch("main", &commit));
 
     let marker = lazytmux::state::FailureMarker {
         plugin_id: "github.com/user/repo".into(),
@@ -325,12 +325,12 @@ fn stale_lock_detection_catches_missing_and_mismatched_sync_metadata() {
     let mut stale_lock = LockFile::new();
     stale_lock
         .plugins
-        .insert("github.com/user/repo".into(), LockEntry::branch("user/repo", "main", "abc123"));
+        .insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
     stale_lock.config_fingerprint = None;
     assert!(sync::lock_is_stale(&config, &stale_lock));
 
     let mut aligned_lock = LockFile::new();
-    let mut entry = LockEntry::branch("user/repo", "main", "abc123");
+    let mut entry = LockEntry::branch("main", "abc123");
     entry.config_hash = lazytmux::lockfile::remote_plugin_config_hash(&config.plugins[0]);
     aligned_lock.plugins.insert("github.com/user/repo".into(), entry);
     aligned_lock.config_fingerprint = Some(lazytmux::lockfile::config_fingerprint(&config));
@@ -362,7 +362,7 @@ async fn install_uses_post_sync_lock_snapshot() {
     let mut lock = LockFile::new();
     lock.plugins.insert(
         "example.com/test/plugin".into(),
-        LockEntry::branch("test/plugin", "main", &commit_b),
+        LockEntry::branch("main", &commit_b),
     );
 
     sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::INSTALL).await.unwrap();
@@ -400,7 +400,7 @@ async fn restore_uses_post_sync_lock_snapshot() {
     let mut lock = LockFile::new();
     lock.plugins.insert(
         "example.com/test/plugin".into(),
-        LockEntry::branch("test/plugin", "main", &commit_a),
+        LockEntry::branch("main", &commit_a),
     );
 
     sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::RESTORE).await.unwrap();
@@ -453,11 +453,11 @@ async fn update_runs_sync_first_then_only_advances_unchanged_floating_plugins() 
     let mut lock = LockFile::new();
     lock.plugins.insert(
         "example.com/test/plugin-a".into(),
-        LockEntry::branch("test/plugin-a", "main", &commit_a1),
+        LockEntry::branch("main", &commit_a1),
     );
     lock.plugins.insert(
         "example.com/test/plugin-b".into(),
-        LockEntry::branch("test/plugin-b", "main", &commit_b1),
+        LockEntry::branch("main", &commit_b1),
     );
 
     sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::UPDATE).await.unwrap();
