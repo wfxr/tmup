@@ -294,19 +294,7 @@ fn build_change_requires_rebuild(
     if current_entry.config_hash == desired_entry.config_hash {
         return false;
     }
-    plugin_tracking_matches_spec(current_entry, spec)
-}
-
-fn plugin_tracking_matches_spec(entry: &LockEntry, spec: &PluginSpec) -> bool {
-    match &spec.tracking {
-        crate::model::Tracking::DefaultBranch => entry.tracking.kind == "default-branch",
-        crate::model::Tracking::Branch(branch) =>
-            entry.tracking.kind == "branch" && entry.tracking.value == *branch,
-        crate::model::Tracking::Tag(tag) =>
-            entry.tracking.kind == "tag" && entry.tracking.value == *tag,
-        crate::model::Tracking::Commit(commit) =>
-            entry.tracking.kind == "commit" && entry.tracking.value == *commit,
-    }
+    spec.build.is_some()
 }
 
 fn record_failure_marker(
