@@ -197,7 +197,7 @@ async fn run_install(id: Option<String>) -> Result<()> {
         .context("another lazytmux operation is in progress")?;
     let cfg = load_config(&paths)?;
     let mut lock = load_lockfile(&paths)?;
-    sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::INSTALL).await?;
+    sync::run_and_write(&cfg, &mut lock, &paths, id.as_deref(), SyncPolicy::INSTALL).await?;
     plugin::install(&cfg, &mut lock, &paths, id.as_deref(), false).await
 }
 
@@ -216,7 +216,7 @@ async fn run_update(id: Option<String>) -> Result<()> {
         .context("another lazytmux operation is in progress")?;
     let cfg = load_config(&paths)?;
     let mut lock = load_lockfile(&paths)?;
-    sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::UPDATE).await?;
+    sync::run_and_write(&cfg, &mut lock, &paths, id.as_deref(), SyncPolicy::UPDATE).await?;
     plugin::update(&cfg, &mut lock, &paths, id.as_deref()).await
 }
 
@@ -226,7 +226,7 @@ async fn run_restore(id: Option<String>) -> Result<()> {
         .context("another lazytmux operation is in progress")?;
     let cfg = load_config(&paths)?;
     let mut lock = load_lockfile(&paths)?;
-    sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::RESTORE).await?;
+    sync::run_and_write(&cfg, &mut lock, &paths, id.as_deref(), SyncPolicy::RESTORE).await?;
     plugin::restore(&cfg, &lock, &paths, id.as_deref()).await
 }
 
