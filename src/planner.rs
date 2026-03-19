@@ -310,7 +310,18 @@ fn scan_recursive_ids(root: &Path, current: &Path, ids: &mut HashSet<String>) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_dir() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            if path.join(".git").exists()
+                && let Ok(rel) = path.strip_prefix(root)
+            {
+                ids.insert(rel.to_string_lossy().to_string());
+            }
+            continue;
+        }
+        if !file_type.is_dir() {
             continue;
         }
         if path.join(".git").exists() {

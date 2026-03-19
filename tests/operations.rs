@@ -7,6 +7,8 @@ use lazytmux::{
     state::{Paths, build_command_hash},
     sync::{self, SyncPolicy},
 };
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 use std::path::Path;
 use tempfile::tempdir;
 
@@ -236,6 +238,65 @@ fn clean_does_not_remove_local_plugin_source() {
     // Local plugin source is not in the managed directory, so clean should not touch it
     plugin::clean(&config, &paths).unwrap();
     // Just verifying no panic/error
+}
+
+#[cfg(unix)]
+#[test]
+fn clean_unlinks_symlinked_undeclared_plugin_without_removing_target_repo() {
+    let dir = tempdir().unwrap();
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let config = parse_config("").unwrap();
+
+    let external_repo = dir.path().join("external-repo");
+    std::fs::create_dir_all(external_repo.join(".git")).unwrap();
+
+    let managed_link = paths.plugin_dir("github.com/user/repo");
+    std::fs::create_dir_all(managed_link.parent().unwrap()).unwrap();
+    symlink(&external_repo, &managed_link).unwrap();
+
+    plugin::clean(&config, &paths).unwrap();
+
+    assert!(
+        !managed_link.exists(),
+        "symlinked managed entry should be removed"
+    );
+    assert!(
+        external_repo.exists(),
+        "clean must not remove the symlink target repo"
+    );
+    assert!(
+        external_repo.join(".git").exists(),
+        "target repo contents should remain intact"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn clean_does_not_traverse_symlinked_parent_directories() {
+    let dir = tempdir().unwrap();
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let config = parse_config("").unwrap();
+
+    let external_host_root = dir.path().join("external-host-root");
+    std::fs::create_dir_all(external_host_root.join("user/repo/.git")).unwrap();
+
+    let managed_host_link = paths.plugin_root.join("github.com");
+    symlink(&external_host_root, &managed_host_link).unwrap();
+
+    plugin::clean(&config, &paths).unwrap();
+
+    assert!(
+        managed_host_link.exists(),
+        "clean should not recurse into a symlinked host directory"
+    );
+    assert!(
+        external_host_root.join("user/repo/.git").exists(),
+        "clean must not remove repos reachable only through a symlinked parent"
+    );
 }
 
 #[test]
