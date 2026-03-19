@@ -244,14 +244,15 @@ async fn reconcile_plugin(
     }
 
     let same_commit = current_commit.as_deref() == Some(entry.commit.as_str());
-    let needs_rebuild = build_change_requires_rebuild(current_entry.as_ref(), spec, &entry);
+    let needs_republish =
+        same_commit_config_change_requires_republish(current_entry.as_ref(), &entry);
     let needs_publish = current_entry.is_none()
         || matches!(
             health,
             planner::RepoHealth::Missing | planner::RepoHealth::Broken
         )
         || !same_commit
-        || needs_rebuild;
+        || needs_republish;
 
     if !needs_publish {
         let _ = std::fs::remove_dir_all(&staging_dir);
@@ -281,9 +282,8 @@ async fn reconcile_plugin(
     }
 }
 
-fn build_change_requires_rebuild(
+fn same_commit_config_change_requires_republish(
     current_entry: Option<&LockEntry>,
-    spec: &PluginSpec,
     desired_entry: &LockEntry,
 ) -> bool {
     let Some(current_entry) = current_entry else {
@@ -295,7 +295,7 @@ fn build_change_requires_rebuild(
     if current_entry.config_hash == desired_entry.config_hash {
         return false;
     }
-    spec.build.is_some()
+    true
 }
 
 fn record_failure_marker(
