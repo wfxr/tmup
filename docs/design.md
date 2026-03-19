@@ -92,6 +92,9 @@ Rules:
 - The CLI target selector is `id`, not `name`.
 - The managed plugin tree is lazy.tmux-owned state; manually cloning into it,
   mutating repos in place, or introducing symlink-based layouts is unsupported.
+- Cleanup is defined only for undeclared remote directories that lazy.tmux
+  still recognizes as managed git repos (currently: directories under
+  `plugin_root` that still contain `.git`).
 
 Directory layout:
 
@@ -209,7 +212,7 @@ Rules:
 |--------|------|---------|-------------|
 | `concurrency` | int | `8` | Max parallel git operations (planned, currently serial) |
 | `auto-install` | bool | `true` | Install missing plugins during `init` |
-| `auto-clean` | bool | `false` | Remove undeclared plugins during `init` |
+| `auto-clean` | bool | `false` | Remove undeclared managed remote repos during `init` |
 
 ### 4.4 Validation Rules
 
@@ -243,7 +246,7 @@ lazytmux sync [id]          # reconcile config into the lock snapshot
 lazytmux install [id]       # install all/specified missing remote plugins after sync
 lazytmux update [id]        # update unchanged floating selectors after sync
 lazytmux restore [id]       # restore plugins to lock-recorded commits
-lazytmux clean              # remove undeclared managed remote plugins
+lazytmux clean              # remove undeclared managed remote repos
 lazytmux list               # list plugin status
 lazytmux migrate            # migrate from .tmux.conf TPM declarations (planned)
 ```
@@ -272,7 +275,8 @@ and mutation.
 6. If writes are needed:
    - If auto-install=true: install missing remote plugins from the synced lock snapshot
    - If installed commit has drifted from lock: restore to the synced lock commit
-   - If auto-clean=true: remove undeclared managed remote plugins from disk
+   - If auto-clean=true: remove undeclared managed remote repos from disk when
+     they still match the managed-repo shape
 7. Load plugins into tmux (set options, source *.tmux files).
 8. Release the lock.
 ```
@@ -333,8 +337,11 @@ ones and writing the lock snapshot.
 ### 5.7 `clean`
 
 - Runs a prune-only implicit sync first.
-- Removes installed but undeclared remote plugins from the managed directory.
-- Only cleans lazy.tmux-managed remote directories.
+- Removes undeclared remote directories from the managed tree when lazy.tmux
+  still recognizes them as managed git repos.
+- Does not promise to clean arbitrary residue left behind by manual edits,
+  symlink layouts, or broken directories that no longer match the managed-repo
+  shape.
 - Does not remove local plugin sources.
 - Must not install, rebuild, replace, or otherwise mutate declared plugin
   directories as a side effect.

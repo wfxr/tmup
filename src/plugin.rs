@@ -425,8 +425,7 @@ pub fn clean(config: &Config, paths: &Paths) -> Result<()> {
     for id in undeclared {
         let dir = paths.plugin_dir(id);
         eprintln!("removing undeclared plugin: {id}");
-        std::fs::remove_dir_all(&dir)
-            .with_context(|| format!("failed to remove {}", dir.display()))?;
+        remove_managed_entry(&dir)?;
         // Clean up empty parent directories
         cleanup_empty_parents(&dir, &paths.plugin_root);
     }
@@ -520,6 +519,19 @@ fn cleanup_empty_parents(path: &std::path::Path, stop_at: &std::path::Path) {
             break;
         }
     }
+}
+
+fn remove_managed_entry(path: &std::path::Path) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect {}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        std::fs::remove_file(path)
+            .with_context(|| format!("failed to remove symlink {}", path.display()))?;
+    } else {
+        std::fs::remove_dir_all(path)
+            .with_context(|| format!("failed to remove {}", path.display()))?;
+    }
+    Ok(())
 }
 
 fn timestamp_now() -> String {
