@@ -3,7 +3,6 @@ fn example_config_parses() {
     let input = std::fs::read_to_string("examples/lazy.kdl").unwrap();
     let cfg = lazytmux::config::parse_config(&input).unwrap();
     assert!(cfg.options.auto_install);
-    assert!(!cfg.options.auto_clean);
     assert_eq!(cfg.plugins.len(), 6); // continuum disabled via slashdash
     // tmux-sensible
     assert_eq!(cfg.plugins[0].remote_id().unwrap(), "github.com/tmux-plugins/tmux-sensible");

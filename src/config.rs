@@ -38,9 +38,6 @@ fn parse_options(doc: &KdlDocument) -> Result<Options> {
     if let Some(v) = children.get_arg("auto-install") {
         opts.auto_install = v.as_bool().context("auto-install must be a bool")?;
     }
-    if let Some(v) = children.get_arg("auto-clean") {
-        opts.auto_clean = v.as_bool().context("auto-clean must be a bool")?;
-    }
 
     Ok(opts)
 }

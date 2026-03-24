@@ -29,12 +29,10 @@ fn parses_options() {
     let input = r#"
 options {
     auto-install #false
-    auto-clean #true
 }
     "#;
     let cfg = parse_config(input).unwrap();
     assert!(!cfg.options.auto_install);
-    assert!(cfg.options.auto_clean);
 }
 
 #[test]
@@ -89,7 +87,6 @@ fn parses_build_property() {
 fn defaults_are_applied() {
     let cfg = parse_config("").unwrap();
     assert!(cfg.options.auto_install);
-    assert!(!cfg.options.auto_clean);
     assert!(cfg.plugins.is_empty());
 }
 
