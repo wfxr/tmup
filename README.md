@@ -117,7 +117,6 @@ example, if `LAZY_TMUX_CONFIG=/path/to/custom.kdl`, lazytmux reads and writes
 ```kdl
 options {
     auto-install #true
-    auto-clean #false
 }
 
 // GitHub shorthand — track default branch
@@ -153,7 +152,6 @@ plugin "~/dev/my-tmux-plugin" local=#true name="my-plugin-dev"
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `auto-install` | bool | `#true` | Install missing plugins during `init` |
-| `auto-clean` | bool | `#false` | Remove undeclared managed remote repos during `init` |
 
 ### Plugin properties
 
@@ -209,8 +207,8 @@ Designed for `run-shell "lazytmux init"` in `.tmux.conf`.
    mutating work. Existing declared plugins may be repaired; removed plugins
    drop lock entries immediately.
 3. **Respect init policy** — newly declared remote plugins are installed only
-   when `auto-install=true`; on-disk deletion remains controlled by
-   `auto-clean`.
+   when `auto-install=true`. Use `lazytmux clean` to remove undeclared plugin
+   directories.
 4. **Load tmux state** — set options and source `*.tmux` files after sync.
 
 `init` never advances floating selectors beyond what config declares. Known
@@ -225,8 +223,8 @@ and applies only the changed plugin directories.
 
 - Changing `branch`, `tag`, `commit`, source URL, or `build` is handled by `sync`.
 - Removed remote plugins drop their lock entries immediately.
-- `sync` does not delete undeclared plugin directories; `clean` / `auto-clean`
-  only remove undeclared remote directories that still look like
+- `sync` does not delete undeclared plugin directories; `clean`
+  only removes undeclared remote directories that still look like
   lazytmux-managed git repos.
 - Mutating commands run this same sync engine first and abort if it fails.
 

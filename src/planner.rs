@@ -101,8 +101,6 @@ pub struct WritePlan {
     pub to_install: Vec<String>,
     /// Remote plugins that need to be restored (installed but at wrong commit).
     pub to_restore: Vec<String>,
-    /// Remote plugins that should be cleaned (undeclared).
-    pub to_clean: Vec<String>,
 }
 
 /// Set of `(plugin_id, build_hash)` pairs that have uncleared failure markers.
@@ -221,10 +219,7 @@ pub fn plan_init(
     config: &Config,
     lock: &LockFile,
     health_map: &HashMap<String, RepoHealth>,
-    managed_ids: &HashSet<String>,
 ) -> Option<WritePlan> {
-    let declared_ids: HashSet<&str> = config.plugins.iter().filter_map(|p| p.remote_id()).collect();
-
     let mut to_install = Vec::new();
     let mut to_restore = Vec::new();
 
@@ -262,17 +257,9 @@ pub fn plan_init(
         }
     }
 
-    // Check what needs cleaning — use managed_ids (disk), sorted for determinism
-    let mut to_clean: Vec<String> = if config.options.auto_clean {
-        managed_ids.iter().filter(|id| !declared_ids.contains(id.as_str())).cloned().collect()
-    } else {
-        Vec::new()
-    };
-    to_clean.sort();
+    let needs_write = !to_install.is_empty() || !to_restore.is_empty();
 
-    let needs_write = !to_install.is_empty() || !to_restore.is_empty() || !to_clean.is_empty();
-
-    if needs_write { Some(WritePlan { to_install, to_restore, to_clean }) } else { None }
+    if needs_write { Some(WritePlan { to_install, to_restore }) } else { None }
 }
 
 /// Discover managed plugin IDs on disk (directories containing `.git`).

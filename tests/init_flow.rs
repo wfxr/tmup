@@ -1,5 +1,5 @@
 mod utils;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use lazytmux::config::parse_config;
 use lazytmux::lockfile::{
@@ -39,7 +39,7 @@ fn init_read_only_path_detected_when_aligned() {
     let health: HashMap<String, RepoHealth> =
         [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "abc123".into() })].into();
 
-    let plan = planner::plan_init(&config, &lock, &health, &HashSet::new());
+    let plan = planner::plan_init(&config, &lock, &health);
     assert!(plan.is_none());
 }
 
@@ -55,7 +55,7 @@ plugin "user/repo"
     let lock = LockFile::new();
     let health: HashMap<String, RepoHealth> = HashMap::new();
 
-    let plan = planner::plan_init(&config, &lock, &health, &HashSet::new());
+    let plan = planner::plan_init(&config, &lock, &health);
     let plan = plan.expect("expected Some(WritePlan)");
     assert!(plan.to_install.contains(&"github.com/user/repo".to_string()));
 }
@@ -77,7 +77,7 @@ plugin "user/repo"
     let health: HashMap<String, RepoHealth> =
         [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "abc123".into() })].into();
 
-    let plan = planner::plan_init(&config, &lock, &health, &HashSet::new());
+    let plan = planner::plan_init(&config, &lock, &health);
     assert!(plan.is_none());
 }
 

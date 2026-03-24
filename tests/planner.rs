@@ -36,7 +36,7 @@ fn read_only_init_plan_when_all_installed() {
     let health: HashMap<String, RepoHealth> =
         [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "abc123".into() })].into();
 
-    let plan = plan_init(&config, &lock, &health, &HashSet::new());
+    let plan = plan_init(&config, &lock, &health);
     assert!(plan.is_none());
 }
 
@@ -51,33 +51,10 @@ plugin "user/repo"
     let lock = LockFile::new();
     let health: HashMap<String, RepoHealth> = HashMap::new();
 
-    let plan = plan_init(&config, &lock, &health, &HashSet::new());
+    let plan = plan_init(&config, &lock, &health);
     let plan = plan.expect("expected Some(WritePlan)");
     assert_eq!(plan.to_install, vec!["github.com/user/repo"]);
     assert!(plan.to_restore.is_empty());
-    assert!(plan.to_clean.is_empty());
-}
-
-#[test]
-fn auto_clean_detects_undeclared_plugins() {
-    let config = make_config(
-        r#"
-options { auto-clean #true }
-plugin "user/repo"
-    "#,
-    );
-    let mut lock = LockFile::new();
-    lock.plugins.insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
-    let health: HashMap<String, RepoHealth> =
-        [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "abc123".into() })].into();
-    let managed_ids: HashSet<String> =
-        ["github.com/user/repo", "github.com/old/removed"].iter().map(|s| s.to_string()).collect();
-
-    let plan = plan_init(&config, &lock, &health, &managed_ids);
-    let plan = plan.expect("expected Some(WritePlan)");
-    assert!(plan.to_install.is_empty());
-    assert!(plan.to_restore.is_empty());
-    assert_eq!(plan.to_clean, vec!["github.com/old/removed"]);
 }
 
 #[test]
@@ -89,11 +66,10 @@ fn restore_plan_when_installed_commit_drifted() {
     let health: HashMap<String, RepoHealth> =
         [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "def456".into() })].into();
 
-    let plan = plan_init(&config, &lock, &health, &HashSet::new());
+    let plan = plan_init(&config, &lock, &health);
     let plan = plan.expect("expected Some(WritePlan) with to_restore");
     assert!(plan.to_install.is_empty());
     assert_eq!(plan.to_restore, vec!["github.com/user/repo"]);
-    assert!(plan.to_clean.is_empty());
 }
 
 #[test]
@@ -354,7 +330,7 @@ fn init_plans_restore_for_broken_plugin_with_lock() {
     lock.plugins.insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
     let health: HashMap<String, RepoHealth> =
         [("github.com/user/repo".into(), RepoHealth::Broken)].into();
-    let plan = plan_init(&config, &lock, &health, &HashSet::new());
+    let plan = plan_init(&config, &lock, &health);
     let plan = plan.expect("expected WritePlan");
     assert!(plan.to_install.is_empty());
     assert_eq!(plan.to_restore, vec!["github.com/user/repo"]);
@@ -371,7 +347,7 @@ plugin "user/repo"
     let lock = LockFile::new();
     let health: HashMap<String, RepoHealth> =
         [("github.com/user/repo".into(), RepoHealth::Broken)].into();
-    let plan = plan_init(&config, &lock, &health, &HashSet::new());
+    let plan = plan_init(&config, &lock, &health);
     let plan = plan.expect("expected WritePlan");
     assert_eq!(plan.to_install, vec!["github.com/user/repo"]);
     assert!(plan.to_restore.is_empty());
@@ -383,7 +359,7 @@ fn init_plans_install_for_healthy_plugin_without_lock() {
     let lock = LockFile::new();
     let health: HashMap<String, RepoHealth> =
         [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "abc123".into() })].into();
-    let plan = plan_init(&config, &lock, &health, &HashSet::new());
+    let plan = plan_init(&config, &lock, &health);
     let plan = plan.expect("expected WritePlan — Healthy+no-lock needs install");
     assert_eq!(plan.to_install, vec!["github.com/user/repo"]);
     assert!(plan.to_restore.is_empty());
@@ -401,7 +377,7 @@ plugin "user/repo"
     let health: HashMap<String, RepoHealth> =
         [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "abc123".into() })].into();
 
-    let plan = plan_init(&config, &lock, &health, &HashSet::new());
+    let plan = plan_init(&config, &lock, &health);
     assert!(plan.is_none());
 }
 
@@ -417,7 +393,7 @@ plugin "user/gamma"
     );
     let lock = LockFile::new();
     let health: HashMap<String, RepoHealth> = HashMap::new();
-    let plan = plan_init(&config, &lock, &health, &HashSet::new());
+    let plan = plan_init(&config, &lock, &health);
     let plan = plan.expect("expected WritePlan");
     assert_eq!(
         plan.to_install,

@@ -145,7 +145,6 @@ direct children are plugin directories. This is an explicit non-goal.
 
 options {
     auto-install #true
-    auto-clean #false
 }
 
 // Simplest form: GitHub shorthand, track default branch
@@ -210,7 +209,6 @@ Rules:
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `auto-install` | bool | `true` | Install missing plugins during `init` |
-| `auto-clean` | bool | `false` | Remove undeclared managed remote repos during `init` |
 
 ### 4.4 Validation Rules
 
@@ -266,15 +264,13 @@ and mutation.
    - Install newly declared remote plugins only when auto-install=true.
    - Drop removed remote plugins from the lock snapshot immediately.
    - Do not delete undeclared plugin directories here; that remains the job of
-     `clean` / `auto-clean`.
+     `clean`.
    - Abort init if sync fails.
 4. Scan installed remote plugin directories and their HEAD commits.
 5. Compute whether additional lock-vs-disk writes are needed.
 6. If writes are needed:
    - If auto-install=true: install missing remote plugins from the synced lock snapshot
    - If installed commit has drifted from lock: restore to the synced lock commit
-   - If auto-clean=true: remove undeclared managed remote repos from disk when
-     they still match the managed-repo shape
 7. Load plugins into tmux (set options, source *.tmux files).
 8. Release the lock.
 ```

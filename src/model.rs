@@ -9,12 +9,11 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
     pub auto_install: bool,
-    pub auto_clean: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { auto_install: true, auto_clean: false }
+        Self { auto_install: true }
     }
 }
 

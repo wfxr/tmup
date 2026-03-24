@@ -119,9 +119,8 @@ async fn run_init() -> Result<()> {
     let mut lock = load_lockfile(&paths)?;
     sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::init(cfg.options.auto_install))
         .await?;
-    let managed_ids = planner::scan_managed_plugin_ids(&paths.plugin_root);
     let health_map = build_health_map(&cfg, &paths);
-    let plan = planner::plan_init(&cfg, &lock, &health_map, &managed_ids);
+    let plan = planner::plan_init(&cfg, &lock, &health_map);
 
     let write_failures = if let Some(write_plan) = plan {
         run_init_write(&cfg, &mut lock, &paths, &write_plan).await
@@ -144,7 +143,7 @@ async fn run_init() -> Result<()> {
     Ok(())
 }
 
-/// Run install/restore/clean writes. Returns a list of non-fatal failure
+/// Run install/restore writes. Returns a list of non-fatal failure
 /// messages — the caller should still proceed with loading plugins.
 async fn run_init_write(
     cfg: &lazytmux::model::Config,
@@ -166,13 +165,6 @@ async fn run_init_write(
         if let Err(e) = plugin::restore(cfg, lock, paths, Some(id.as_str())).await {
             failures.push(format!("{e}"));
         }
-    }
-
-    // Clean undeclared
-    if !plan.to_clean.is_empty()
-        && let Err(e) = plugin::clean(cfg, paths)
-    {
-        failures.push(format!("{e}"));
     }
 
     failures
