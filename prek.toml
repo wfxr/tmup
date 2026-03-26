@@ -13,6 +13,11 @@ hooks = [
 ]
 
 [[repos]]
+repo = "https://github.com/jorisroovers/gitlint"
+rev = "v0.19.1"
+hooks = [{ id = "gitlint" }]
+
+[[repos]]
 repo = "local"
 
 [[repos.hooks]]
