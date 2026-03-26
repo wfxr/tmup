@@ -1,14 +1,13 @@
 mod utils;
-use std::collections::HashMap;
 
 use lazytmux::config::parse_config;
 use lazytmux::lockfile::{
     LockEntry, LockFile, config_fingerprint, read_lockfile, remote_plugin_config_hash,
 };
 use lazytmux::model::{Config, Options, PluginSource, PluginSpec, Tracking};
-use lazytmux::planner::RepoHealth;
+use lazytmux::progress::NullReporter;
 use lazytmux::state::{OperationLock, Paths, build_command_hash};
-use lazytmux::{planner, sync};
+use lazytmux::sync;
 use tempfile::tempdir;
 use utils::*;
 
@@ -32,106 +31,195 @@ fn make_config_from_plugin(plugin: PluginSpec) -> Config {
 }
 
 #[test]
-fn init_read_only_path_detected_when_aligned() {
-    let config = parse_config(r#"plugin "user/repo""#).unwrap();
-    let mut lock = LockFile::new();
-    lock.plugins.insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
-    let health: HashMap<String, RepoHealth> =
-        [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "abc123".into() })].into();
-
-    let plan = planner::plan_init(&config, &lock, &health);
-    assert!(plan.is_none());
-}
-
-#[test]
-fn init_write_plan_when_plugin_missing_and_auto_install() {
-    let config = parse_config(
-        r#"
-options { auto-install #true }
-plugin "user/repo"
-    "#,
-    )
-    .unwrap();
-    let lock = LockFile::new();
-    let health: HashMap<String, RepoHealth> = HashMap::new();
-
-    let plan = planner::plan_init(&config, &lock, &health);
-    let plan = plan.expect("expected Some(WritePlan)");
-    assert!(plan.to_install.contains(&"github.com/user/repo".to_string()));
-}
-
-#[test]
-fn init_replans_inside_lock_before_mutation() {
-    // Simulates: preflight says "need install", but by the time we get the lock,
-    // another process already installed it. Replan should detect no writes needed.
-    let config = parse_config(
-        r#"
-options { auto-install #true }
-plugin "user/repo"
-    "#,
-    )
-    .unwrap();
-    let mut lock = LockFile::new();
-    lock.plugins.insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
-    // Between preflight and lock acquisition, plugin was installed
-    let health: HashMap<String, RepoHealth> =
-        [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "abc123".into() })].into();
-
-    let plan = planner::plan_init(&config, &lock, &health);
-    assert!(plan.is_none());
-}
-
-#[test]
-fn init_does_not_retry_same_failed_build_tuple() {
+fn init_preview_returns_false_when_aligned() {
     let dir = tempdir().unwrap();
     let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
     paths.ensure_dirs().unwrap();
 
-    // Write a failure marker
-    let bh = build_command_hash("make install");
-    let marker = lazytmux::state::FailureMarker {
-        plugin_id: "github.com/user/repo".into(),
-        commit: "abc123".into(),
-        build_hash: bh.clone(),
-        build_command: "make install".into(),
-        failed_at: "now".into(),
-        stderr_summary: "error".into(),
-    };
-    lazytmux::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
+    let plugin_dir = paths.plugin_dir("github.com/user/repo");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    git(&["init", "-b", "main"], &plugin_dir);
+    std::fs::write(plugin_dir.join("init.tmux"), "#!/bin/sh\n").unwrap();
+    git(&["add", "."], &plugin_dir);
+    git(&["commit", "-m", "init"], &plugin_dir);
+    let commit = git(&["rev-parse", "HEAD"], &plugin_dir);
 
-    // Same (id, commit, build hash) should be detected as known failure
+    let config = parse_config(r#"plugin "user/repo""#).unwrap();
+    let mut lock = LockFile::new();
+    let mut entry = LockEntry::branch("main", &commit);
+    entry.config_hash = remote_plugin_config_hash(&config.plugins[0]);
+    lock.plugins.insert("github.com/user/repo".into(), entry);
+
+    let preview = sync::preview(&config, &lock, None, sync::SyncPolicy::init(true), &paths);
+    assert!(!preview.needs_work);
+}
+
+#[test]
+fn init_preview_returns_true_for_missing_plugin_dir_under_init_policy() {
+    let dir = tempdir().unwrap();
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let config = parse_config(r#"plugin "user/repo""#).unwrap();
+    let mut lock = LockFile::new();
+    let mut entry = LockEntry::branch("main", "abc123");
+    entry.config_hash = remote_plugin_config_hash(&config.plugins[0]);
+    lock.plugins.insert("github.com/user/repo".into(), entry);
+
+    assert!(!paths.plugin_dir("github.com/user/repo").exists());
+    let preview = sync::preview(&config, &lock, None, sync::SyncPolicy::init(true), &paths);
     assert!(
-        lazytmux::plugin::is_known_failure(
-            &paths,
-            "github.com/user/repo",
-            "abc123",
-            "make install"
-        )
-        .unwrap()
+        preview.needs_work,
+        "preview should require work when plugin dir is missing even if lock hash matches"
     );
 }
 
 #[test]
-fn init_retries_when_build_command_changes() {
+fn init_preview_returns_true_for_broken_plugin_dir_under_init_policy() {
     let dir = tempdir().unwrap();
     let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
     paths.ensure_dirs().unwrap();
 
-    // Write a failure marker for "make install"
+    let config = parse_config(r#"plugin "user/repo""#).unwrap();
+    let mut lock = LockFile::new();
+    let mut entry = LockEntry::branch("main", "abc123");
+    entry.config_hash = remote_plugin_config_hash(&config.plugins[0]);
+    lock.plugins.insert("github.com/user/repo".into(), entry);
+
+    let plugin_dir = paths.plugin_dir("github.com/user/repo");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    assert!(plugin_dir.exists());
+    assert!(!plugin_dir.join(".git").exists());
+
+    let preview = sync::preview(&config, &lock, None, sync::SyncPolicy::init(true), &paths);
+    assert!(
+        preview.needs_work,
+        "preview should require work when plugin dir is broken even if lock hash matches"
+    );
+}
+
+#[test]
+fn init_preview_returns_true_for_same_commit_build_change_requires_republish() {
+    let dir = tempdir().unwrap();
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    let (old_cfg, new_cfg) = (
+        parse_config(r#"plugin "user/repo" build="touch built-v1""#).unwrap(),
+        parse_config(r#"plugin "user/repo" build="touch built-v2""#).unwrap(),
+    );
+    let mut lock = LockFile::new();
+    let mut entry = LockEntry::branch("main", "abc123");
+    entry.config_hash = remote_plugin_config_hash(&old_cfg.plugins[0]);
+    lock.plugins.insert("github.com/user/repo".into(), entry);
+
+    let preview = sync::preview(&new_cfg, &lock, None, sync::SyncPolicy::init(true), &paths);
+    assert!(
+        preview.needs_work,
+        "preview should require work when same-commit build config changes"
+    );
+}
+
+#[tokio::test]
+async fn init_does_not_retry_same_failed_build_tuple() {
+    let dir = tempdir().unwrap();
+    let (bare, commit) = make_bare_repo(&dir.path().join("repo"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let marker_path = dir.path().join("build-retried.marker");
+    let build_cmd = format!(": > \"{}\"; exit 1", marker_path.display());
+    let plugin = make_plugin(&clone_url, Tracking::DefaultBranch, Some(&build_cmd));
+    let old_plugin = make_plugin(&clone_url, Tracking::DefaultBranch, Some("touch old.marker"));
+    let cfg = make_config_from_plugin(plugin);
+
+    let mut lock = LockFile::new();
+    let mut entry = LockEntry::default_branch("main", &commit);
+    entry.config_hash = remote_plugin_config_hash(&old_plugin);
+    lock.plugins.insert("example.com/test/plugin".into(), entry);
+
+    let bh = build_command_hash(&build_cmd);
     let marker = lazytmux::state::FailureMarker {
-        plugin_id: "github.com/user/repo".into(),
-        commit: "abc123".into(),
-        build_hash: build_command_hash("make install"),
-        build_command: "make install".into(),
+        plugin_id: "example.com/test/plugin".into(),
+        commit: commit.clone(),
+        build_hash: bh.clone(),
+        build_command: build_cmd.clone(),
         failed_at: "now".into(),
         stderr_summary: "error".into(),
     };
     lazytmux::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
 
-    // Changed build command: should NOT be known failure
+    let outcome = sync::run_and_write(
+        &cfg,
+        &mut lock,
+        &paths,
+        None,
+        sync::SyncPolicy::init(true),
+        sync::SyncMode::Init,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
+
     assert!(
-        !lazytmux::plugin::is_known_failure(&paths, "github.com/user/repo", "abc123", "just build")
-            .unwrap()
+        outcome.plugin_failures.is_empty(),
+        "init-mode sync should suppress known failed (id, commit, build) tuples"
+    );
+    assert!(
+        !marker_path.exists(),
+        "init-mode sync should skip publish/build when tuple is already known-failed"
+    );
+}
+
+#[tokio::test]
+async fn init_retries_when_build_command_changes() {
+    let dir = tempdir().unwrap();
+    let (bare, commit) = make_bare_repo(&dir.path().join("repo"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let marker_path = dir.path().join("build-retried.marker");
+    let previous_build = "make install";
+    let new_build = format!(": > \"{}\"; exit 1", marker_path.display());
+    let plugin = make_plugin(&clone_url, Tracking::DefaultBranch, Some(&new_build));
+    let old_plugin = make_plugin(&clone_url, Tracking::DefaultBranch, Some(previous_build));
+    let cfg = make_config_from_plugin(plugin);
+
+    let mut lock = LockFile::new();
+    let mut entry = LockEntry::default_branch("main", &commit);
+    entry.config_hash = remote_plugin_config_hash(&old_plugin);
+    lock.plugins.insert("example.com/test/plugin".into(), entry);
+
+    let marker = lazytmux::state::FailureMarker {
+        plugin_id: "example.com/test/plugin".into(),
+        commit: commit.clone(),
+        build_hash: build_command_hash(previous_build),
+        build_command: previous_build.into(),
+        failed_at: "now".into(),
+        stderr_summary: "error".into(),
+    };
+    lazytmux::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
+
+    let outcome = sync::run_and_write(
+        &cfg,
+        &mut lock,
+        &paths,
+        None,
+        sync::SyncPolicy::init(true),
+        sync::SyncMode::Init,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        outcome.plugin_failures.len(),
+        1,
+        "changed build command should not be suppressed and should retry"
+    );
+    assert!(
+        marker_path.exists(),
+        "changed build command should execute build and touch retry marker"
     );
 }
 
@@ -166,9 +254,22 @@ async fn init_preflight_sync_failure_preserves_previous_lock_snapshot() {
     lock.config_fingerprint = Some(config_fingerprint(&make_config_from_plugin(old_plugin)));
 
     let cfg = make_config_from_plugin(new_plugin);
-    let result =
-        sync::run_and_write(&cfg, &mut lock, &paths, None, sync::SyncPolicy::init(true)).await;
-    assert!(result.is_err(), "init preflight should abort on sync failure");
+    let result = sync::run_and_write(
+        &cfg,
+        &mut lock,
+        &paths,
+        None,
+        sync::SyncPolicy::init(true),
+        sync::SyncMode::Init,
+        &NullReporter,
+    )
+    .await;
+    let outcome = result.expect("init sync should surface plugin build failures in SyncOutcome");
+    assert_eq!(outcome.plugin_failures.len(), 1, "expected one plugin-level sync failure");
+    assert!(
+        outcome.plugin_failures[0].contains("example.com/test/plugin"),
+        "plugin failure should include plugin id"
+    );
 
     let persisted = read_lockfile(&paths.lockfile_path).unwrap();
     let entry = persisted.plugins.get("example.com/test/plugin").unwrap();

@@ -6,8 +6,9 @@ use std::path::Path;
 use lazytmux::config::parse_config;
 use lazytmux::lockfile::{LockEntry, LockFile, read_lockfile};
 use lazytmux::model::{Config, Options, PluginSource, PluginSpec, Tracking};
+use lazytmux::progress::NullReporter;
 use lazytmux::state::{Paths, build_command_hash};
-use lazytmux::sync::{self, SyncPolicy};
+use lazytmux::sync::{self, SyncMode, SyncPolicy};
 use lazytmux::{planner, plugin};
 use tempfile::tempdir;
 use utils::*;
@@ -78,7 +79,7 @@ fn make_config(plugins: Vec<PluginSpec>) -> Config {
 }
 
 #[test]
-fn list_returns_state_and_last_result() {
+fn list_returns_state_and_build_status() {
     let dir = tempdir().unwrap();
     let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
     paths.ensure_dirs().unwrap();
@@ -240,7 +241,7 @@ fn list_shows_broken_for_dir_without_git() {
 
     let statuses = plugin::list(&config, &lock, &paths).unwrap();
     assert_eq!(statuses[0].state, planner::PluginState::Broken);
-    assert_eq!(statuses[0].last_result, planner::LastResult::None);
+    assert_eq!(statuses[0].build_status, planner::BuildStatus::None);
 }
 
 #[test]
@@ -275,7 +276,7 @@ fn update_skips_pinned_commit() {
 }
 
 #[test]
-fn list_shows_both_state_and_last_result_for_build_failure() {
+fn list_shows_both_state_and_build_status_for_build_failure() {
     let dir = tempdir().unwrap();
     let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
     paths.ensure_dirs().unwrap();
@@ -303,7 +304,7 @@ fn list_shows_both_state_and_last_result_for_build_failure() {
 
     let statuses = plugin::list(&config, &lock, &paths).unwrap();
     assert_eq!(statuses[0].state, planner::PluginState::Installed);
-    assert_eq!(statuses[0].last_result, planner::LastResult::BuildFailed);
+    assert_eq!(statuses[0].build_status, planner::BuildStatus::BuildFailed);
 }
 
 #[test]
@@ -348,10 +349,20 @@ async fn install_uses_post_sync_lock_snapshot() {
     let mut lock = LockFile::new();
     lock.plugins.insert("example.com/test/plugin".into(), LockEntry::branch("main", &commit_b));
 
-    sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::INSTALL).await.unwrap();
+    sync::run_and_write(
+        &cfg,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::INSTALL,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
 
     let mut persisted = read_lockfile(&paths.lockfile_path).unwrap();
-    plugin::install(&cfg, &mut persisted, &paths, None, false).await.unwrap();
+    plugin::install(&cfg, &mut persisted, &paths, None, false, &NullReporter).await.unwrap();
 
     let target = paths.plugin_dir("example.com/test/plugin");
     assert_eq!(git(&["rev-parse", "HEAD"], &target), commit_a);
@@ -383,10 +394,20 @@ async fn restore_uses_post_sync_lock_snapshot() {
     let mut lock = LockFile::new();
     lock.plugins.insert("example.com/test/plugin".into(), LockEntry::branch("main", &commit_a));
 
-    sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::RESTORE).await.unwrap();
+    sync::run_and_write(
+        &cfg,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::RESTORE,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
 
     let persisted = read_lockfile(&paths.lockfile_path).unwrap();
-    plugin::restore(&cfg, &persisted, &paths, None).await.unwrap();
+    plugin::restore(&cfg, &persisted, &paths, None, &NullReporter).await.unwrap();
     assert_eq!(git(&["rev-parse", "HEAD"], &target), commit_b);
     assert_eq!(persisted.plugins["example.com/test/plugin"].commit, commit_b);
 }
@@ -434,10 +455,20 @@ async fn update_runs_sync_first_then_only_advances_unchanged_floating_plugins() 
     lock.plugins.insert("example.com/test/plugin-a".into(), LockEntry::branch("main", &commit_a1));
     lock.plugins.insert("example.com/test/plugin-b".into(), LockEntry::branch("main", &commit_b1));
 
-    sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::UPDATE).await.unwrap();
+    sync::run_and_write(
+        &cfg,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::UPDATE,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
 
     let mut persisted = read_lockfile(&paths.lockfile_path).unwrap();
-    plugin::update(&cfg, &mut persisted, &paths, None).await.unwrap();
+    plugin::update(&cfg, &mut persisted, &paths, None, &NullReporter).await.unwrap();
 
     assert_eq!(git(&["rev-parse", "HEAD"], &target_a), commit_a1);
     assert_eq!(git(&["rev-parse", "HEAD"], &target_b), commit_b2);
@@ -476,7 +507,17 @@ async fn clean_prunes_removed_lock_entries_without_rebuilding_declared_plugins()
     ]);
 
     let mut lock = LockFile::new();
-    sync::run_and_write(&initial_cfg, &mut lock, &paths, None, SyncPolicy::SYNC).await.unwrap();
+    sync::run_and_write(
+        &initial_cfg,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::SYNC,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
 
     let plugin_a = paths.plugin_dir("example.com/test/plugin-a");
     let plugin_b = paths.plugin_dir("example.com/test/plugin-b");
@@ -491,7 +532,17 @@ async fn clean_prunes_removed_lock_entries_without_rebuilding_declared_plugins()
         Some("touch built-v2.marker"),
     )]);
 
-    sync::run_and_write(&clean_cfg, &mut lock, &paths, None, SyncPolicy::CLEAN).await.unwrap();
+    sync::run_and_write(
+        &clean_cfg,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::CLEAN,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
     plugin::clean(&clean_cfg, &paths).unwrap();
 
     let persisted = read_lockfile(&paths.lockfile_path).unwrap();

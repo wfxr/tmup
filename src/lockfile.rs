@@ -9,32 +9,45 @@ use sha2::{Digest, Sha256};
 
 use crate::model::{Config, PluginSource, PluginSpec, Tracking};
 
+/// Current lockfile format version understood by this build.
 pub const LOCKFILE_VERSION: u32 = 2;
 
+/// Serialized state of all locked plugins, written to disk as JSON.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LockFile {
+    /// Format version used to detect incompatible lockfile changes.
     pub version: u32,
+    /// SHA-256 fingerprint of the full plugin configuration, used to detect config drift.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_fingerprint: Option<String>,
+    /// Map from plugin id to its locked entry.
     pub plugins: BTreeMap<String, LockEntry>,
 }
 
+/// Locked state for a single plugin.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LockEntry {
+    /// How the plugin is tracked (branch, tag, or pinned commit).
     pub tracking: TrackingRecord,
+    /// Exact commit SHA that is currently checked out.
     pub commit: String,
+    /// Hash of the plugin's configuration at lock time, used to detect config drift.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_hash: Option<String>,
 }
 
+/// Serialized form of the tracking strategy stored inside a [`LockEntry`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TrackingRecord {
+    /// Discriminator string (`"branch"`, `"tag"`, `"commit"`, or `"default-branch"`).
     #[serde(rename = "type")]
     pub kind: String,
+    /// The branch name, tag name, or commit SHA being tracked.
     pub value: String,
 }
 
 impl LockEntry {
+    /// Creates a [`LockEntry`] that tracks a named branch.
     pub fn branch(branch: &str, commit: &str) -> Self {
         Self {
             tracking: TrackingRecord { kind: "branch".into(), value: branch.into() },
@@ -43,6 +56,7 @@ impl LockEntry {
         }
     }
 
+    /// Creates a [`LockEntry`] that tracks a named tag.
     pub fn tag(tag: &str, commit: &str) -> Self {
         Self {
             tracking: TrackingRecord { kind: "tag".into(), value: tag.into() },
@@ -51,6 +65,7 @@ impl LockEntry {
         }
     }
 
+    /// Creates a [`LockEntry`] pinned to a specific commit SHA.
     pub fn commit(commit: &str) -> Self {
         Self {
             tracking: TrackingRecord { kind: "commit".into(), value: commit.into() },
@@ -59,6 +74,7 @@ impl LockEntry {
         }
     }
 
+    /// Creates a [`LockEntry`] that tracks the repository's default branch.
     pub fn default_branch(branch: &str, commit: &str) -> Self {
         Self {
             tracking: TrackingRecord { kind: "default-branch".into(), value: branch.into() },
@@ -69,6 +85,7 @@ impl LockEntry {
 }
 
 impl LockFile {
+    /// Creates an empty lockfile at the current format version.
     pub fn new() -> Self {
         Self { version: LOCKFILE_VERSION, config_fingerprint: None, plugins: BTreeMap::new() }
     }
@@ -80,6 +97,7 @@ impl Default for LockFile {
     }
 }
 
+/// Returns a SHA-256 hash of the configuration fields that affect a remote plugin's lock state, or `None` for local plugins.
 pub fn remote_plugin_config_hash(spec: &PluginSpec) -> Option<String> {
     let PluginSource::Remote { id, .. } = &spec.source else {
         return None;
@@ -104,6 +122,7 @@ pub fn remote_plugin_config_hash(spec: &PluginSpec) -> Option<String> {
     }))
 }
 
+/// Computes a single SHA-256 fingerprint that covers all remote plugins in `config`.
 pub fn config_fingerprint(config: &Config) -> String {
     let mut entries: Vec<_> = config
         .plugins
@@ -119,6 +138,7 @@ pub fn config_fingerprint(config: &Config) -> String {
     hash_json(&entries)
 }
 
+/// Reads and deserializes a lockfile from `path`, returning an error if the version is unsupported.
 pub fn read_lockfile(path: &Path) -> Result<LockFile> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read lockfile: {}", path.display()))?;

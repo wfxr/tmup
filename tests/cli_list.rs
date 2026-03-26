@@ -3,7 +3,7 @@ use predicates::prelude::*;
 use tempfile::tempdir;
 
 #[test]
-fn list_prints_state_and_last_result_columns() {
+fn list_prints_state_and_build_status_columns() {
     let dir = tempdir().unwrap();
     let data_dir = dir.path().join("data");
     let config_dir = dir.path().join("config");
@@ -28,8 +28,61 @@ fn list_prints_state_and_last_result_columns() {
         .env("XDG_DATA_HOME", dir.path().join("data").parent().unwrap())
         .assert()
         .success()
-        .stdout(predicate::str::contains("state"))
-        .stdout(predicate::str::contains("last-result"));
+        .stdout(predicate::str::contains("State"))
+        .stdout(predicate::str::contains("Build"));
+}
+
+#[test]
+fn list_uses_human_readable_default_columns() {
+    let dir = tempdir().unwrap();
+    let config_dir = dir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+
+    let config_path = config_dir.join("lazy.kdl");
+    std::fs::write(&config_path, r#"plugin "user/repo""#).unwrap();
+
+    Command::cargo_bin("lazytmux")
+        .unwrap()
+        .arg("list")
+        .env("LAZY_TMUX_CONFIG", &config_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Plugin"))
+        .stdout(predicate::str::contains("Kind"))
+        .stdout(predicate::str::contains("State"))
+        .stdout(predicate::str::contains("Build"))
+        .stdout(predicate::str::contains("Lock"))
+        .stdout(predicate::str::contains("user/repo"))
+        .stdout(predicate::str::contains("Current").not())
+        .stdout(
+            predicate::str::contains("Id                                            Name").not(),
+        )
+        .stdout(predicate::str::contains("Source\n").not());
+}
+
+#[test]
+fn list_verbose_shows_diagnostic_columns() {
+    let dir = tempdir().unwrap();
+    let config_dir = dir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+
+    let config_path = config_dir.join("lazy.kdl");
+    std::fs::write(&config_path, r#"plugin "user/repo" name="repo-name""#).unwrap();
+
+    Command::cargo_bin("lazytmux")
+        .unwrap()
+        .args(["list", "-v"])
+        .env("LAZY_TMUX_CONFIG", &config_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Id"))
+        .stdout(predicate::str::contains("Name"))
+        .stdout(predicate::str::contains("Current"))
+        .stdout(predicate::str::contains("Expected"))
+        .stdout(predicate::str::contains("Source"))
+        .stdout(predicate::str::contains("github.com/user/repo"))
+        .stdout(predicate::str::contains("repo-name"))
+        .stdout(predicate::str::contains("user/repo"));
 }
 
 #[test]
@@ -87,11 +140,12 @@ fn list_warns_before_table_when_lock_metadata_is_stale() {
         .env("XDG_STATE_HOME", &state_home)
         .assert()
         .success()
-        .stdout(predicate::str::starts_with(
-            "warning: lock metadata is stale relative to config; run `lazytmux sync`\n",
+        .stderr(predicate::str::contains(
+            "warning: lock metadata is stale relative to config; run `lazytmux sync`",
         ))
-        .stdout(predicate::str::contains("state"))
-        .stdout(predicate::str::contains("github.com/user/repo"));
+        .stdout(predicate::str::contains("Plugin"))
+        .stdout(predicate::str::contains("State"))
+        .stdout(predicate::str::contains("user/repo"));
 }
 
 #[test]
@@ -145,6 +199,5 @@ fn list_marks_missing_local_plugin_as_missing() {
         .assert()
         .success()
         .stdout(predicate::str::contains(missing_local.to_string_lossy().as_ref()))
-        .stdout(predicate::str::contains("missing"))
-        .stdout(predicate::str::contains("none"));
+        .stdout(predicate::str::contains("missing"));
 }

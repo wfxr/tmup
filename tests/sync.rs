@@ -1,8 +1,9 @@
 mod utils;
-use lazytmux::lockfile::{LockFile, config_fingerprint, remote_plugin_config_hash};
+use lazytmux::lockfile::{LockEntry, LockFile, config_fingerprint, remote_plugin_config_hash};
 use lazytmux::model::{Config, Options, PluginSource, PluginSpec, Tracking};
-use lazytmux::state::{Paths, build_command_hash};
-use lazytmux::sync::{self, SyncPolicy};
+use lazytmux::progress::NullReporter;
+use lazytmux::state::{FailureMarker, Paths, build_command_hash};
+use lazytmux::sync::{self, SyncMode, SyncPolicy};
 use tempfile::tempdir;
 use utils::*;
 
@@ -54,12 +55,131 @@ async fn sync_run_and_write_does_not_create_lockfile_for_unknown_target() {
         &paths,
         Some("example.com/test/other"),
         SyncPolicy::SYNC,
+        SyncMode::Normal,
+        &NullReporter,
     )
     .await
     .unwrap_err();
 
     assert!(err.to_string().contains("unknown plugin id"), "unexpected error: {err}");
     assert!(!paths.lockfile_path.exists(), "unknown target should not create a lockfile");
+}
+
+#[tokio::test]
+async fn init_mode_skips_known_failed_publish_without_retrying_build() {
+    let dir = tempdir().unwrap();
+    let (bare, commit) = make_bare_repo(&dir.path().join("repo"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let marker_path = dir.path().join("out-of-band-build-marker");
+    let build_cmd = format!(": > \"{}\"; exit 1", marker_path.display());
+    let plugin = make_plugin(
+        "test/plugin",
+        "example.com/test/plugin",
+        &clone_url,
+        Tracking::DefaultBranch,
+        Some(&build_cmd),
+    );
+    let old_plugin = make_plugin(
+        "test/plugin",
+        "example.com/test/plugin",
+        &clone_url,
+        Tracking::DefaultBranch,
+        Some("touch old-build.marker"),
+    );
+    let cfg = make_config(vec![plugin.clone()]);
+    let mut lock = LockFile::new();
+    let mut entry = LockEntry::default_branch("main", &commit);
+    entry.config_hash = remote_plugin_config_hash(&old_plugin);
+    lock.plugins.insert("example.com/test/plugin".into(), entry);
+
+    let marker = FailureMarker {
+        plugin_id: "example.com/test/plugin".into(),
+        commit: commit.clone(),
+        build_hash: build_command_hash(&build_cmd),
+        build_command: build_cmd.clone(),
+        failed_at: "now".into(),
+        stderr_summary: "boom".into(),
+    };
+    lazytmux::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
+
+    let outcome = sync::run_and_write(
+        &cfg,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::init(true),
+        SyncMode::Init,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
+
+    assert!(outcome.plugin_failures.is_empty());
+    assert!(
+        !marker_path.exists(),
+        "build should not be retried in init mode when a matching known-failure marker exists"
+    );
+}
+
+#[tokio::test]
+async fn init_mode_retries_publish_when_build_command_changes() {
+    let dir = tempdir().unwrap();
+    let (bare, commit) = make_bare_repo(&dir.path().join("repo"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let marker_path = dir.path().join("build-retried.marker");
+    let previous_build = "make install";
+    let new_build = format!(": > \"{}\"; exit 1", marker_path.display());
+    let plugin = make_plugin(
+        "test/plugin",
+        "example.com/test/plugin",
+        &clone_url,
+        Tracking::DefaultBranch,
+        Some(&new_build),
+    );
+    let old_plugin = make_plugin(
+        "test/plugin",
+        "example.com/test/plugin",
+        &clone_url,
+        Tracking::DefaultBranch,
+        Some(previous_build),
+    );
+    let cfg = make_config(vec![plugin]);
+
+    let mut lock = LockFile::new();
+    let mut entry = LockEntry::default_branch("main", &commit);
+    entry.config_hash = remote_plugin_config_hash(&old_plugin);
+    lock.plugins.insert("example.com/test/plugin".into(), entry);
+
+    let marker = FailureMarker {
+        plugin_id: "example.com/test/plugin".into(),
+        commit: commit.clone(),
+        build_hash: build_command_hash(previous_build),
+        build_command: previous_build.into(),
+        failed_at: "now".into(),
+        stderr_summary: "boom".into(),
+    };
+    lazytmux::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
+
+    let outcome = sync::run_and_write(
+        &cfg,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::init(true),
+        SyncMode::Init,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(outcome.plugin_failures.len(), 1);
+    assert!(marker_path.exists(), "changed build command should retry publish/build in init mode");
 }
 
 #[tokio::test]
@@ -80,7 +200,9 @@ async fn sync_installs_new_remote_plugin_and_persists_metadata() {
     let cfg = make_config(vec![plugin.clone()]);
     let mut lock = LockFile::new();
 
-    sync::run(&cfg, &mut lock, &paths, None, SyncPolicy::SYNC).await.unwrap();
+    sync::run(&cfg, &mut lock, &paths, None, SyncPolicy::SYNC, SyncMode::Normal, &NullReporter)
+        .await
+        .unwrap();
 
     let entry = lock.plugins.get("example.com/test/plugin").unwrap();
     let expected_config_hash = remote_plugin_config_hash(&plugin).unwrap();
@@ -92,6 +214,108 @@ async fn sync_installs_new_remote_plugin_and_persists_metadata() {
     assert_eq!(lock.config_fingerprint.as_deref(), Some(expected_fingerprint.as_str()));
     assert_eq!(plugin_head(&paths, "example.com/test/plugin"), commit);
     assert!(paths.plugin_dir("example.com/test/plugin").join("built.marker").exists());
+}
+
+#[tokio::test]
+async fn init_mode_reconciles_missing_repo_even_when_lock_hash_is_aligned() {
+    let dir = tempdir().unwrap();
+    let (bare, commit) = make_bare_repo(&dir.path().join("repo"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let plugin_id = "example.com/test/plugin";
+    let cfg = make_config(vec![make_plugin(
+        "test/plugin",
+        plugin_id,
+        &clone_url,
+        Tracking::DefaultBranch,
+        None,
+    )]);
+
+    let mut lock = LockFile::new();
+    sync::run(&cfg, &mut lock, &paths, None, SyncPolicy::SYNC, SyncMode::Normal, &NullReporter)
+        .await
+        .unwrap();
+    assert_eq!(plugin_head(&paths, plugin_id), commit);
+
+    std::fs::remove_dir_all(paths.plugin_dir(plugin_id)).unwrap();
+    assert!(!paths.plugin_dir(plugin_id).exists());
+
+    let outcome = sync::run(
+        &cfg,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::init(true),
+        SyncMode::Init,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        outcome.is_clean(),
+        "missing repo should be reconciled as a normal sync action, not reported as plugin failure"
+    );
+    assert!(
+        paths.plugin_dir(plugin_id).exists(),
+        "init-mode sync must recreate missing plugin repo even when lock/config hashes are aligned"
+    );
+    assert_eq!(plugin_head(&paths, plugin_id), commit);
+}
+
+#[tokio::test]
+async fn init_mode_reconciles_drifted_head_even_when_lock_hash_is_aligned() {
+    let dir = tempdir().unwrap();
+    let (bare, commit) = make_bare_repo(&dir.path().join("repo"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let plugin_id = "example.com/test/plugin";
+    let cfg = make_config(vec![make_plugin(
+        "test/plugin",
+        plugin_id,
+        &clone_url,
+        Tracking::DefaultBranch,
+        None,
+    )]);
+
+    let mut lock = LockFile::new();
+    sync::run(&cfg, &mut lock, &paths, None, SyncPolicy::SYNC, SyncMode::Normal, &NullReporter)
+        .await
+        .unwrap();
+    assert_eq!(plugin_head(&paths, plugin_id), commit);
+
+    let plugin_dir = paths.plugin_dir(plugin_id);
+    std::fs::write(plugin_dir.join("drift.txt"), "drift\n").unwrap();
+    git(&["add", "."], &plugin_dir);
+    git(&["commit", "-m", "drift"], &plugin_dir);
+    let drifted = plugin_head(&paths, plugin_id);
+    assert_ne!(drifted, commit);
+
+    let outcome = sync::run(
+        &cfg,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::init(true),
+        SyncMode::Init,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        outcome.is_clean(),
+        "drifted repo head should be reconciled as normal sync work, not reported as plugin failure"
+    );
+    assert_eq!(
+        plugin_head(&paths, plugin_id),
+        commit,
+        "init-mode sync must restore drifted repo head to the locked commit when hashes are aligned"
+    );
 }
 
 #[tokio::test]
@@ -114,7 +338,17 @@ async fn sync_reconciles_branch_to_tag_and_commit_transitions() {
         Tracking::Branch("main".into()),
         None,
     )]);
-    sync::run(&branch_cfg, &mut lock, &paths, None, SyncPolicy::SYNC).await.unwrap();
+    sync::run(
+        &branch_cfg,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::SYNC,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
     assert_eq!(plugin_head(&paths, "example.com/test/plugin"), commit_b);
 
     let tag_cfg = make_config(vec![make_plugin(
@@ -124,7 +358,9 @@ async fn sync_reconciles_branch_to_tag_and_commit_transitions() {
         Tracking::Tag("v1.0.0".into()),
         None,
     )]);
-    sync::run(&tag_cfg, &mut lock, &paths, None, SyncPolicy::SYNC).await.unwrap();
+    sync::run(&tag_cfg, &mut lock, &paths, None, SyncPolicy::SYNC, SyncMode::Normal, &NullReporter)
+        .await
+        .unwrap();
     let entry = lock.plugins.get("example.com/test/plugin").unwrap();
     assert_eq!(entry.tracking.kind, "tag");
     assert_eq!(entry.tracking.value, "v1.0.0");
@@ -138,7 +374,17 @@ async fn sync_reconciles_branch_to_tag_and_commit_transitions() {
         Tracking::Commit(commit_b.clone()),
         None,
     )]);
-    sync::run(&commit_cfg, &mut lock, &paths, None, SyncPolicy::SYNC).await.unwrap();
+    sync::run(
+        &commit_cfg,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::SYNC,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
     let entry = lock.plugins.get("example.com/test/plugin").unwrap();
     assert_eq!(entry.tracking.kind, "commit");
     assert_eq!(entry.tracking.value, commit_b);
@@ -166,7 +412,9 @@ async fn sync_prefers_tag_ref_when_branch_and_tag_names_conflict() {
     )]);
     let mut lock = LockFile::new();
 
-    sync::run(&cfg, &mut lock, &paths, None, SyncPolicy::SYNC).await.unwrap();
+    sync::run(&cfg, &mut lock, &paths, None, SyncPolicy::SYNC, SyncMode::Normal, &NullReporter)
+        .await
+        .unwrap();
 
     let entry = lock.plugins.get("example.com/test/plugin").unwrap();
     assert_eq!(entry.tracking.kind, "tag");
@@ -206,7 +454,17 @@ async fn sync_updates_only_the_targeted_plugin_id() {
         ),
     ]);
     let mut lock = LockFile::new();
-    sync::run(&cfg_initial, &mut lock, &paths, None, SyncPolicy::SYNC).await.unwrap();
+    sync::run(
+        &cfg_initial,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::SYNC,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(plugin_head(&paths, "example.com/test/plugin-a"), commit_a);
     assert_eq!(plugin_head(&paths, "example.com/test/plugin-b"), commit_b_main);
@@ -230,9 +488,17 @@ async fn sync_updates_only_the_targeted_plugin_id() {
         ),
     ]);
 
-    sync::run(&cfg_changed, &mut lock, &paths, Some("example.com/test/plugin-b"), SyncPolicy::SYNC)
-        .await
-        .unwrap();
+    sync::run(
+        &cfg_changed,
+        &mut lock,
+        &paths,
+        Some("example.com/test/plugin-b"),
+        SyncPolicy::SYNC,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(plugin_head(&paths, "example.com/test/plugin-a"), commit_a);
     assert_eq!(plugin_head(&paths, "example.com/test/plugin-b"), commit_b_feature);
@@ -269,7 +535,17 @@ async fn sync_prunes_removed_lock_entries_without_deleting_repo_dirs() {
             None,
         ),
     ]);
-    sync::run(&cfg_initial, &mut lock, &paths, None, SyncPolicy::SYNC).await.unwrap();
+    sync::run(
+        &cfg_initial,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::SYNC,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
 
     let removed_dir = paths.plugin_dir("example.com/test/plugin-b");
     assert!(removed_dir.exists());
@@ -281,7 +557,17 @@ async fn sync_prunes_removed_lock_entries_without_deleting_repo_dirs() {
         Tracking::DefaultBranch,
         None,
     )]);
-    sync::run(&cfg_removed, &mut lock, &paths, None, SyncPolicy::SYNC).await.unwrap();
+    sync::run(
+        &cfg_removed,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::SYNC,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
 
     assert!(lock.plugins.contains_key("example.com/test/plugin-a"));
     assert!(!lock.plugins.contains_key("example.com/test/plugin-b"));
@@ -305,7 +591,17 @@ async fn sync_rebuilds_same_commit_when_only_build_changes_and_rewrites_markers(
         Some("touch built-v1.marker"),
     )]);
     let mut lock = LockFile::new();
-    sync::run(&cfg_initial, &mut lock, &paths, None, SyncPolicy::SYNC).await.unwrap();
+    sync::run(
+        &cfg_initial,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::SYNC,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
 
     let target = paths.plugin_dir(plugin_id);
     assert!(target.join("built-v1.marker").exists());
@@ -317,8 +613,27 @@ async fn sync_rebuilds_same_commit_when_only_build_changes_and_rewrites_markers(
         Tracking::DefaultBranch,
         Some("touch built-v2.marker; exit 1"),
     )]);
-    let result = sync::run(&cfg_fail, &mut lock, &paths, None, SyncPolicy::SYNC).await;
-    assert!(result.is_err(), "failing rebuild should return Err");
+    let result = sync::run(
+        &cfg_fail,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::SYNC,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await;
+    let outcome = result.expect("failing rebuild should return SyncOutcome");
+    assert!(!outcome.is_clean(), "failing rebuild should be recorded as plugin failure");
+    assert_eq!(outcome.plugin_failures.len(), 1);
+    assert!(
+        outcome.plugin_failures[0].contains(plugin_id),
+        "plugin failure should include plugin id"
+    );
+    assert!(
+        outcome.plugin_failures[0].starts_with(&format!("{plugin_id}:")),
+        "plugin failure should keep aggregate message shape `<plugin_id>: <error>`"
+    );
     assert_eq!(plugin_head(&paths, plugin_id), commit);
     assert!(target.join("built-v1.marker").exists());
     assert!(!target.join("built-v2.marker").exists());
@@ -339,7 +654,17 @@ async fn sync_rebuilds_same_commit_when_only_build_changes_and_rewrites_markers(
         Tracking::DefaultBranch,
         Some("touch built-v2.marker"),
     )]);
-    sync::run(&cfg_success, &mut lock, &paths, None, SyncPolicy::SYNC).await.unwrap();
+    sync::run(
+        &cfg_success,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::SYNC,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(plugin_head(&paths, plugin_id), commit);
     assert!(!target.join("built-v1.marker").exists());
@@ -366,7 +691,17 @@ async fn sync_does_not_advance_floating_commit_when_only_build_changes() {
         Some("touch built-v1.marker"),
     )]);
     let mut lock = LockFile::new();
-    sync::run(&cfg_initial, &mut lock, &paths, None, SyncPolicy::SYNC).await.unwrap();
+    sync::run(
+        &cfg_initial,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::SYNC,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
 
     let commit_b = push_commit(&bare, "second");
     assert_ne!(commit_a, commit_b);
@@ -378,7 +713,17 @@ async fn sync_does_not_advance_floating_commit_when_only_build_changes() {
         Tracking::DefaultBranch,
         Some("touch built-v2.marker"),
     )]);
-    sync::run(&cfg_changed, &mut lock, &paths, None, SyncPolicy::SYNC).await.unwrap();
+    sync::run(
+        &cfg_changed,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::SYNC,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
 
     let entry = lock.plugins.get(plugin_id).unwrap();
     let target = paths.plugin_dir(plugin_id);
@@ -406,7 +751,17 @@ async fn sync_republishes_clean_tree_when_build_is_removed_at_same_commit() {
         Some("touch built-v1.marker"),
     )]);
     let mut lock = LockFile::new();
-    sync::run(&cfg_with_build, &mut lock, &paths, None, SyncPolicy::SYNC).await.unwrap();
+    sync::run(
+        &cfg_with_build,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::SYNC,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
 
     let target = paths.plugin_dir(plugin_id);
     assert_eq!(plugin_head(&paths, plugin_id), commit);
@@ -419,7 +774,17 @@ async fn sync_republishes_clean_tree_when_build_is_removed_at_same_commit() {
         Tracking::DefaultBranch,
         None,
     )]);
-    sync::run(&cfg_without_build, &mut lock, &paths, None, SyncPolicy::SYNC).await.unwrap();
+    sync::run(
+        &cfg_without_build,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::SYNC,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
 
     let entry = lock.plugins.get(plugin_id).unwrap();
     assert_eq!(entry.commit, commit);
@@ -444,7 +809,17 @@ async fn sync_rebuilds_when_build_changes_and_tracking_changes_to_same_commit() 
         Some("touch built-v1.marker"),
     )]);
     let mut lock = LockFile::new();
-    sync::run(&cfg_initial, &mut lock, &paths, None, SyncPolicy::SYNC).await.unwrap();
+    sync::run(
+        &cfg_initial,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::SYNC,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
 
     let target = paths.plugin_dir(plugin_id);
     assert_eq!(plugin_head(&paths, plugin_id), commit);
@@ -457,7 +832,17 @@ async fn sync_rebuilds_when_build_changes_and_tracking_changes_to_same_commit() 
         Tracking::Branch("main".into()),
         Some("touch built-v2.marker"),
     )]);
-    sync::run(&cfg_changed, &mut lock, &paths, None, SyncPolicy::SYNC).await.unwrap();
+    sync::run(
+        &cfg_changed,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::SYNC,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
 
     let entry = lock.plugins.get(plugin_id).unwrap();
     assert_eq!(entry.commit, commit);

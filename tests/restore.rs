@@ -2,6 +2,7 @@ mod utils;
 use lazytmux::lockfile::{LockEntry, LockFile, TrackingRecord};
 use lazytmux::model::{Config, Options, PluginSource, PluginSpec, Tracking};
 use lazytmux::plugin;
+use lazytmux::progress::NullReporter;
 use lazytmux::state::Paths;
 use tempfile::tempdir;
 use utils::*;
@@ -60,13 +61,13 @@ async fn restore_same_commit_preserves_build_artifacts() {
     );
 
     // First restore: installs from scratch, build runs and creates marker.
-    plugin::restore(&cfg, &lock, &paths, None).await.unwrap();
+    plugin::restore(&cfg, &lock, &paths, None, &NullReporter).await.unwrap();
 
     let target = paths.plugin_dir("example.com/test/plugin");
     assert!(target.join("built.marker").exists(), "build should have created marker");
 
     // Second restore: same commit — must be a no-op.
-    plugin::restore(&cfg, &lock, &paths, None).await.unwrap();
+    plugin::restore(&cfg, &lock, &paths, None, &NullReporter).await.unwrap();
     assert!(
         target.join("built.marker").exists(),
         "same-commit restore must not replace the directory and lose build artifacts"
@@ -99,7 +100,7 @@ async fn restore_build_failure_returns_error() {
         },
     );
 
-    let result = plugin::restore(&cfg, &lock, &paths, None).await;
+    let result = plugin::restore(&cfg, &lock, &paths, None, &NullReporter).await;
     assert!(result.is_err(), "restore must propagate build failure as Err");
 
     // The target should have been rolled back / removed by publish protocol.
@@ -129,7 +130,7 @@ async fn restore_same_commit_noop_clears_failure_markers() {
     // Step 1: install at commit with a succeeding build.
     let cfg_ok = make_config(&clone_url, Some("touch built.marker"));
     let mut lock = LockFile::new();
-    plugin::install(&cfg_ok, &mut lock, &paths, None, false).await.unwrap();
+    plugin::install(&cfg_ok, &mut lock, &paths, None, false, &NullReporter).await.unwrap();
     let target = paths.plugin_dir("example.com/test/plugin");
     assert!(target.exists());
 
@@ -148,7 +149,7 @@ async fn restore_same_commit_noop_clears_failure_markers() {
 
     // Step 3: restore — disk HEAD already equals lock commit, so this is a no-op.
     // It should still clear the stale failure marker.
-    plugin::restore(&cfg_ok, &lock, &paths, None).await.unwrap();
+    plugin::restore(&cfg_ok, &lock, &paths, None, &NullReporter).await.unwrap();
 
     let markers = lazytmux::state::read_failure_markers(&paths.failures_root).unwrap();
     assert!(
@@ -176,7 +177,7 @@ async fn update_same_commit_noop_clears_failure_markers() {
     // Step 1: install at commit_a with a succeeding build, so the plugin is on disk.
     let cfg_ok = make_config(&clone_url, Some("touch built.marker"));
     let mut lock = LockFile::new();
-    plugin::install(&cfg_ok, &mut lock, &paths, None, false).await.unwrap();
+    plugin::install(&cfg_ok, &mut lock, &paths, None, false, &NullReporter).await.unwrap();
     let target = paths.plugin_dir("example.com/test/plugin");
     assert!(target.exists());
 
@@ -184,7 +185,7 @@ async fn update_same_commit_noop_clears_failure_markers() {
     let commit_b = push_commit(&bare, "second");
     assert_ne!(commit_a, commit_b);
 
-    let result = plugin::update(&cfg_fail, &mut lock, &paths, None).await;
+    let result = plugin::update(&cfg_fail, &mut lock, &paths, None, &NullReporter).await;
     assert!(result.is_err(), "update with failing build should error");
 
     // Failure marker should exist.
@@ -197,7 +198,7 @@ async fn update_same_commit_noop_clears_failure_markers() {
     // Step 4: update again — remote now resolves to commit_a which is already
     // installed, so this is a same-commit no-op. It should succeed AND clear markers.
     let cfg_ok2 = make_config(&clone_url, Some("touch built.marker"));
-    let result = plugin::update(&cfg_ok2, &mut lock, &paths, None).await;
+    let result = plugin::update(&cfg_ok2, &mut lock, &paths, None, &NullReporter).await;
     assert!(result.is_ok(), "same-commit update should succeed");
 
     // Failure markers should now be cleared.
@@ -233,7 +234,7 @@ async fn install_reinstalls_healthy_branch_repo_without_lock() {
     );
 
     let mut lock = LockFile::new();
-    plugin::install(&cfg, &mut lock, &paths, None, false).await.unwrap();
+    plugin::install(&cfg, &mut lock, &paths, None, false, &NullReporter).await.unwrap();
 
     let entry = lock.plugins.get("example.com/test/plugin").unwrap();
     assert_eq!(entry.commit, commit_b);
@@ -264,7 +265,7 @@ async fn install_repairs_healthy_repo_when_branch_head_is_on_other_branch() {
     let cfg = make_config_with_tracking(&clone_url, Tracking::Branch("main".into()), None);
 
     let mut lock = LockFile::new();
-    plugin::install(&cfg, &mut lock, &paths, None, false).await.unwrap();
+    plugin::install(&cfg, &mut lock, &paths, None, false, &NullReporter).await.unwrap();
 
     let entry = lock.plugins.get("example.com/test/plugin").unwrap();
     assert_eq!(entry.commit, main_commit);
@@ -291,7 +292,7 @@ async fn install_repairs_healthy_repo_when_default_branch_head_is_on_other_branc
     let cfg = make_config(&clone_url, None);
 
     let mut lock = LockFile::new();
-    plugin::install(&cfg, &mut lock, &paths, None, false).await.unwrap();
+    plugin::install(&cfg, &mut lock, &paths, None, false, &NullReporter).await.unwrap();
 
     let entry = lock.plugins.get("example.com/test/plugin").unwrap();
     assert_eq!(entry.commit, main_commit);
@@ -321,7 +322,7 @@ async fn install_repairs_healthy_repo_when_pinned_commit_differs() {
     let cfg = make_config_with_tracking(&clone_url, Tracking::Commit(commit_a.clone()), None);
 
     let mut lock = LockFile::new();
-    plugin::install(&cfg, &mut lock, &paths, None, false).await.unwrap();
+    plugin::install(&cfg, &mut lock, &paths, None, false, &NullReporter).await.unwrap();
 
     let entry = lock.plugins.get("example.com/test/plugin").unwrap();
     assert_eq!(entry.commit, commit_a);
@@ -352,7 +353,7 @@ async fn install_repairs_healthy_repo_when_pinned_tag_differs() {
     let cfg = make_config_with_tracking(&clone_url, Tracking::Tag("v1.0.0".into()), None);
 
     let mut lock = LockFile::new();
-    plugin::install(&cfg, &mut lock, &paths, None, false).await.unwrap();
+    plugin::install(&cfg, &mut lock, &paths, None, false, &NullReporter).await.unwrap();
 
     let entry = lock.plugins.get("example.com/test/plugin").unwrap();
     assert_eq!(entry.commit, commit_a);

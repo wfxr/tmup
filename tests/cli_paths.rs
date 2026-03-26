@@ -65,7 +65,7 @@ fn list_reads_lockfile_next_to_override_config() {
         .arg("list")
         .assert()
         .success()
-        .stdout(predicate::str::contains("github.com/user/repo"));
+        .stdout(predicate::str::contains("user/repo"));
 }
 
 #[test]

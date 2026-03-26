@@ -9,19 +9,22 @@ use crate::lockfile::{
 };
 use crate::model::{Config, PluginSource, Tracking};
 use crate::planner::{self, PluginStatus, collect_failed_builds};
+use crate::progress::{self, ProgressEvent, ProgressReporter, Stage};
 use crate::state::{self, FailureKey, FailureMarker, Paths, build_command_hash, timestamp_now};
 use crate::{git, short_hash};
 
 /// Install missing remote plugins. Lock-first: uses lock entry if present.
 ///
-/// When `skip_known_failures` is true (used by init auto-install), plugins whose
-/// resolved commit matches an existing failure marker are silently skipped.
+/// When `skip_known_failures` is true (legacy second-phase init install path),
+/// plugins whose resolved commit matches an existing failure marker are skipped.
+/// Main init reconciliation now performs known-failure suppression in `sync`.
 pub async fn install(
     config: &Config,
     lock: &mut LockFile,
     paths: &Paths,
     target_id: Option<&str>,
     skip_known_failures: bool,
+    reporter: &dyn ProgressReporter,
 ) -> Result<()> {
     config.validate_target_id(target_id)?;
     paths.ensure_dirs()?;
@@ -52,16 +55,42 @@ pub async fn install(
         }
 
         let staging = paths.staging_dir(id);
+        let name = spec.name.as_str();
+
+        reporter.report(ProgressEvent::PluginStage {
+            id,
+            name,
+            stage: Stage::Cloning,
+            detail: Some(clone_url.clone()),
+        });
 
         // Determine target commit — git failures are per-plugin, not fatal.
         let prep: Result<_> = async {
             if let Some(entry) = lock.plugins.get(id.as_str()) {
                 git::clone_repo(clone_url, &staging).await?;
+                reporter.report(ProgressEvent::PluginStage {
+                    id,
+                    name,
+                    stage: Stage::CheckingOut,
+                    detail: None,
+                });
                 git::checkout(&staging, &entry.commit).await?;
                 Ok((entry.commit.clone(), entry.tracking.clone()))
             } else {
                 git::clone_repo(clone_url, &staging).await?;
                 let (commit, record) = resolve_tracking(&staging, &spec.tracking).await?;
+                reporter.report(ProgressEvent::PluginStage {
+                    id,
+                    name,
+                    stage: Stage::Resolving,
+                    detail: Some(describe_tracking_resolution(&spec.tracking, &record, &commit)),
+                });
+                reporter.report(ProgressEvent::PluginStage {
+                    id,
+                    name,
+                    stage: Stage::CheckingOut,
+                    detail: None,
+                });
                 git::checkout(&staging, &commit).await?;
                 Ok((commit, record))
             }
@@ -72,9 +101,9 @@ pub async fn install(
             Ok(v) => v,
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&staging);
-                let msg = format!("{id}: {e}");
-                eprintln!("failed to install {msg}");
-                failures.push(msg);
+                let (summary, detail) = progress::summarize_error(&e);
+                reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
+                failures.push(format!("{id}: {e}"));
                 continue;
             }
         };
@@ -85,22 +114,38 @@ pub async fn install(
             && let Some(build_cmd) = &spec.build
             && is_known_failure(paths, id, &commit, build_cmd)?
         {
-            eprintln!("lazytmux: skipping {id} (known build failure at {})", short_hash(&commit));
+            reporter.report(ProgressEvent::PluginSkipped {
+                id,
+                name,
+                reason: format!("known build failure at {}", short_hash(&commit)),
+            });
             let _ = std::fs::remove_dir_all(&staging);
             continue;
         }
 
+        reporter.report(ProgressEvent::PluginStage {
+            id,
+            name,
+            stage: Stage::Applying,
+            detail: spec.build.clone(),
+        });
+
         match publish_and_track(paths, id, &commit, &staging, &target_dir, spec.build.as_deref()) {
             Ok(()) => {
+                reporter.report(ProgressEvent::PluginDone {
+                    id,
+                    name,
+                    summary: format!("installed {}", short_hash(&commit)),
+                });
                 lock.plugins.insert(
                     id.clone(),
                     LockEntry { tracking: tracking_record, commit, config_hash },
                 );
             }
             Err(e) => {
-                let msg = format!("{id}: {e}");
-                eprintln!("failed to install {msg}");
-                failures.push(msg);
+                let (summary, detail) = progress::summarize_error(&e);
+                reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
+                failures.push(format!("{id}: {e}"));
             }
         }
     }
@@ -108,11 +153,11 @@ pub async fn install(
     lock.config_fingerprint = Some(config_fingerprint(config));
     write_lockfile_atomic(&paths.lockfile_path, lock)?;
     if !failures.is_empty() {
-        anyhow::bail!(
+        return Err(progress::progress_failure(format!(
             "{} plugin(s) failed to install:\n  {}",
             failures.len(),
             failures.join("\n  ")
-        );
+        )));
     }
     Ok(())
 }
@@ -123,6 +168,7 @@ pub async fn update(
     lock: &mut LockFile,
     paths: &Paths,
     target_id: Option<&str>,
+    reporter: &dyn ProgressReporter,
 ) -> Result<()> {
     config.validate_target_id(target_id)?;
     paths.ensure_dirs()?;
@@ -139,14 +185,24 @@ pub async fn update(
             continue;
         }
 
+        let name = spec.name.as_str();
+
         // Skip pinned plugins
         match &spec.tracking {
             Tracking::Tag(t) => {
-                eprintln!("{id}: pinned to tag {t}, skipping update");
+                reporter.report(ProgressEvent::PluginSkipped {
+                    id,
+                    name,
+                    reason: format!("pinned to tag {t}"),
+                });
                 continue;
             }
             Tracking::Commit(c) => {
-                eprintln!("{id}: pinned to commit {c}, skipping update");
+                reporter.report(ProgressEvent::PluginSkipped {
+                    id,
+                    name,
+                    reason: format!("pinned to commit {}", short_hash(c)),
+                });
                 continue;
             }
             _ => {}
@@ -156,11 +212,36 @@ pub async fn update(
         let staging = paths.staging_dir(id);
         let config_hash = remote_plugin_config_hash(spec);
 
+        reporter.report(ProgressEvent::PluginStage {
+            id,
+            name,
+            stage: Stage::Cloning,
+            detail: Some(clone_url.clone()),
+        });
+
         // Git preparation — failures are per-plugin, not fatal.
         let prep = async {
             git::clone_repo(clone_url, &staging).await?;
+            reporter.report(ProgressEvent::PluginStage {
+                id,
+                name,
+                stage: Stage::Fetching,
+                detail: None,
+            });
             git::fetch(&staging).await?;
             let (new_commit, record) = resolve_tracking(&staging, &spec.tracking).await?;
+            reporter.report(ProgressEvent::PluginStage {
+                id,
+                name,
+                stage: Stage::Resolving,
+                detail: Some(describe_tracking_resolution(&spec.tracking, &record, &new_commit)),
+            });
+            reporter.report(ProgressEvent::PluginStage {
+                id,
+                name,
+                stage: Stage::CheckingOut,
+                detail: None,
+            });
             git::checkout(&staging, &new_commit).await?;
             Ok::<_, anyhow::Error>((new_commit, record))
         }
@@ -170,9 +251,9 @@ pub async fn update(
             Ok(v) => v,
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&staging);
-                let msg = format!("{id}: {e}");
-                eprintln!("failed to update {msg}");
-                failures.push(msg);
+                let (summary, detail) = progress::summarize_error(&e);
+                reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
+                failures.push(format!("{id}: {e}"));
                 continue;
             }
         };
@@ -187,17 +268,25 @@ pub async fn update(
             let _ = std::fs::remove_dir_all(&staging);
             lock.plugins.insert(
                 id.clone(),
-                LockEntry {
-                    tracking: tracking_record,
-                    commit: new_commit,
-                    config_hash: config_hash.clone(),
-                },
+                LockEntry { tracking: tracking_record, commit: new_commit, config_hash },
             );
             // A no-op update is still a successful operation — clear any
             // stale failure markers so `list` doesn't show build-failed.
             state::clear_failure_markers(&paths.failures_root, id)?;
+            reporter.report(ProgressEvent::PluginDone {
+                id,
+                name,
+                summary: "up-to-date".to_string(),
+            });
             continue;
         }
+
+        reporter.report(ProgressEvent::PluginStage {
+            id,
+            name,
+            stage: Stage::Applying,
+            detail: spec.build.clone(),
+        });
 
         match publish_and_track(
             paths,
@@ -208,15 +297,22 @@ pub async fn update(
             spec.build.as_deref(),
         ) {
             Ok(()) => {
+                let summary = match disk_commit.as_deref() {
+                    Some(old) => {
+                        format!("updated {} -> {}", short_hash(old), short_hash(&new_commit))
+                    }
+                    None => format!("installed {}", short_hash(&new_commit)),
+                };
+                reporter.report(ProgressEvent::PluginDone { id, name, summary });
                 lock.plugins.insert(
                     id.clone(),
                     LockEntry { tracking: tracking_record, commit: new_commit, config_hash },
                 );
             }
             Err(e) => {
-                let msg = format!("{id}: {e}");
-                eprintln!("failed to update {msg}");
-                failures.push(msg);
+                let (summary, detail) = progress::summarize_error(&e);
+                reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
+                failures.push(format!("{id}: {e}"));
             }
         }
     }
@@ -224,11 +320,11 @@ pub async fn update(
     lock.config_fingerprint = Some(config_fingerprint(config));
     write_lockfile_atomic(&paths.lockfile_path, lock)?;
     if !failures.is_empty() {
-        anyhow::bail!(
+        return Err(progress::progress_failure(format!(
             "{} plugin(s) failed to update:\n  {}",
             failures.len(),
             failures.join("\n  ")
-        );
+        )));
     }
     Ok(())
 }
@@ -239,6 +335,7 @@ pub async fn restore(
     lock: &LockFile,
     paths: &Paths,
     target_id: Option<&str>,
+    reporter: &dyn ProgressReporter,
 ) -> Result<()> {
     config.validate_target_id(target_id)?;
     paths.ensure_dirs()?;
@@ -255,8 +352,14 @@ pub async fn restore(
             continue;
         }
 
+        let name = spec.name.as_str();
+
         let Some(entry) = lock.plugins.get(id.as_str()) else {
-            eprintln!("{id}: no lock entry, skipping restore");
+            reporter.report(ProgressEvent::PluginSkipped {
+                id,
+                name,
+                reason: "no lock entry".to_string(),
+            });
             continue;
         };
 
@@ -272,14 +375,32 @@ pub async fn restore(
             // A no-op restore is still a successful operation — clear any
             // stale failure markers so `list` doesn't show build-failed.
             state::clear_failure_markers(&paths.failures_root, id)?;
+            reporter.report(ProgressEvent::PluginDone {
+                id,
+                name,
+                summary: "already restored".to_string(),
+            });
             continue;
         }
 
         let staging = paths.staging_dir(id);
 
+        reporter.report(ProgressEvent::PluginStage {
+            id,
+            name,
+            stage: Stage::Cloning,
+            detail: Some(clone_url.clone()),
+        });
+
         // Clone into staging and checkout lock commit — per-plugin failure.
         let prep: Result<()> = async {
             git::clone_repo(clone_url, &staging).await?;
+            reporter.report(ProgressEvent::PluginStage {
+                id,
+                name,
+                stage: Stage::CheckingOut,
+                detail: None,
+            });
             git::checkout(&staging, &entry.commit).await?;
             Ok(())
         }
@@ -287,11 +408,18 @@ pub async fn restore(
 
         if let Err(e) = prep {
             let _ = std::fs::remove_dir_all(&staging);
-            let msg = format!("{id}: {e}");
-            eprintln!("failed to restore {msg}");
-            failures.push(msg);
+            let (summary, detail) = progress::summarize_error(&e);
+            reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
+            failures.push(format!("{id}: {e}"));
             continue;
         }
+
+        reporter.report(ProgressEvent::PluginStage {
+            id,
+            name,
+            stage: Stage::Applying,
+            detail: spec.build.clone(),
+        });
 
         if let Err(e) = publish_and_track(
             paths,
@@ -301,18 +429,24 @@ pub async fn restore(
             &target_dir,
             spec.build.as_deref(),
         ) {
-            let msg = format!("{id}: {e}");
-            eprintln!("failed to restore {msg}");
-            failures.push(msg);
+            let (summary, detail) = progress::summarize_error(&e);
+            reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
+            failures.push(format!("{id}: {e}"));
+        } else {
+            reporter.report(ProgressEvent::PluginDone {
+                id,
+                name,
+                summary: format!("restored {}", short_hash(&entry.commit)),
+            });
         }
     }
 
     if !failures.is_empty() {
-        anyhow::bail!(
+        return Err(progress::progress_failure(format!(
             "{} plugin(s) failed to restore:\n  {}",
             failures.len(),
             failures.join("\n  ")
-        );
+        )));
     }
     Ok(())
 }
@@ -341,16 +475,7 @@ pub fn clean(config: &Config, paths: &Paths) -> Result<()> {
 
 /// List plugin statuses.
 pub fn list(config: &Config, lock: &LockFile, paths: &Paths) -> Result<Vec<PluginStatus>> {
-    // Build health map from declared plugins
-    let health_map: std::collections::HashMap<String, planner::RepoHealth> = config
-        .plugins
-        .iter()
-        .filter_map(|spec| {
-            let id = spec.remote_id()?;
-            let health = planner::inspect_plugin_dir(&paths.plugin_dir(id));
-            Some((id.to_string(), health))
-        })
-        .collect();
+    let health_map = planner::build_health_map(config, paths);
     let markers = state::read_failure_markers(&paths.failures_root)?;
     let failed_builds = collect_failed_builds(&markers);
 
@@ -369,6 +494,7 @@ pub fn is_known_failure(
     state::has_failure_marker(&paths.failures_root, &key)
 }
 
+/// Resolve a tracking spec against a cloned repo and return the commit hash and record.
 pub(crate) async fn resolve_tracking(
     repo: &std::path::Path,
     tracking: &Tracking,
@@ -390,6 +516,23 @@ pub(crate) async fn resolve_tracking(
             let commit = git::resolve_remote_branch(repo, &branch).await?;
             Ok((commit, TrackingRecord { kind: "default-branch".into(), value: branch }))
         }
+    }
+}
+
+/// Format a human-readable description of how a tracking spec resolved to a commit.
+pub(crate) fn describe_tracking_resolution(
+    tracking: &Tracking,
+    record: &TrackingRecord,
+    commit: &str,
+) -> String {
+    let commit = short_hash(commit);
+    match tracking {
+        Tracking::Tag(tag) => format!("tag@{tag} -> commit@{commit}"),
+        Tracking::Branch(branch) => format!("branch@{branch} -> commit@{commit}"),
+        Tracking::DefaultBranch => {
+            format!("default-branch -> branch@{} -> commit@{commit}", record.value)
+        }
+        Tracking::Commit(commit) => format!("commit@{}", short_hash(commit)),
     }
 }
 

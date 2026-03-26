@@ -1,8 +1,18 @@
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::ExitCode;
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use lazytmux::state::{OperationLock, Paths};
-use lazytmux::sync::{self, SyncPolicy};
-use lazytmux::{config, loader, lockfile, planner, plugin, tmux};
+use lazytmux::planner::{BuildStatus, PluginState, PluginStatus};
+use lazytmux::progress::{self, NullReporter, OperationStage, ProgressEvent, ProgressReporter};
+use lazytmux::state::{OperationLock, OperationLockGuard, Paths};
+use lazytmux::sync::{self, SyncMode, SyncPolicy};
+use lazytmux::{config, loader, lockfile, plugin, termui, tmux};
+use owo_colors::OwoColorize;
+use tabled::builder::Builder;
+use tabled::settings::object::Segment;
+use tabled::settings::{Alignment, Modify, Style};
 
 #[derive(Debug, Parser)]
 #[command(name = "lazytmux", about = "Modern tmux plugin manager")]
@@ -14,7 +24,20 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// tmux startup: install missing plugins, apply options, load plugins
-    Init,
+    Init {
+        #[arg(hide = true, long)]
+        bootstrap: bool,
+        #[arg(hide = true, long)]
+        ui_child: bool,
+        #[arg(hide = true, long)]
+        wait_channel: Option<String>,
+        #[arg(hide = true, long)]
+        config_path: Option<PathBuf>,
+        #[arg(hide = true, long)]
+        data_root: Option<PathBuf>,
+        #[arg(hide = true, long)]
+        state_root: Option<PathBuf>,
+    },
     /// Install missing remote plugins
     Install {
         /// Plugin id to install (all if omitted)
@@ -38,26 +61,48 @@ enum Commands {
     /// Remove undeclared managed remote plugins
     Clean,
     /// List plugin status
-    List,
+    List {
+        /// Show diagnostic columns including canonical id and source details
+        #[arg(short, long)]
+        verbose: bool,
+    },
     /// Migrate from TPM .tmux.conf declarations
     Migrate,
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    match cli.command {
-        Commands::Init => run_init().await,
+    let result = match cli.command {
+        Commands::Init {
+            bootstrap,
+            ui_child,
+            wait_channel,
+            config_path,
+            data_root,
+            state_root,
+        } => run_init(bootstrap, ui_child, wait_channel, config_path, data_root, state_root).await,
         Commands::Install { id } => run_install(id).await,
         Commands::Sync { id } => run_sync(id).await,
         Commands::Update { id } => run_update(id).await,
         Commands::Restore { id } => run_restore(id).await,
         Commands::Clean => run_clean().await,
-        Commands::List => run_list(),
+        Commands::List { verbose } => run_list(verbose),
         Commands::Migrate => {
             eprintln!("migrate not yet implemented");
             Ok(())
+        }
+    };
+
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            // Errors already shown by the progress reporter are suppressed here.
+            if !progress::is_reported_error(&e) {
+                eprintln!("lazytmux: {e:#}");
+            }
+            ExitCode::FAILURE
         }
     }
 }
@@ -105,79 +150,320 @@ fn load_lockfile(paths: &Paths) -> Result<lockfile::LockFile> {
     }
 }
 
-/// Init flow: acquire the global lock, plan, mutate if needed, then load.
-/// The lock is held from start to finish so no concurrent writer can modify
-/// plugin state during init.
-async fn run_init() -> Result<()> {
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+
+async fn run_init(
+    bootstrap: bool,
+    ui_child: bool,
+    wait_channel: Option<String>,
+    config_path: Option<PathBuf>,
+    data_root: Option<PathBuf>,
+    state_root: Option<PathBuf>,
+) -> Result<()> {
+    if ui_child {
+        return run_init_child(
+            wait_channel.context("--ui-child requires --wait-channel")?,
+            config_path.context("--ui-child requires --config-path")?,
+            data_root.context("--ui-child requires --data-root")?,
+            state_root.context("--ui-child requires --state-root")?,
+        )
+        .await;
+    }
+    if bootstrap {
+        return run_init_bootstrap(
+            config_path.context("--bootstrap requires --config-path")?,
+            data_root.context("--bootstrap requires --data-root")?,
+            state_root.context("--bootstrap requires --state-root")?,
+        )
+        .await;
+    }
+    run_init_parent().await
+}
+
+fn build_init_bootstrap_spec(paths: &Paths) -> Result<tmux::InitBootstrapSpec> {
+    let exe = std::env::current_exe().context("failed to determine current executable")?;
+    Ok(tmux::InitBootstrapSpec {
+        exe,
+        config_path: paths.config_path.clone(),
+        data_root: paths.data_root().to_path_buf(),
+        state_root: paths.state_root().to_path_buf(),
+    })
+}
+
+fn build_init_ui_child_spec(paths: &Paths, wait_channel: String) -> Result<tmux::InitUiChildSpec> {
+    let exe = std::env::current_exe().context("failed to determine current executable")?;
+    Ok(tmux::InitUiChildSpec {
+        exe,
+        config_path: paths.config_path.clone(),
+        data_root: paths.data_root().to_path_buf(),
+        state_root: paths.state_root().to_path_buf(),
+        wait_channel,
+    })
+}
+
+fn read_and_cleanup_init_result(path: &std::path::Path) -> Result<i32> {
+    let result = read_init_result(path);
+    let _ = std::fs::remove_file(path);
+    result
+}
+
+async fn run_init_inline_fast_path(paths: &Paths, cfg: &lazytmux::model::Config) -> Result<()> {
+    match OperationLock::try_acquire(&paths.lock_path)? {
+        Some(guard) => run_init_inline(paths, cfg, guard).await,
+        None => {
+            let _ = tmux::display_message("lazytmux: waiting for another operation...");
+            let guard = OperationLock::acquire(&paths.lock_path)?;
+            run_init_inline(paths, cfg, guard).await
+        }
+    }
+}
+
+async fn run_init_with_ui_mode(
+    paths: &Paths,
+    target: &tmux::InitUiTarget,
+    mode: tmux::InitUiMode,
+) -> Result<i32> {
+    let wait_channel = format!("lazytmux-init-{}-{}", std::process::id(), epoch_millis());
+    let result_file = paths.init_result_path(&wait_channel);
+    let _ = std::fs::remove_file(&result_file);
+    let spec = build_init_ui_child_spec(paths, wait_channel)?;
+
+    match mode {
+        tmux::InitUiMode::Popup { supports_title } => {
+            tmux::spawn_init_popup(&spec, target, &result_file, supports_title)?;
+            read_and_cleanup_init_result(&result_file).context("reading popup init result")
+        }
+        tmux::InitUiMode::Split => {
+            tmux::spawn_init_split(&spec, target, &result_file)?;
+            tmux::wait_for(&spec.wait_channel)?;
+            read_and_cleanup_init_result(&result_file).context("reading split init result")
+        }
+        tmux::InitUiMode::Inline => {
+            unreachable!("inline mode should bypass tmux UI spawning")
+        }
+    }
+}
+
+/// Parent init flow: preview whether work is needed, then either run inline,
+/// launch popup/split immediately when a usable tmux target already exists,
+/// or schedule a deferred bootstrap for cold startup.
+async fn run_init_parent() -> Result<()> {
     let paths = resolve_runtime_paths()?;
     paths.ensure_dirs()?;
     let cfg = load_config(&paths)?;
 
-    // Hold the lock for the entire init: plan, mutate, and load.
+    // Lock-free preview: does this init need visible work?
+    let lock = load_lockfile(&paths)?;
+    let sync_preview =
+        sync::preview(&cfg, &lock, None, SyncPolicy::init(cfg.options.auto_install), &paths);
+    let needs_ui = sync_preview.needs_work;
+
+    if !needs_ui {
+        return run_init_inline_fast_path(&paths, &cfg).await;
+    }
+
+    let ui_mode = tmux::init_ui_mode();
+    if matches!(ui_mode, tmux::InitUiMode::Inline) {
+        let guard = OperationLock::acquire(&paths.lock_path)?;
+        return run_init_inline(&paths, &cfg, guard).await;
+    }
+
+    if let Some(target) = tmux::current_init_ui_target() {
+        let exit_code = run_init_with_ui_mode(&paths, &target, ui_mode).await?;
+        return if exit_code == 0 { Ok(()) } else { Err(progress::reported_error()) };
+    }
+
+    let spec = build_init_bootstrap_spec(&paths)?;
+    if tmux::spawn_init_bootstrap(&spec).is_ok() {
+        return Ok(());
+    }
+
+    let _ =
+        tmux::display_message("lazytmux: unable to schedule background bootstrap, running inline");
+    let guard = OperationLock::acquire(&paths.lock_path)?;
+    run_init_inline(&paths, &cfg, guard).await
+}
+
+async fn run_init_bootstrap(
+    config_path: PathBuf,
+    data_root: PathBuf,
+    state_root: PathBuf,
+) -> Result<()> {
+    let paths = Paths::from_runtime_roots(data_root, state_root, config_path)?;
+    paths.ensure_dirs()?;
+    let cfg = load_config(&paths)?;
+
+    let lock = load_lockfile(&paths)?;
+    let sync_preview =
+        sync::preview(&cfg, &lock, None, SyncPolicy::init(cfg.options.auto_install), &paths);
+    if !sync_preview.needs_work {
+        return run_init_inline_fast_path(&paths, &cfg).await;
+    }
+
+    let ui_mode = tmux::init_ui_mode();
+    if matches!(ui_mode, tmux::InitUiMode::Inline) {
+        let guard = OperationLock::acquire(&paths.lock_path)?;
+        return run_init_inline(&paths, &cfg, guard).await;
+    }
+
+    if let Some(target) = tmux::probe_init_ui_target() {
+        let exit_code = run_init_with_ui_mode(&paths, &target, ui_mode).await?;
+        return if exit_code == 0 { Ok(()) } else { Err(progress::reported_error()) };
+    }
+
+    // Falling through here is intentional: no UI target became available for
+    // the chosen tmux UI mode within the probe window.
+    let _ = tmux::display_message("lazytmux: unable to create progress UI, running inline");
+    let guard = OperationLock::acquire(&paths.lock_path)?;
+    run_init_inline(&paths, &cfg, guard).await
+}
+
+enum InitCoreResult {
+    Success,
+    WriteFailures(Vec<String>),
+}
+
+/// Child init flow: runs inside a tmux popup/split-window with a live reporter.
+/// The shell wrapper handles wait-for signaling and exit code forwarding.
+async fn run_init_child(
+    _wait_channel: String, // signaled by the shell wrapper, not by Rust
+    config_path: PathBuf,
+    data_root: PathBuf,
+    state_root: PathBuf,
+) -> Result<()> {
+    let paths = Paths::from_runtime_roots(data_root, state_root, config_path)?;
+    paths.ensure_dirs()?;
+    let cfg = load_config(&paths)?;
+
+    let labels = progress::build_display_labels(&cfg, None);
+    let reporter = progress::create_reporter(&paths, "init", labels);
+    reporter.report(ProgressEvent::OperationStart { command: "init" });
+    reporter.report(ProgressEvent::OperationStage { stage: OperationStage::WaitingForLock });
+
     let _guard = OperationLock::acquire(&paths.lock_path)?;
+    match run_init_core(&cfg, &paths, &*reporter).await {
+        Ok(InitCoreResult::Success) => {
+            reporter.report(ProgressEvent::OperationEnd { command: "init" });
+            Ok(())
+        }
+        Ok(InitCoreResult::WriteFailures(_)) => {
+            reporter.report(ProgressEvent::OperationEnd { command: "init" });
+            Err(progress::reported_error())
+        }
+        Err(e) => {
+            if !progress::is_progress_failure(&e) {
+                let (summary, detail) = progress::summarize_error(&e);
+                reporter.report(ProgressEvent::OperationFailed { summary, detail });
+            }
+            reporter.report(ProgressEvent::OperationEnd { command: "init" });
+            Err(progress::reported_error())
+        }
+    }
+}
 
-    let mut lock = load_lockfile(&paths)?;
-    sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::init(cfg.options.auto_install))
-        .await?;
-    let health_map = build_health_map(&cfg, &paths);
-    let plan = planner::plan_init(&cfg, &lock, &health_map);
+/// Inline init: no popup/split, just execute directly. Used when no visible
+/// work is expected or when tmux UI creation fails.
+async fn run_init_inline(
+    paths: &Paths,
+    cfg: &lazytmux::model::Config,
+    _guard: OperationLockGuard,
+) -> Result<()> {
+    match run_init_core(cfg, paths, &NullReporter).await? {
+        InitCoreResult::Success => Ok(()),
+        InitCoreResult::WriteFailures(write_failures) => {
+            anyhow::bail!(
+                "init encountered {} failure(s):\n  {}",
+                write_failures.len(),
+                write_failures.join("\n  ")
+            );
+        }
+    }
+}
 
-    let write_failures = if let Some(write_plan) = plan {
-        run_init_write(&cfg, &mut lock, &paths, &write_plan).await
-    } else {
-        Vec::new()
-    };
+async fn run_init_core(
+    cfg: &lazytmux::model::Config,
+    paths: &Paths,
+    reporter: &dyn ProgressReporter,
+) -> Result<InitCoreResult> {
+    let mut lock = load_lockfile(paths)?;
+    reporter.report(ProgressEvent::OperationStage { stage: OperationStage::Syncing });
+    let outcome = sync::run_and_write(
+        cfg,
+        &mut lock,
+        paths,
+        None,
+        SyncPolicy::init(cfg.options.auto_install),
+        SyncMode::Init,
+        reporter,
+    )
+    .await?;
 
-    // Always load plugins into tmux — partial write failures must not
-    // prevent loading plugins that are already available on disk.
-    let load_plan = loader::build_load_plan(&cfg, &paths.plugin_root);
+    reporter.report(ProgressEvent::OperationStage { stage: OperationStage::LoadingTmux });
+    let load_plan = loader::build_load_plan(cfg, &paths.plugin_root);
     tmux::execute_plan(&load_plan)?;
 
-    if !write_failures.is_empty() {
-        anyhow::bail!(
-            "init encountered {} failure(s):\n  {}",
-            write_failures.len(),
-            write_failures.join("\n  ")
-        );
+    if outcome.is_clean() {
+        Ok(InitCoreResult::Success)
+    } else {
+        Ok(InitCoreResult::WriteFailures(outcome.plugin_failures))
     }
-    Ok(())
 }
 
-/// Run install/restore writes. Returns a list of non-fatal failure
-/// messages — the caller should still proceed with loading plugins.
-async fn run_init_write(
-    cfg: &lazytmux::model::Config,
-    lock: &mut lockfile::LockFile,
-    paths: &Paths,
-    plan: &planner::WritePlan,
-) -> Vec<String> {
-    let mut failures: Vec<String> = Vec::new();
-
-    // Install missing plugins (known build failures are suppressed inside install)
-    for id in &plan.to_install {
-        if let Err(e) = plugin::install(cfg, lock, paths, Some(id.as_str()), true).await {
-            failures.push(format!("{e}"));
-        }
+fn read_init_result(path: &std::path::Path) -> Result<i32> {
+    #[derive(serde::Deserialize)]
+    struct InitResult {
+        exit_code: i32,
     }
-
-    // Restore plugins whose installed commit has drifted from the lock
-    for id in &plan.to_restore {
-        if let Err(e) = plugin::restore(cfg, lock, paths, Some(id.as_str())).await {
-            failures.push(format!("{e}"));
-        }
-    }
-
-    failures
+    let invalid = || format!("init child exited without a valid result record: {}", path.display());
+    let content = std::fs::read_to_string(path).with_context(invalid)?;
+    let result = serde_json::from_str::<InitResult>(&content).with_context(invalid)?;
+    Ok(result.exit_code)
 }
+
+fn epoch_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+// ---------------------------------------------------------------------------
+// Progress-enabled commands
+// ---------------------------------------------------------------------------
 
 async fn run_install(id: Option<String>) -> Result<()> {
     let paths = resolve_runtime_paths()?;
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another lazytmux operation is in progress")?;
     let cfg = load_config(&paths)?;
+    cfg.validate_target_id(id.as_deref())?;
     let mut lock = load_lockfile(&paths)?;
-    sync::run_and_write(&cfg, &mut lock, &paths, id.as_deref(), SyncPolicy::INSTALL).await?;
-    plugin::install(&cfg, &mut lock, &paths, id.as_deref(), false).await
+    paths.ensure_dirs()?;
+
+    let labels = progress::build_display_labels(&cfg, id.as_deref());
+    let reporter = progress::create_reporter(&paths, "install", labels);
+    reporter.report(ProgressEvent::OperationStart { command: "install" });
+
+    let result = async {
+        reporter.report(ProgressEvent::OperationStage { stage: OperationStage::Syncing });
+        sync::run_and_write(
+            &cfg,
+            &mut lock,
+            &paths,
+            id.as_deref(),
+            SyncPolicy::INSTALL,
+            SyncMode::Normal,
+            &*reporter,
+        )
+        .await
+        .and_then(ensure_sync_phase_clean)?;
+        reporter.report(ProgressEvent::OperationStage { stage: OperationStage::ApplyingWrites });
+        plugin::install(&cfg, &mut lock, &paths, id.as_deref(), false, &*reporter).await
+    }
+    .await;
+    finish_visible_operation(&*reporter, "install", result)
 }
 
 async fn run_sync(id: Option<String>) -> Result<()> {
@@ -185,8 +471,30 @@ async fn run_sync(id: Option<String>) -> Result<()> {
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another lazytmux operation is in progress")?;
     let cfg = load_config(&paths)?;
+    cfg.validate_target_id(id.as_deref())?;
     let mut lock = load_lockfile(&paths)?;
-    sync::run_and_write(&cfg, &mut lock, &paths, id.as_deref(), SyncPolicy::SYNC).await
+    paths.ensure_dirs()?;
+
+    let labels = progress::build_display_labels(&cfg, id.as_deref());
+    let reporter = progress::create_reporter(&paths, "sync", labels);
+    reporter.report(ProgressEvent::OperationStart { command: "sync" });
+
+    let result = async {
+        reporter.report(ProgressEvent::OperationStage { stage: OperationStage::Syncing });
+        sync::run_and_write(
+            &cfg,
+            &mut lock,
+            &paths,
+            id.as_deref(),
+            SyncPolicy::SYNC,
+            SyncMode::Normal,
+            &*reporter,
+        )
+        .await
+        .and_then(ensure_sync_phase_clean)
+    }
+    .await;
+    finish_visible_operation(&*reporter, "sync", result)
 }
 
 async fn run_update(id: Option<String>) -> Result<()> {
@@ -194,9 +502,32 @@ async fn run_update(id: Option<String>) -> Result<()> {
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another lazytmux operation is in progress")?;
     let cfg = load_config(&paths)?;
+    cfg.validate_target_id(id.as_deref())?;
     let mut lock = load_lockfile(&paths)?;
-    sync::run_and_write(&cfg, &mut lock, &paths, id.as_deref(), SyncPolicy::UPDATE).await?;
-    plugin::update(&cfg, &mut lock, &paths, id.as_deref()).await
+    paths.ensure_dirs()?;
+
+    let labels = progress::build_display_labels(&cfg, id.as_deref());
+    let reporter = progress::create_reporter(&paths, "update", labels);
+    reporter.report(ProgressEvent::OperationStart { command: "update" });
+
+    let result = async {
+        reporter.report(ProgressEvent::OperationStage { stage: OperationStage::Syncing });
+        let sync_outcome = sync::run_and_write(
+            &cfg,
+            &mut lock,
+            &paths,
+            id.as_deref(),
+            SyncPolicy::UPDATE,
+            SyncMode::Normal,
+            &*reporter,
+        )
+        .await?;
+        ensure_sync_phase_clean(sync_outcome)?;
+        reporter.report(ProgressEvent::OperationStage { stage: OperationStage::ApplyingWrites });
+        plugin::update(&cfg, &mut lock, &paths, id.as_deref(), &*reporter).await
+    }
+    .await;
+    finish_visible_operation(&*reporter, "update", result)
 }
 
 async fn run_restore(id: Option<String>) -> Result<()> {
@@ -204,10 +535,37 @@ async fn run_restore(id: Option<String>) -> Result<()> {
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another lazytmux operation is in progress")?;
     let cfg = load_config(&paths)?;
+    cfg.validate_target_id(id.as_deref())?;
     let mut lock = load_lockfile(&paths)?;
-    sync::run_and_write(&cfg, &mut lock, &paths, id.as_deref(), SyncPolicy::RESTORE).await?;
-    plugin::restore(&cfg, &lock, &paths, id.as_deref()).await
+    paths.ensure_dirs()?;
+
+    let labels = progress::build_display_labels(&cfg, id.as_deref());
+    let reporter = progress::create_reporter(&paths, "restore", labels);
+    reporter.report(ProgressEvent::OperationStart { command: "restore" });
+
+    let result = async {
+        reporter.report(ProgressEvent::OperationStage { stage: OperationStage::Syncing });
+        sync::run_and_write(
+            &cfg,
+            &mut lock,
+            &paths,
+            id.as_deref(),
+            SyncPolicy::RESTORE,
+            SyncMode::Normal,
+            &*reporter,
+        )
+        .await
+        .and_then(ensure_sync_phase_clean)?;
+        reporter.report(ProgressEvent::OperationStage { stage: OperationStage::ApplyingWrites });
+        plugin::restore(&cfg, &lock, &paths, id.as_deref(), &*reporter).await
+    }
+    .await;
+    finish_visible_operation(&*reporter, "restore", result)
 }
+
+// ---------------------------------------------------------------------------
+// Non-progress commands
+// ---------------------------------------------------------------------------
 
 async fn run_clean() -> Result<()> {
     let paths = resolve_runtime_paths()?;
@@ -215,62 +573,206 @@ async fn run_clean() -> Result<()> {
         .context("another lazytmux operation is in progress")?;
     let cfg = load_config(&paths)?;
     let mut lock = load_lockfile(&paths)?;
-    sync::run_and_write(&cfg, &mut lock, &paths, None, SyncPolicy::CLEAN).await?;
+    let sync_outcome = sync::run_and_write(
+        &cfg,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::CLEAN,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await?;
+    ensure_sync_phase_clean(sync_outcome)?;
     plugin::clean(&cfg, &paths)
 }
 
-fn run_list() -> Result<()> {
+fn run_list(verbose: bool) -> Result<()> {
     let paths = resolve_runtime_paths()?;
     let cfg = load_config(&paths)?;
     let lock = load_lockfile(&paths)?;
     let statuses = plugin::list(&cfg, &lock, &paths)?;
 
     if sync::lock_is_stale(&cfg, &lock) {
-        println!("warning: lock metadata is stale relative to config; run `lazytmux sync`");
+        eprintln!("warning: lock metadata is stale relative to config; run `lazytmux sync`");
     }
 
-    // Print header
-    println!(
-        "{:<45} {:<20} {:<8} {:<15} {:<15} {:<12} {:<12} source",
-        "id", "name", "kind", "state", "last-result", "current", "lock"
-    );
-    for s in &statuses {
-        println!(
-            "{:<45} {:<20} {:<8} {:<15} {:<15} {:<12} {:<12} {}",
-            s.id,
-            s.name,
-            s.kind,
-            s.state,
-            s.last_result,
-            short_commit(s.current_commit.as_deref()),
-            short_commit(s.lock_commit.as_deref()),
-            s.source,
-        );
+    if verbose {
+        print_verbose_statuses(&statuses)?;
+    } else {
+        print_default_statuses(&statuses)?;
     }
 
     Ok(())
 }
 
-fn build_health_map(
-    cfg: &lazytmux::model::Config,
-    paths: &Paths,
-) -> std::collections::HashMap<String, lazytmux::planner::RepoHealth> {
-    cfg.plugins
-        .iter()
-        .filter_map(|spec| {
-            let id = spec.remote_id()?;
-            let health = lazytmux::planner::inspect_plugin_dir(&paths.plugin_dir(id));
-            Some((id.to_string(), health))
-        })
-        .collect()
+fn print_default_statuses(statuses: &[PluginStatus]) -> Result<()> {
+    let rows = statuses.iter().map(|s| {
+        vec![
+            s.source.clone(),
+            s.kind.clone(),
+            style_state(s.state),
+            style_build_status(s.build_status),
+            style_lock_status(s.current_commit.as_deref(), s.lock_commit.as_deref()),
+        ]
+    });
+    write_table(&render_table(["Plugin", "Kind", "State", "Build", "Lock"], rows))
 }
+
+fn print_verbose_statuses(statuses: &[PluginStatus]) -> Result<()> {
+    let rows = statuses.iter().map(|s| {
+        vec![
+            s.id.clone(),
+            s.name.clone(),
+            s.kind.clone(),
+            style_state(s.state),
+            style_build_status(s.build_status),
+            style_commit(s.current_commit.as_deref()),
+            style_commit(s.lock_commit.as_deref()),
+            s.source.clone(),
+        ]
+    });
+    write_table(&render_table(
+        ["Id", "Name", "Kind", "State", "Build", "Current", "Expected", "Source"],
+        rows,
+    ))
+}
+
+fn style_state(state: PluginState) -> String {
+    match state {
+        PluginState::Installed | PluginState::Local => format!("{}", state.green()),
+        PluginState::Missing | PluginState::Broken => format!("{}", state.red()),
+        PluginState::Outdated => format!("{}", state.yellow()),
+        PluginState::PinnedTag | PluginState::PinnedCommit => format!("{}", state.cyan()),
+    }
+}
+
+fn style_build_status(status: BuildStatus) -> String {
+    match status {
+        BuildStatus::Ok => format!("{}", "success".green()),
+        BuildStatus::BuildFailed => format!("{}", status.red()),
+        BuildStatus::None => format!("{}", "-".dimmed()),
+    }
+}
+
+fn style_lock_status(current: Option<&str>, lock: Option<&str>) -> String {
+    match (current, lock) {
+        (Some(c), Some(l)) if c == l => format!("{}", "synced".green()),
+        (Some(_), Some(_)) | (None, Some(_)) => format!("{}", "mismatch".yellow()),
+        _ => format!("{}", "-".dimmed()),
+    }
+}
+
+fn style_commit(hash: Option<&str>) -> String {
+    format!("{}", short_commit(hash).dimmed())
+}
+
+fn render_table<const N: usize>(
+    headers: [&str; N],
+    rows: impl IntoIterator<Item = Vec<String>>,
+) -> String {
+    let mut builder = Builder::default();
+    builder.push_record(headers.map(termui::bold));
+    for row in rows {
+        builder.push_record(row);
+    }
+
+    let mut table = builder.build();
+    table.with(Style::blank());
+    table.with(Modify::new(Segment::all()).with(Alignment::left()));
+
+    table.to_string()
+}
+
+fn write_table(table: &str) -> Result<()> {
+    let mut stdout = anstream::stdout();
+    writeln!(stdout, "{table}")?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 fn short_commit(hash: Option<&str>) -> &str {
     hash.map(lazytmux::short_hash).unwrap_or("-")
+}
+
+fn ensure_sync_phase_clean(outcome: sync::SyncOutcome) -> Result<()> {
+    if outcome.is_clean() {
+        return Ok(());
+    }
+    Err(progress::progress_failure(format!(
+        "{} plugin(s) failed to sync:\n  {}",
+        outcome.plugin_failures.len(),
+        outcome.plugin_failures.join("\n  ")
+    )))
+}
+
+fn finish_visible_operation(
+    reporter: &dyn ProgressReporter,
+    command: &'static str,
+    result: Result<()>,
+) -> Result<()> {
+    match result {
+        Ok(()) => {
+            reporter.report(ProgressEvent::OperationEnd { command });
+            Ok(())
+        }
+        Err(e) if progress::is_progress_failure(&e) => {
+            reporter.report(ProgressEvent::OperationEnd { command });
+            Err(progress::reported_error())
+        }
+        Err(e) => {
+            let (summary, detail) = progress::summarize_error(&e);
+            reporter.report(ProgressEvent::OperationFailed { summary, detail });
+            reporter.report(ProgressEvent::OperationEnd { command });
+            Err(progress::reported_error())
+        }
+    }
 }
 
 fn dirs_home() -> std::path::PathBuf {
     std::env::var("HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("/"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use anstream::{AutoStream, ColorChoice};
+
+    use super::render_table;
+
+    fn adapt(text: &str, choice: ColorChoice) -> String {
+        let mut stream = AutoStream::new(Vec::new(), choice);
+        write!(stream, "{text}").unwrap();
+        String::from_utf8(stream.into_inner()).unwrap()
+    }
+
+    #[test]
+    fn render_table_styles_header_text() {
+        let output =
+            render_table(["Plugin", "State"], [vec!["user/repo".into(), "missing".into()]]);
+        assert!(output.contains("\u{1b}[1mPlugin"));
+        assert!(output.contains("user/repo"));
+    }
+
+    #[test]
+    fn anstream_strips_table_ansi_when_disabled() {
+        let table = render_table(["Plugin", "State"], [vec!["user/repo".into(), "missing".into()]]);
+        let output = adapt(&table, ColorChoice::Never);
+        assert!(!output.contains("\u{1b}[1m"));
+        assert!(output.contains("Plugin"));
+        assert!(output.contains("user/repo"));
+    }
+
+    #[test]
+    fn anstream_keeps_table_ansi_when_enabled() {
+        let table = render_table(["Plugin", "State"], [vec!["user/repo".into(), "missing".into()]]);
+        let output = adapt(&table, ColorChoice::AlwaysAnsi);
+        assert!(output.contains("\u{1b}[1mPlugin"));
+    }
 }

@@ -1,13 +1,16 @@
-/// Core data types for lazytmux.
-
+/// Top-level configuration holding global options and the list of plugins.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
+    /// Global options that apply to all plugins.
     pub options: Options,
+    /// Ordered list of plugin specifications.
     pub plugins: Vec<PluginSpec>,
 }
 
+/// Global options that control lazytmux behaviour.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
+    /// Automatically install missing plugins on tmux startup when true.
     pub auto_install: bool,
 }
 
@@ -17,8 +20,10 @@ impl Default for Options {
     }
 }
 
+/// Describes where a plugin originates from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginSource {
+    /// Plugin hosted on a remote Git forge.
     Remote {
         /// Raw source string from config (e.g. "tmux-plugins/tmux-sensible")
         raw: String,
@@ -27,26 +32,40 @@ pub enum PluginSource {
         /// Resolved clone URL
         clone_url: String,
     },
+    /// Plugin that lives on the local filesystem.
     Local {
+        /// Absolute or home-relative path to the plugin directory.
         path: String,
     },
 }
 
+/// Specifies which Git ref a plugin should track.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tracking {
+    /// Follow the repository's default branch.
     DefaultBranch,
+    /// Follow a named branch.
     Branch(String),
+    /// Pin to a specific tag.
     Tag(String),
+    /// Pin to a specific commit hash.
     Commit(String),
 }
 
+/// Full specification for a single plugin entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginSpec {
+    /// Origin of the plugin (remote URL or local path).
     pub source: PluginSource,
+    /// Short display name derived from the source.
     pub name: String,
+    /// Prefix used when setting tmux options for this plugin.
     pub opt_prefix: String,
+    /// Which Git ref to track for updates.
     pub tracking: Tracking,
+    /// Optional shell command to run after installing or updating.
     pub build: Option<String>,
+    /// Extra key-value options passed to the plugin.
     pub opts: Vec<(String, String)>,
 }
 
@@ -64,10 +83,12 @@ impl Config {
 }
 
 impl PluginSpec {
+    /// Returns true if the plugin comes from a remote Git forge.
     pub fn is_remote(&self) -> bool {
         matches!(self.source, PluginSource::Remote { .. })
     }
 
+    /// Returns true if the plugin resides on the local filesystem.
     pub fn is_local(&self) -> bool {
         matches!(self.source, PluginSource::Local { .. })
     }

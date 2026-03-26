@@ -8,31 +8,69 @@ use crate::lockfile::{
     write_lockfile_atomic,
 };
 use crate::model::{Config, PluginSource, PluginSpec, Tracking};
+use crate::progress::{self, ProgressEvent, ProgressReporter, Stage};
 use crate::state::{self, FailureMarker, Paths, build_command_hash, timestamp_now};
-use crate::{git, planner, plugin};
+use crate::{git, planner, plugin, short_hash};
 
+/// Controls behavioral differences between an interactive sync and tmux init.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncMode {
+    /// Standard sync triggered by an explicit user command.
+    Normal,
+    /// Sync triggered automatically during tmux session initialisation.
+    Init,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+/// Outcome produced by sync-phase execution.
+///
+/// `Ok(SyncOutcome)` may still contain per-plugin failures in `plugin_failures`.
+/// `Err` is reserved for operation-level failures that make the sync command
+/// unsafe or impossible to continue.
+pub struct SyncOutcome {
+    /// Human-readable failure messages, each formatted as `"<id>: <error>"`.
+    pub plugin_failures: Vec<String>,
+}
+
+impl SyncOutcome {
+    /// Returns `true` when no plugin failures were recorded.
+    pub fn is_clean(&self) -> bool {
+        self.plugin_failures.is_empty()
+    }
+}
+
+/// Governs which categories of plugin work are permitted during a sync pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyncPolicy {
+    /// Whether to clone and publish plugins that are not yet installed.
     pub install_new_plugins: bool,
+    /// Whether to re-clone or rebuild plugins whose state is out of date.
     pub repair_existing_plugins: bool,
+    /// Whether to remove lock entries for plugins no longer in the config.
     pub prune_removed_plugins: bool,
 }
 
 impl SyncPolicy {
+    /// Full sync: install, repair, and prune.
     pub const SYNC: Self = Self {
         install_new_plugins: true,
         repair_existing_plugins: true,
         prune_removed_plugins: true,
     };
+    /// Alias for [`Self::SYNC`] used by the install subcommand.
     pub const INSTALL: Self = Self::SYNC;
+    /// Alias for [`Self::SYNC`] used by the update subcommand.
     pub const UPDATE: Self = Self::SYNC;
+    /// Alias for [`Self::SYNC`] used by the restore subcommand.
     pub const RESTORE: Self = Self::SYNC;
+    /// Prune-only: removes stale plugins without installing or repairing.
     pub const CLEAN: Self = Self {
         install_new_plugins: false,
         repair_existing_plugins: false,
         prune_removed_plugins: true,
     };
 
+    /// Builds the policy used during tmux init, optionally allowing installation.
     pub fn init(auto_install: bool) -> Self {
         Self {
             install_new_plugins: auto_install,
@@ -42,46 +80,89 @@ impl SyncPolicy {
     }
 }
 
+/// Read-only preview: does the given config/lock/policy combination require
+/// real plugin work (clone, publish, build)?  Used by `init` to decide whether
+/// to pop up a visible UI.
+pub struct SyncPreview {
+    /// `true` when at least one plugin would require clone, publish, or build work.
+    pub needs_work: bool,
+}
+
+/// Inspects whether any plugin would need real work under the given policy without executing it.
+pub fn preview(
+    config: &Config,
+    lock: &LockFile,
+    target_id: Option<&str>,
+    policy: SyncPolicy,
+    paths: &Paths,
+) -> SyncPreview {
+    let desired_hashes = desired_remote_hashes(config);
+    for spec in config.plugins.iter().filter(|spec| match spec.remote_id() {
+        Some(id) => target_id.is_none_or(|target| target == id),
+        None => false,
+    }) {
+        let id = spec.remote_id().unwrap();
+        let Some(desired_hash) = desired_hashes.get(id) else {
+            continue;
+        };
+        if plugin_needs_reconcile(spec, lock, desired_hash, policy, paths) {
+            return SyncPreview { needs_work: true };
+        }
+    }
+    SyncPreview { needs_work: false }
+}
+
+/// Executes the sync phase and returns a structured outcome.
+///
+/// Plugin-level failures are collected in [`SyncOutcome::plugin_failures`] and
+/// still return `Ok`. `Err` is reserved for operation-level failures that make
+/// the sync phase unsafe or impossible to continue.
 pub async fn run(
     config: &Config,
     lock: &mut LockFile,
     paths: &Paths,
     target_id: Option<&str>,
     policy: SyncPolicy,
-) -> Result<()> {
+    mode: SyncMode,
+    reporter: &dyn ProgressReporter,
+) -> Result<SyncOutcome> {
     config.validate_target_id(target_id)?;
 
     let desired_hashes = desired_remote_hashes(config);
-    let mut failures = Vec::new();
+    let mut outcome = SyncOutcome::default();
 
     for spec in config.plugins.iter().filter(|spec| match spec.remote_id() {
         Some(id) => target_id.is_none_or(|target| target == id),
         None => false,
     }) {
         let id = spec.remote_id().unwrap();
-        let desired_hash = desired_hashes.get(id).cloned().unwrap();
-
-        if lock.plugins.get(id).and_then(|entry| entry.config_hash.as_deref())
-            == Some(desired_hash.as_str())
-        {
+        let Some(desired_hash) = desired_hashes.get(id) else {
+            continue;
+        };
+        if !plugin_needs_reconcile(spec, lock, desired_hash, policy, paths) {
             continue;
         }
 
-        let is_new = !lock.plugins.contains_key(id);
-        let can_reconcile =
-            if is_new { policy.install_new_plugins } else { policy.repair_existing_plugins };
-        if !can_reconcile {
-            continue;
-        }
+        let name = spec.name.as_str();
 
         let current_entry = lock.plugins.get(id);
-        match resolve_desired_plugin(spec, current_entry, desired_hash.clone(), paths).await {
+        match resolve_desired_plugin(spec, current_entry, desired_hash.to_string(), paths, reporter)
+            .await
+        {
             Ok(resolved) => {
-                if let Err(err) = reconcile_plugin(spec, lock, paths, resolved).await {
-                    failures.push(format!("{id}: {err}"));
+                if let Err(err) =
+                    reconcile_plugin(spec, lock, paths, mode, resolved, reporter).await
+                {
+                    let (summary, detail) = progress::summarize_error(&err);
+                    reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
+                    outcome.plugin_failures.push(format!("{id}: {err}"));
                 }
             }
-            Err(err) => failures.push(format!("{id}: {err}")),
+            Err(err) => {
+                let (summary, detail) = progress::summarize_error(&err);
+                reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
+                outcome.plugin_failures.push(format!("{id}: {err}"));
+            }
         }
     }
 
@@ -94,26 +175,29 @@ pub async fn run(
         lock.config_fingerprint = Some(config_fingerprint(config));
     }
 
-    if !failures.is_empty() {
-        anyhow::bail!("{} plugin(s) failed to sync:\n  {}", failures.len(), failures.join("\n  "));
-    }
-
-    Ok(())
+    Ok(outcome)
 }
 
+/// Runs sync and then writes the lockfile atomically.
+///
+/// Plugin-level failures are returned in [`SyncOutcome`] within `Ok`. `Err` is
+/// reserved for operation-level failures (for example invalid target id or
+/// lockfile write failure).
 pub async fn run_and_write(
     config: &Config,
     lock: &mut LockFile,
     paths: &Paths,
     target_id: Option<&str>,
     policy: SyncPolicy,
-) -> Result<()> {
-    config.validate_target_id(target_id)?;
-    let sync_result = run(config, lock, paths, target_id, policy).await;
+    mode: SyncMode,
+    reporter: &dyn ProgressReporter,
+) -> Result<SyncOutcome> {
+    let outcome = run(config, lock, paths, target_id, policy, mode, reporter).await?;
     write_lockfile_atomic(&paths.lockfile_path, lock)?;
-    sync_result
+    Ok(outcome)
 }
 
+/// Returns `true` when the lockfile is out of date with respect to the config.
 pub fn lock_is_stale(config: &Config, lock: &LockFile) -> bool {
     let has_remote_plugins = config.plugins.iter().any(|spec| spec.remote_id().is_some());
     if !has_remote_plugins {
@@ -128,6 +212,7 @@ pub fn lock_is_stale(config: &Config, lock: &LockFile) -> bool {
     !lock_matches_config(config, lock)
 }
 
+/// Returns `true` when every plugin's locked config hash matches the current config.
 pub fn lock_matches_config(config: &Config, lock: &LockFile) -> bool {
     let desired = desired_remote_hashes(config);
     if lock.plugins.len() != desired.len() {
@@ -148,6 +233,39 @@ fn desired_remote_hashes(config: &Config) -> BTreeMap<String, String> {
         .collect()
 }
 
+fn plugin_needs_reconcile(
+    spec: &PluginSpec,
+    lock: &LockFile,
+    desired_hash: &str,
+    policy: SyncPolicy,
+    paths: &Paths,
+) -> bool {
+    let Some(id) = spec.remote_id() else {
+        return false;
+    };
+    let current_entry = lock.plugins.get(id);
+    let can_reconcile = if current_entry.is_none() {
+        policy.install_new_plugins
+    } else {
+        policy.repair_existing_plugins
+    };
+    if !can_reconcile {
+        return false;
+    }
+    let Some(current_entry) = current_entry else {
+        return true;
+    };
+    // Different config/build hash always requires a sync write pass, even if the
+    // on-disk repo currently points at the same commit.
+    if current_entry.config_hash.as_deref() != Some(desired_hash) {
+        return true;
+    }
+    match planner::inspect_plugin_dir(&paths.plugin_dir(id)) {
+        planner::RepoHealth::Missing | planner::RepoHealth::Broken => true,
+        planner::RepoHealth::Healthy { commit } => commit != current_entry.commit,
+    }
+}
+
 struct ResolvedPlugin {
     id: String,
     staging_dir: PathBuf,
@@ -159,10 +277,19 @@ async fn resolve_desired_plugin(
     current_entry: Option<&LockEntry>,
     config_hash: String,
     paths: &Paths,
+    reporter: &dyn ProgressReporter,
 ) -> Result<ResolvedPlugin> {
     let PluginSource::Remote { id, clone_url, .. } = &spec.source else {
         unreachable!("sync only processes remote plugins");
     };
+
+    let name = spec.name.as_str();
+    reporter.report(ProgressEvent::PluginStage {
+        id,
+        name,
+        stage: Stage::Cloning,
+        detail: Some(clone_url.clone()),
+    });
 
     let staging_dir = paths.staging_dir(id);
     let prep = async {
@@ -173,8 +300,25 @@ async fn resolve_desired_plugin(
         {
             (entry.commit.clone(), entry.tracking.clone())
         } else {
-            plugin::resolve_tracking(&staging_dir, &spec.tracking).await?
+            let (commit, tracking) = plugin::resolve_tracking(&staging_dir, &spec.tracking).await?;
+            reporter.report(ProgressEvent::PluginStage {
+                id,
+                name,
+                stage: Stage::Resolving,
+                detail: Some(plugin::describe_tracking_resolution(
+                    &spec.tracking,
+                    &tracking,
+                    &commit,
+                )),
+            });
+            (commit, tracking)
         };
+        reporter.report(ProgressEvent::PluginStage {
+            id,
+            name,
+            stage: Stage::CheckingOut,
+            detail: None,
+        });
         git::checkout(&staging_dir, &commit).await?;
         Ok::<_, anyhow::Error>(LockEntry { tracking, commit, config_hash: Some(config_hash) })
     }
@@ -198,14 +342,33 @@ fn tracks_same_revision(spec: &PluginSpec, locked: &TrackingRecord) -> bool {
     }
 }
 
+fn should_skip_known_failure(
+    mode: SyncMode,
+    paths: &Paths,
+    id: &str,
+    commit: &str,
+    build: Option<&str>,
+) -> Result<bool> {
+    if mode != SyncMode::Init {
+        return Ok(false);
+    }
+    let Some(build_cmd) = build else {
+        return Ok(false);
+    };
+    plugin::is_known_failure(paths, id, commit, build_cmd)
+}
+
 async fn reconcile_plugin(
     spec: &PluginSpec,
     lock: &mut LockFile,
     paths: &Paths,
+    mode: SyncMode,
     resolved: ResolvedPlugin,
+    reporter: &dyn ProgressReporter,
 ) -> Result<()> {
     let ResolvedPlugin { id, staging_dir, entry } = resolved;
 
+    let name = spec.name.as_str();
     let target_dir = paths.plugin_dir(&id);
     let current_entry = lock.plugins.get(&id).cloned();
     let health = planner::inspect_plugin_dir(&target_dir);
@@ -230,9 +393,31 @@ async fn reconcile_plugin(
     if !needs_publish {
         let _ = std::fs::remove_dir_all(&staging_dir);
         state::clear_failure_markers(&paths.failures_root, &id)?;
-        lock.plugins.insert(id, entry);
+        lock.plugins.insert(id.clone(), entry);
+        reporter.report(ProgressEvent::PluginDone {
+            id: &id,
+            name,
+            summary: "lock reconciled".to_string(),
+        });
         return Ok(());
     }
+
+    if should_skip_known_failure(mode, paths, &id, &entry.commit, spec.build.as_deref())? {
+        reporter.report(ProgressEvent::PluginSkipped {
+            id: &id,
+            name,
+            reason: format!("known build failure at {}", short_hash(&entry.commit)),
+        });
+        let _ = std::fs::remove_dir_all(&staging_dir);
+        return Ok(());
+    }
+
+    reporter.report(ProgressEvent::PluginStage {
+        id: &id,
+        name,
+        stage: Stage::Applying,
+        detail: spec.build.clone(),
+    });
 
     let build = spec.build.as_deref();
     let publish_result = if target_dir.exists() {
@@ -244,8 +429,14 @@ async fn reconcile_plugin(
 
     match publish_result {
         Ok(()) => {
+            let synced_commit = short_hash(&entry.commit).to_string();
             state::clear_failure_markers(&paths.failures_root, &id)?;
-            lock.plugins.insert(id, entry);
+            lock.plugins.insert(id.clone(), entry);
+            reporter.report(ProgressEvent::PluginDone {
+                id: &id,
+                name,
+                summary: format!("synced {synced_commit}"),
+            });
             Ok(())
         }
         Err(err) => {

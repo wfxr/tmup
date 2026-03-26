@@ -1,12 +1,15 @@
+mod utils;
 use std::collections::{HashMap, HashSet};
 
 use lazytmux::lockfile::{LockEntry, LockFile};
 use lazytmux::model::Config;
 use lazytmux::planner::{
-    LastResult, PluginState, RepoHealth, collect_failed_builds, compute_statuses, plan_init,
+    BuildStatus, PluginState, RepoHealth, collect_failed_builds, compute_statuses,
 };
-use lazytmux::state::{FailureMarker, build_command_hash};
+use lazytmux::state::{FailureMarker, Paths, build_command_hash};
+use lazytmux::sync;
 use tempfile::tempdir;
+use utils::git;
 
 fn make_config(kdl: &str) -> Config {
     lazytmux::config::parse_config(kdl).unwrap()
@@ -22,54 +25,95 @@ fn state_display_strings() {
 }
 
 #[test]
-fn last_result_display_strings() {
-    assert_eq!(LastResult::Ok.to_string(), "ok");
-    assert_eq!(LastResult::BuildFailed.to_string(), "build-failed");
-    assert_eq!(LastResult::None.to_string(), "none");
+fn build_status_display_strings() {
+    assert_eq!(BuildStatus::Ok.to_string(), "ok");
+    assert_eq!(BuildStatus::BuildFailed.to_string(), "build-failed");
+    assert_eq!(BuildStatus::None.to_string(), "none");
 }
 
 #[test]
-fn read_only_init_plan_when_all_installed() {
+fn preview_returns_false_when_lock_and_config_are_aligned() {
+    let dir = tempdir().unwrap();
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let plugin_dir = paths.plugin_dir("github.com/user/repo");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    git(&["init", "-b", "main"], &plugin_dir);
+    std::fs::write(plugin_dir.join("init.tmux"), "#!/bin/sh\n").unwrap();
+    git(&["add", "."], &plugin_dir);
+    git(&["commit", "-m", "init"], &plugin_dir);
+    let commit = git(&["rev-parse", "HEAD"], &plugin_dir);
+
     let config = make_config(r#"plugin "user/repo""#);
     let mut lock = LockFile::new();
-    lock.plugins.insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
-    let health: HashMap<String, RepoHealth> =
-        [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "abc123".into() })].into();
+    let mut entry = LockEntry::branch("main", &commit);
+    entry.config_hash = lazytmux::lockfile::remote_plugin_config_hash(&config.plugins[0]);
+    lock.plugins.insert("github.com/user/repo".into(), entry);
 
-    let plan = plan_init(&config, &lock, &health);
-    assert!(plan.is_none());
+    let preview = sync::preview(&config, &lock, None, sync::SyncPolicy::init(true), &paths);
+    assert!(!preview.needs_work);
 }
 
 #[test]
-fn write_plan_when_plugin_missing() {
-    let config = make_config(
-        r#"
-options { auto-install #true }
-plugin "user/repo"
-    "#,
+fn preview_returns_true_for_missing_plugin_dir_under_init_policy() {
+    let dir = tempdir().unwrap();
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let config = make_config(r#"plugin "user/repo""#);
+    let mut lock = LockFile::new();
+    let mut entry = LockEntry::branch("main", "abc123");
+    entry.config_hash = lazytmux::lockfile::remote_plugin_config_hash(&config.plugins[0]);
+    lock.plugins.insert("github.com/user/repo".into(), entry);
+
+    assert!(!paths.plugin_dir("github.com/user/repo").exists());
+    let preview = sync::preview(&config, &lock, None, sync::SyncPolicy::init(true), &paths);
+    assert!(
+        preview.needs_work,
+        "preview should require work when plugin dir is missing even if lock hash matches"
     );
-    let lock = LockFile::new();
-    let health: HashMap<String, RepoHealth> = HashMap::new();
-
-    let plan = plan_init(&config, &lock, &health);
-    let plan = plan.expect("expected Some(WritePlan)");
-    assert_eq!(plan.to_install, vec!["github.com/user/repo"]);
-    assert!(plan.to_restore.is_empty());
 }
 
 #[test]
-fn restore_plan_when_installed_commit_drifted() {
+fn preview_returns_true_for_broken_plugin_dir_under_init_policy() {
+    let dir = tempdir().unwrap();
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
     let config = make_config(r#"plugin "user/repo""#);
     let mut lock = LockFile::new();
-    lock.plugins.insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
-    // Installed at a different commit than the lock
-    let health: HashMap<String, RepoHealth> =
-        [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "def456".into() })].into();
+    let mut entry = LockEntry::branch("main", "abc123");
+    entry.config_hash = lazytmux::lockfile::remote_plugin_config_hash(&config.plugins[0]);
+    lock.plugins.insert("github.com/user/repo".into(), entry);
 
-    let plan = plan_init(&config, &lock, &health);
-    let plan = plan.expect("expected Some(WritePlan) with to_restore");
-    assert!(plan.to_install.is_empty());
-    assert_eq!(plan.to_restore, vec!["github.com/user/repo"]);
+    let plugin_dir = paths.plugin_dir("github.com/user/repo");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    assert!(matches!(lazytmux::planner::inspect_plugin_dir(&plugin_dir), RepoHealth::Broken));
+
+    let preview = sync::preview(&config, &lock, None, sync::SyncPolicy::init(true), &paths);
+    assert!(
+        preview.needs_work,
+        "preview should require work when plugin dir is broken even if lock hash matches"
+    );
+}
+
+#[test]
+fn preview_returns_true_for_same_commit_build_change_requires_republish() {
+    let dir = tempdir().unwrap();
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    let old_config = make_config(r#"plugin "user/repo" build="touch built-v1""#);
+    let new_config = make_config(r#"plugin "user/repo" build="touch built-v2""#);
+    let mut lock = LockFile::new();
+    let mut entry = LockEntry::branch("main", "abc123");
+    entry.config_hash = lazytmux::lockfile::remote_plugin_config_hash(&old_config.plugins[0]);
+    lock.plugins.insert("github.com/user/repo".into(), entry);
+
+    let preview = sync::preview(&new_config, &lock, None, sync::SyncPolicy::init(true), &paths);
+    assert!(
+        preview.needs_work,
+        "preview should require work when same-commit build config changes"
+    );
 }
 
 #[test]
@@ -94,7 +138,7 @@ fn build_failure_keeps_state_and_result_separate() {
     let statuses = compute_statuses(&config, &lock, &health, &failed_builds);
     assert_eq!(statuses.len(), 1);
     assert_eq!(statuses[0].state, PluginState::Installed);
-    assert_eq!(statuses[0].last_result, LastResult::BuildFailed);
+    assert_eq!(statuses[0].build_status, BuildStatus::BuildFailed);
 }
 
 #[test]
@@ -117,7 +161,21 @@ fn missing_plugin_with_build_failure_shows_missing_and_failed() {
 
     let statuses = compute_statuses(&config, &lock, &health, &failed_builds);
     assert_eq!(statuses[0].state, PluginState::Missing);
-    assert_eq!(statuses[0].last_result, LastResult::BuildFailed);
+    assert_eq!(statuses[0].build_status, BuildStatus::BuildFailed);
+}
+
+#[test]
+fn installed_plugin_without_build_shows_none_build_status() {
+    let config = make_config(r#"plugin "user/repo""#);
+    let mut lock = LockFile::new();
+    lock.plugins.insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
+    let health: HashMap<String, RepoHealth> =
+        [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "abc123".into() })].into();
+    let failed_builds = HashSet::new();
+
+    let statuses = compute_statuses(&config, &lock, &health, &failed_builds);
+    assert_eq!(statuses[0].state, PluginState::Installed);
+    assert_eq!(statuses[0].build_status, BuildStatus::None);
 }
 
 #[test]
@@ -133,7 +191,7 @@ fn local_plugin_status() {
     let statuses = compute_statuses(&config, &lock, &health, &failed_builds);
     assert_eq!(statuses.len(), 1);
     assert_eq!(statuses[0].state, PluginState::Local);
-    assert_eq!(statuses[0].last_result, LastResult::Ok);
+    assert_eq!(statuses[0].build_status, BuildStatus::None);
     assert_eq!(statuses[0].kind, "local");
 }
 
@@ -149,7 +207,7 @@ fn missing_local_plugin_shows_missing_and_none() {
     let statuses = compute_statuses(&config, &lock, &health, &failed_builds);
     assert_eq!(statuses.len(), 1);
     assert_eq!(statuses[0].state, PluginState::Missing);
-    assert_eq!(statuses[0].last_result, LastResult::None);
+    assert_eq!(statuses[0].build_status, BuildStatus::None);
     assert_eq!(statuses[0].kind, "local");
 }
 
@@ -166,7 +224,7 @@ fn local_plugin_file_path_shows_broken_and_none() {
     let statuses = compute_statuses(&config, &lock, &health, &failed_builds);
     assert_eq!(statuses.len(), 1);
     assert_eq!(statuses[0].state, PluginState::Broken);
-    assert_eq!(statuses[0].last_result, LastResult::None);
+    assert_eq!(statuses[0].build_status, BuildStatus::None);
     assert_eq!(statuses[0].kind, "local");
 }
 
@@ -320,83 +378,5 @@ fn broken_repo_shows_broken_in_list() {
     let failed_builds = HashSet::new();
     let statuses = compute_statuses(&config, &lock, &health, &failed_builds);
     assert_eq!(statuses[0].state, PluginState::Broken);
-    assert_eq!(statuses[0].last_result, LastResult::None);
-}
-
-#[test]
-fn init_plans_restore_for_broken_plugin_with_lock() {
-    let config = make_config(r#"plugin "user/repo""#);
-    let mut lock = LockFile::new();
-    lock.plugins.insert("github.com/user/repo".into(), LockEntry::branch("main", "abc123"));
-    let health: HashMap<String, RepoHealth> =
-        [("github.com/user/repo".into(), RepoHealth::Broken)].into();
-    let plan = plan_init(&config, &lock, &health);
-    let plan = plan.expect("expected WritePlan");
-    assert!(plan.to_install.is_empty());
-    assert_eq!(plan.to_restore, vec!["github.com/user/repo"]);
-}
-
-#[test]
-fn init_plans_install_for_broken_plugin_without_lock() {
-    let config = make_config(
-        r#"
-options { auto-install #true }
-plugin "user/repo"
-    "#,
-    );
-    let lock = LockFile::new();
-    let health: HashMap<String, RepoHealth> =
-        [("github.com/user/repo".into(), RepoHealth::Broken)].into();
-    let plan = plan_init(&config, &lock, &health);
-    let plan = plan.expect("expected WritePlan");
-    assert_eq!(plan.to_install, vec!["github.com/user/repo"]);
-    assert!(plan.to_restore.is_empty());
-}
-
-#[test]
-fn init_plans_install_for_healthy_plugin_without_lock() {
-    let config = make_config(r#"plugin "user/repo""#);
-    let lock = LockFile::new();
-    let health: HashMap<String, RepoHealth> =
-        [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "abc123".into() })].into();
-    let plan = plan_init(&config, &lock, &health);
-    let plan = plan.expect("expected WritePlan — Healthy+no-lock needs install");
-    assert_eq!(plan.to_install, vec!["github.com/user/repo"]);
-    assert!(plan.to_restore.is_empty());
-}
-
-#[test]
-fn init_does_not_install_healthy_unlocked_plugin_when_auto_install_disabled() {
-    let config = make_config(
-        r#"
-options { auto-install #false }
-plugin "user/repo"
-    "#,
-    );
-    let lock = LockFile::new();
-    let health: HashMap<String, RepoHealth> =
-        [("github.com/user/repo".into(), RepoHealth::Healthy { commit: "abc123".into() })].into();
-
-    let plan = plan_init(&config, &lock, &health);
-    assert!(plan.is_none());
-}
-
-#[test]
-fn init_plan_follows_config_declaration_order() {
-    let config = make_config(
-        r#"
-options { auto-install #true }
-plugin "user/alpha"
-plugin "user/beta"
-plugin "user/gamma"
-    "#,
-    );
-    let lock = LockFile::new();
-    let health: HashMap<String, RepoHealth> = HashMap::new();
-    let plan = plan_init(&config, &lock, &health);
-    let plan = plan.expect("expected WritePlan");
-    assert_eq!(
-        plan.to_install,
-        vec!["github.com/user/alpha", "github.com/user/beta", "github.com/user/gamma",]
-    );
+    assert_eq!(statuses[0].build_status, BuildStatus::None);
 }
