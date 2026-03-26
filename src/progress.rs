@@ -3,10 +3,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use crate::model::Config;
-use crate::state::Paths;
 use owo_colors::OwoColorize;
 
+use crate::model::Config;
+use crate::state::Paths;
 use crate::termui::{self, Accent};
 
 const SUMMARY_MAX_LEN: usize = 80;
@@ -449,11 +449,7 @@ impl RenderedLine {
     #[cfg(test)]
     fn plain(&self) -> String {
         let message = strip_ansi(&self.message);
-        if self.action.is_empty() {
-            message
-        } else {
-            format_progress_line(&self.action, &message)
-        }
+        if self.action.is_empty() { message } else { format_progress_line(&self.action, &message) }
     }
 
     fn styled(&self) -> String {
@@ -526,18 +522,30 @@ impl StreamRenderer {
                 vec![RenderedLine::new(
                     LineKind::Warning,
                     "Skipped",
-                    format!("{}  {}", self.label(id, name), sanitize_summary(&reason, SUMMARY_MAX_LEN)),
+                    format!(
+                        "{}  {}",
+                        self.label(id, name),
+                        sanitize_summary(&reason, SUMMARY_MAX_LEN)
+                    ),
                 )]
             }
             ProgressEvent::PluginFailed { id, name, summary, .. } => {
                 vec![RenderedLine::new(
                     LineKind::Failure,
                     "Failed",
-                    format!("{}  {}", self.label(id, name), sanitize_summary(&summary, SUMMARY_MAX_LEN)),
+                    format!(
+                        "{}  {}",
+                        self.label(id, name),
+                        sanitize_summary(&summary, SUMMARY_MAX_LEN)
+                    ),
                 )]
             }
             ProgressEvent::OperationFailed { summary, .. } => {
-                vec![RenderedLine::new(LineKind::Failure, "Failed", format_operation_failure(&summary))]
+                vec![RenderedLine::new(
+                    LineKind::Failure,
+                    "Failed",
+                    format_operation_failure(&summary),
+                )]
             }
             ProgressEvent::OperationEnd { command: "init" } => {
                 vec![RenderedLine::new(LineKind::Success, "Finished", "lazytmux init")]
