@@ -1,12 +1,30 @@
+#![deny(missing_docs)]
+
+//! Modern tmux plugin manager.
+
+/// KDL configuration file parsing.
 pub mod config;
+/// Async git operations (clone, fetch, checkout, publish).
 pub mod git;
+/// Tmux load-plan construction (set env, apply opts, source `*.tmux` scripts).
 pub mod loader;
+/// Lock file persistence (read, write, fingerprint).
 pub mod lockfile;
+/// Core data types shared across the crate.
 pub mod model;
+/// Plugin health inspection and status computation.
 pub mod planner;
+/// High-level install, update, restore, clean, and list operations.
 pub mod plugin;
+/// Progress event types, reporter trait, and stream renderer.
+pub mod progress;
+/// Filesystem paths, operation locking, and build-failure marker I/O.
 pub mod state;
+/// Reconcile the on-disk plugin tree against config and lock.
 pub mod sync;
+/// Terminal styling helpers (colored, aligned label lines).
+pub mod termui;
+/// tmux command abstraction and init UI spawning helpers.
 pub mod tmux;
 
 /// Return the first 7 characters of a commit hash for display.

@@ -5,7 +5,7 @@ use std::path::Path;
 use crate::git;
 use crate::lockfile::LockFile;
 use crate::model::{Config, PluginSource, Tracking};
-use crate::state::build_command_hash;
+use crate::state::{Paths, build_command_hash};
 
 /// Health of a declared plugin's target directory on disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,7 +13,10 @@ pub enum RepoHealth {
     /// Target directory does not exist.
     Missing,
     /// Valid git repo with readable HEAD.
-    Healthy { commit: String },
+    Healthy {
+        /// The current HEAD commit hash.
+        commit: String,
+    },
     /// Directory exists but is not a valid git repo or HEAD is unreadable.
     Broken,
 }
@@ -40,12 +43,19 @@ pub fn inspect_plugin_dir(path: &Path) -> RepoHealth {
 /// Current availability state of a plugin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginState {
+    /// Plugin is present and matches the lock file.
     Installed,
+    /// Plugin directory does not exist.
     Missing,
+    /// Plugin is present but its commit differs from the lock file.
     Outdated,
+    /// Plugin is pinned to a specific tag.
     PinnedTag,
+    /// Plugin is pinned to a specific commit.
     PinnedCommit,
+    /// Plugin is a local path reference.
     Local,
+    /// Plugin directory exists but is not a valid git repository.
     Broken,
 }
 
@@ -63,15 +73,18 @@ impl fmt::Display for PluginState {
     }
 }
 
-/// Result of the most recent build/operation attempt.
+/// Result of a plugin's build hook, when configured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LastResult {
+pub enum BuildStatus {
+    /// Build hook completed successfully.
     Ok,
+    /// Build hook was run but failed.
     BuildFailed,
+    /// No build hook is configured for this plugin.
     None,
 }
 
-impl fmt::Display for LastResult {
+impl fmt::Display for BuildStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Ok => write!(f, "ok"),
@@ -84,23 +97,22 @@ impl fmt::Display for LastResult {
 /// A row of plugin status for list display.
 #[derive(Debug, Clone)]
 pub struct PluginStatus {
+    /// Unique identifier for the plugin (remote ID or local path).
     pub id: String,
+    /// Human-readable display name of the plugin.
     pub name: String,
+    /// Source specifier string (URL or local path).
     pub source: String,
+    /// Plugin kind: `"remote"` or `"local"`.
     pub kind: String,
+    /// Current availability state of the plugin.
     pub state: PluginState,
-    pub last_result: LastResult,
+    /// Build hook result ([`BuildStatus::None`] when no hook is configured).
+    pub build_status: BuildStatus,
+    /// HEAD commit currently checked out in the plugin directory.
     pub current_commit: Option<String>,
+    /// Commit recorded in the lock file for this plugin.
     pub lock_commit: Option<String>,
-}
-
-/// Plan for write operations during init.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WritePlan {
-    /// Remote plugins that need to be installed (missing from disk).
-    pub to_install: Vec<String>,
-    /// Remote plugins that need to be restored (installed but at wrong commit).
-    pub to_restore: Vec<String>,
 }
 
 /// Set of `(plugin_id, build_hash)` pairs that have uncleared failure markers.
@@ -156,21 +168,19 @@ pub fn compute_statuses(
 
                 let is_healthy = matches!(health, RepoHealth::Healthy { .. });
 
-                // last-result: any uncleared failure marker for this plugin + build
-                // means the last operation failed. Success always clears markers.
-                let last_result = if let Some(build_cmd) = &spec.build {
+                // build-status: any uncleared failure marker for this plugin + build
+                // means the last build failed. Success always clears markers.
+                let build_status = if let Some(build_cmd) = &spec.build {
                     let bh = build_command_hash(build_cmd);
                     if failed_builds.contains(&(id.clone(), bh)) {
-                        LastResult::BuildFailed
+                        BuildStatus::BuildFailed
                     } else if is_healthy {
-                        LastResult::Ok
+                        BuildStatus::Ok
                     } else {
-                        LastResult::None
+                        BuildStatus::None
                     }
-                } else if is_healthy {
-                    LastResult::Ok
                 } else {
-                    LastResult::None
+                    BuildStatus::None
                 };
 
                 statuses.push(PluginStatus {
@@ -179,19 +189,19 @@ pub fn compute_statuses(
                     source: raw.clone(),
                     kind: "remote".into(),
                     state,
-                    last_result,
+                    build_status,
                     current_commit,
                     lock_commit: lock_entry.map(|e| e.commit.clone()),
                 });
             }
             PluginSource::Local { path } => {
                 let local_path = Path::new(path);
-                let (state, last_result) = if !local_path.exists() {
-                    (PluginState::Missing, LastResult::None)
+                let state = if !local_path.exists() {
+                    PluginState::Missing
                 } else if local_path.is_dir() {
-                    (PluginState::Local, LastResult::Ok)
+                    PluginState::Local
                 } else {
-                    (PluginState::Broken, LastResult::None)
+                    PluginState::Broken
                 };
 
                 statuses.push(PluginStatus {
@@ -200,7 +210,7 @@ pub fn compute_statuses(
                     source: path.clone(),
                     kind: "local".into(),
                     state,
-                    last_result,
+                    build_status: BuildStatus::None,
                     current_commit: None,
                     lock_commit: None,
                 });
@@ -211,57 +221,6 @@ pub fn compute_statuses(
     statuses
 }
 
-/// Plan the init decision based on config, lock, and filesystem state.
-///
-/// Returns `Some(plan)` when writes are needed, `None` when everything is
-/// aligned and plugins can be loaded directly.
-pub fn plan_init(
-    config: &Config,
-    lock: &LockFile,
-    health_map: &HashMap<String, RepoHealth>,
-) -> Option<WritePlan> {
-    let mut to_install = Vec::new();
-    let mut to_restore = Vec::new();
-
-    // Iterate in config declaration order for deterministic output
-    for spec in &config.plugins {
-        let Some(id) = spec.remote_id() else {
-            continue;
-        };
-
-        let health = health_map.get(id).cloned().unwrap_or(RepoHealth::Missing);
-
-        match health {
-            RepoHealth::Missing => {
-                if config.options.auto_install {
-                    to_install.push(id.to_string());
-                }
-            }
-            RepoHealth::Broken => {
-                if lock.plugins.contains_key(id) {
-                    to_restore.push(id.to_string());
-                } else if config.options.auto_install {
-                    to_install.push(id.to_string());
-                }
-            }
-            RepoHealth::Healthy { ref commit } => {
-                if let Some(lock_entry) = lock.plugins.get(id) {
-                    if commit != &lock_entry.commit {
-                        to_restore.push(id.to_string());
-                    }
-                } else if config.options.auto_install {
-                    // Healthy but no lock entry — needs a full install to create lock state
-                    to_install.push(id.to_string());
-                }
-            }
-        }
-    }
-
-    let needs_write = !to_install.is_empty() || !to_restore.is_empty();
-
-    if needs_write { Some(WritePlan { to_install, to_restore }) } else { None }
-}
-
 /// Discover managed plugin IDs on disk (directories containing `.git`).
 ///
 /// Used by `clean` to find undeclared plugins. For declared plugins, use
@@ -270,6 +229,19 @@ pub fn scan_managed_plugin_ids(plugin_root: &Path) -> HashSet<String> {
     let mut ids = HashSet::new();
     scan_recursive_ids(plugin_root, plugin_root, &mut ids);
     ids
+}
+
+/// Build a health map for all declared remote plugins.
+pub fn build_health_map(config: &Config, paths: &Paths) -> HashMap<String, RepoHealth> {
+    config
+        .plugins
+        .iter()
+        .filter_map(|spec| {
+            let id = spec.remote_id()?;
+            let health = inspect_plugin_dir(&paths.plugin_dir(id));
+            Some((id.to_string(), health))
+        })
+        .collect()
 }
 
 fn scan_recursive_ids(root: &Path, current: &Path, ids: &mut HashSet<String>) {

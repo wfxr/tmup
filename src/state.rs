@@ -18,6 +18,10 @@ pub struct Paths {
     pub lock_path: PathBuf,
     /// Build failure markers: {state}/failures/
     pub failures_root: PathBuf,
+    /// Operation log files: {state}/logs/
+    pub logs_root: PathBuf,
+    /// Short-lived init result files: {state}/init-results/
+    pub init_results_root: PathBuf,
     /// Active config file path
     pub config_path: PathBuf,
     /// Active lock file (usually next to the active config file)
@@ -25,6 +29,7 @@ pub struct Paths {
 }
 
 impl Paths {
+    /// Resolve paths from the XDG base directories of the current user.
     pub fn resolve() -> Result<Self> {
         let base_dirs = etcetera::base_strategy::choose_base_strategy()
             .context("failed to determine XDG base directories")?;
@@ -41,6 +46,8 @@ impl Paths {
             backup_root: data_dir.join(".backup"),
             lock_path: state_dir.join("operations.lock"),
             failures_root: state_dir.join("failures"),
+            logs_root: state_dir.join("logs"),
+            init_results_root: state_dir.join("init-results"),
             config_path: config_dir.join("lazy.kdl"),
             lockfile_path: config_dir.join("lazylock.json"),
         })
@@ -56,11 +63,37 @@ impl Paths {
             backup_root: data.join(".backup"),
             lock_path: state.join("operations.lock"),
             failures_root: state.join("failures"),
+            logs_root: state.join("logs"),
+            init_results_root: state.join("init-results"),
             config_path: state.join("lazy.kdl"),
             lockfile_path: state.join("lazylock.json"),
         }
     }
 
+    /// Reconstruct Paths from explicit roots passed by the init parent process.
+    pub fn from_runtime_roots(
+        data_root: PathBuf,
+        state_root: PathBuf,
+        config_path: PathBuf,
+    ) -> Result<Self> {
+        let lockfile_path = config_path
+            .parent()
+            .context("config path has no parent directory")?
+            .join("lazylock.json");
+        Ok(Self {
+            plugin_root: data_root.join("plugins"),
+            staging_root: data_root.join(".staging"),
+            backup_root: data_root.join(".backup"),
+            lock_path: state_root.join("operations.lock"),
+            failures_root: state_root.join("failures"),
+            logs_root: state_root.join("logs"),
+            init_results_root: state_root.join("init-results"),
+            config_path,
+            lockfile_path,
+        })
+    }
+
+    /// Override the active config path and update the derived lockfile path accordingly.
     pub fn set_config_path(&mut self, config_path: PathBuf) -> Result<()> {
         let config_dir = config_path.parent().with_context(|| {
             format!("config path has no parent directory: {}", config_path.display())
@@ -76,10 +109,28 @@ impl Paths {
         fs::create_dir_all(&self.staging_root)?;
         fs::create_dir_all(&self.backup_root)?;
         fs::create_dir_all(&self.failures_root)?;
+        fs::create_dir_all(&self.logs_root)?;
+        fs::create_dir_all(&self.init_results_root)?;
         if let Some(parent) = self.lock_path.parent() {
             fs::create_dir_all(parent)?;
         }
         Ok(())
+    }
+
+    /// The data root is the parent of `plugin_root`.
+    pub fn data_root(&self) -> &Path {
+        self.plugin_root.parent().expect("plugin_root must have a parent")
+    }
+
+    /// The state root is the parent of `failures_root`.
+    pub fn state_root(&self) -> &Path {
+        self.failures_root.parent().expect("failures_root must have a parent")
+    }
+
+    /// Derive the init result file path from a wait-channel string.
+    pub fn init_result_path(&self, wait_channel: &str) -> PathBuf {
+        let hash = build_command_hash(wait_channel);
+        self.init_results_root.join(format!("{}.json", &hash[..16]))
     }
 
     /// Get the install directory for a remote plugin by id.
@@ -104,6 +155,7 @@ impl Paths {
     }
 }
 
+/// Validate that a plugin id contains no unsafe path segments.
 pub(crate) fn validate_plugin_id(id: &str) -> Result<()> {
     ensure!(!id.is_empty(), "unsafe plugin id: empty");
     for segment in id.split('/') {
@@ -138,12 +190,16 @@ pub fn build_command_hash(input: &str) -> String {
 /// Key for identifying a known build failure, used to suppress auto-retry.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FailureKey {
+    /// Plugin id the failure belongs to.
     pub plugin_id: String,
+    /// Git commit hash at the time of failure.
     pub commit: String,
+    /// Hash of the build command that failed.
     pub build_hash: String,
 }
 
 impl FailureKey {
+    /// Construct a `FailureKey` from its three string components.
     pub fn new(plugin_id: &str, commit: &str, build_hash: &str) -> Self {
         Self { plugin_id: plugin_id.into(), commit: commit.into(), build_hash: build_hash.into() }
     }
@@ -159,15 +215,22 @@ impl FailureKey {
 /// A persisted record of a build failure.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FailureMarker {
+    /// Plugin id the failure belongs to.
     pub plugin_id: String,
+    /// Git commit hash at the time of failure.
     pub commit: String,
+    /// Hash of the build command that failed.
     pub build_hash: String,
+    /// Full build command string that was executed.
     pub build_command: String,
+    /// Timestamp when the failure was recorded.
     pub failed_at: String,
+    /// Truncated stderr output from the failed build.
     pub stderr_summary: String,
 }
 
 impl FailureMarker {
+    /// Derive the `FailureKey` that uniquely identifies this marker.
     pub fn key(&self) -> FailureKey {
         FailureKey::new(&self.plugin_id, &self.commit, &self.build_hash)
     }
@@ -293,6 +356,7 @@ impl OperationLock {
     }
 }
 
+/// RAII guard that holds the exclusive operation lock until dropped.
 pub struct OperationLockGuard {
     _lock: fd_lock::RwLock<fs::File>,
 }

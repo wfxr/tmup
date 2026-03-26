@@ -259,28 +259,28 @@ and mutation.
 ```text
 1. Acquire the global operation lock (blocking).
 2. Parse lazy.kdl, read lazylock.json, validate configuration.
-3. Run implicit incremental sync.
-   - Reconcile changed existing declared plugins immediately.
+3. Run implicit incremental sync as the only remote-plugin reconciliation pass.
    - Install newly declared remote plugins only when auto-install=true.
+   - Repair missing, broken, or drifted managed plugin repos against the lock
+     snapshot.
+   - Re-publish same-commit plugins when build/config metadata changed.
    - Drop removed remote plugins from the lock snapshot immediately.
    - Do not delete undeclared plugin directories here; that remains the job of
      `clean`.
-   - Abort init if sync fails.
-4. Scan installed remote plugin directories and their HEAD commits.
-5. Compute whether additional lock-vs-disk writes are needed.
-6. If writes are needed:
-   - If auto-install=true: install missing remote plugins from the synced lock snapshot
-   - If installed commit has drifted from lock: restore to the synced lock commit
-7. Load plugins into tmux (set options, source *.tmux files).
-8. Release the lock.
+4. Load plugins into tmux (set options, source *.tmux files).
+5. If implicit sync recorded per-plugin failures, return non-zero after loading
+   completes.
+6. Release the lock.
 ```
 
 Key constraints:
 
 - `init` **never advances** unchanged floating selectors beyond what config declares.
-- `init` may re-surface a known-failed `(plugin-id, commit, build-command-hash)`
-  tuple during the implicit sync phase; exact-tuple suppression currently only
-  applies in the later install path.
+- Exact-tuple known-failure suppression is applied inside init-mode sync just
+  before publish/build, so matching `(plugin-id, commit, build-command-hash)`
+  tuples are skipped without retrying the build.
+- True operation-level failures still abort before tmux load; per-plugin sync
+  failures load already-available plugins first, then exit non-zero.
 - When all plugins are installed and lock is unchanged, init performs no git
   network access.
 
@@ -345,7 +345,18 @@ ones and writing the lock snapshot.
 
 ### 5.8 `list`
 
-Columns:
+Default columns:
+
+| Column | Description |
+|--------|-------------|
+| `plugin` | User-facing plugin reference, based on the configured source string |
+| `kind` | `remote` / `local` |
+| `state` | `installed` / `missing` / `outdated` / `broken` / `pinned-tag` / `pinned-commit` / `local` |
+| `last-result` | `ok` / `build-failed` / `none` |
+| `current` | Installed HEAD commit (short hash or `-`) |
+| `lock` | Lock-recorded commit (short hash or `-`) |
+
+Verbose columns (`lazytmux list -v`):
 
 | Column | Description |
 |--------|-------------|
@@ -536,16 +547,15 @@ failure marker containing:
 (plugin-id, commit, build-command-hash)
 ```
 
-This exact tuple is checked inside the install path, after the candidate commit
-is resolved (by cloning and resolving tracking), but before the publish step.
-That ensures first-install failures can still be recognized even when no lock
-entry exists yet.
+This exact tuple is checked inside the shared sync publish path, after the
+candidate commit is resolved (by cloning and resolving tracking), but before the
+publish step. That keeps init-specific suppression in the same reconciliation
+engine used for install/restore drift repair and same-commit rebuild decisions.
 
 Semantics:
 
-- `init` records and surfaces matching failures, but because startup begins
-  with implicit `sync`, the same tuple may still be retried during sync before
-  the later install-path suppression check runs.
+- `init`: matching tuples are skipped during implicit sync and surfaced as
+  skipped work rather than retried builds.
 - Explicit `install` / `update` / `restore`: always retries regardless of
   markers.
 - Successful build: clears all failure markers for that plugin.
@@ -667,7 +677,7 @@ lazytmux/
 |   +-- main.rs              # CLI entry: dispatch to init/sync/install/update/restore/clean/list
 |   +-- config.rs            # KDL configuration parsing and validation
 |   +-- model.rs             # Config, Options, PluginSpec, PluginSource, Tracking
-|   +-- planner.rs           # Compute init decision, plugin statuses, scan installed state
+|   +-- planner.rs           # Plugin statuses and installed-state inspection helpers
 |   +-- plugin.rs            # install/update/restore/clean/list core workflows
 |   +-- sync.rs              # Config-driven sync diffing, policies, reconcile engine
 |   +-- git.rs               # clone/fetch/checkout/publish (async + sync)
@@ -680,7 +690,7 @@ lazytmux/
 |   +-- example_config.rs    # Real example config round-trip
 |   +-- source_normalization.rs  # URL -> ID derivation
 |   +-- planner.rs           # Init decision, status computation, failure detection
-|   +-- init_flow.rs         # Init planning, lock contention, failure suppression
+|   +-- init_flow.rs         # Init preview, lock contention, failure suppression
 |   +-- operations.rs        # install/update/restore/clean/list behavior
 |   +-- lockfile.rs          # Lock snapshot round-trip and version checks
 |   +-- sync.rs              # Incremental sync behavior

@@ -193,7 +193,7 @@ lazytmux install [id]       # Install missing remote plugins
 lazytmux update [id]        # Advance unchanged floating selectors after sync
 lazytmux restore [id]       # Restore to lock-recorded commits
 lazytmux clean              # Remove undeclared managed remote repos
-lazytmux list               # Print plugin status table
+lazytmux list [-v]          # Print plugin status table (`-v` for diagnostic columns)
 lazytmux migrate            # Migrate from TPM declarations (planned)
 ```
 

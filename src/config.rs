@@ -7,6 +7,7 @@ use kdl::KdlDocument;
 use crate::model::{Config, Options, PluginSource, PluginSpec, Tracking};
 use crate::state::validate_plugin_id;
 
+/// Parse a KDL-formatted configuration string into a [`Config`].
 pub fn parse_config(input: &str) -> Result<Config> {
     let doc: KdlDocument = input.parse().context("failed to parse KDL")?;
 
