@@ -2,6 +2,9 @@ mod utils;
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use lazytmux::config::parse_config;
 use lazytmux::lockfile::{LockEntry, LockFile, read_lockfile};
@@ -9,7 +12,7 @@ use lazytmux::model::{Config, Options, PluginSource, PluginSpec, Tracking};
 use lazytmux::progress::NullReporter;
 use lazytmux::state::{Paths, build_command_hash};
 use lazytmux::sync::{self, SyncMode, SyncPolicy};
-use lazytmux::{planner, plugin};
+use lazytmux::{planner, plugin, prepare};
 use tempfile::tempdir;
 use utils::*;
 
@@ -636,4 +639,48 @@ async fn clean_prunes_removed_lock_entries_without_rebuilding_declared_plugins()
     assert!(!plugin_b.exists(), "clean should still remove undeclared repos");
     assert!(persisted.plugins.contains_key("example.com/test/plugin-a"));
     assert!(!persisted.plugins.contains_key("example.com/test/plugin-b"));
+}
+
+#[tokio::test]
+async fn concurrent_prepare_overlaps_when_limit_allows() {
+    let max_in_flight = Arc::new(AtomicUsize::new(0));
+    let in_flight = Arc::new(AtomicUsize::new(0));
+
+    let jobs: Vec<_> = (0..4)
+        .map(|_| {
+            let inf = in_flight.clone();
+            let mif = max_in_flight.clone();
+            async move {
+                let cur = inf.fetch_add(1, Ordering::SeqCst) + 1;
+                mif.fetch_max(cur, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                inf.fetch_sub(1, Ordering::SeqCst);
+            }
+        })
+        .collect();
+
+    prepare::run_bounded(2, jobs).await;
+    assert!(max_in_flight.load(Ordering::SeqCst) >= 2);
+}
+
+#[tokio::test]
+async fn concurrent_prepare_serial_when_limit_one() {
+    let max_in_flight = Arc::new(AtomicUsize::new(0));
+    let in_flight = Arc::new(AtomicUsize::new(0));
+
+    let jobs: Vec<_> = (0..4)
+        .map(|_| {
+            let inf = in_flight.clone();
+            let mif = max_in_flight.clone();
+            async move {
+                let cur = inf.fetch_add(1, Ordering::SeqCst) + 1;
+                mif.fetch_max(cur, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                inf.fetch_sub(1, Ordering::SeqCst);
+            }
+        })
+        .collect();
+
+    prepare::run_bounded(1, jobs).await;
+    assert_eq!(max_in_flight.load(Ordering::SeqCst), 1);
 }
