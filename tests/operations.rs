@@ -294,6 +294,68 @@ async fn update_noop_marker_clear_failure_cleans_pending_staging_dirs() {
 }
 
 #[cfg(unix)]
+#[tokio::test]
+async fn update_noop_marker_clear_failure_does_not_advance_in_memory_lock() {
+    let dir = tempdir().unwrap();
+    let (bare, commit) = make_bare_repo(&dir.path().join("repo"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let mut cfg = make_config(vec![make_plugin(
+        "test/plugin",
+        "example.com/test/plugin",
+        &clone_url,
+        Tracking::DefaultBranch,
+        Some("touch built-v2.marker"),
+    )]);
+    cfg.options.concurrency = 1;
+
+    let mut lock = LockFile::new();
+    plugin::install(
+        &make_config(vec![make_plugin(
+            "test/plugin",
+            "example.com/test/plugin",
+            &clone_url,
+            Tracking::DefaultBranch,
+            Some("touch built-v1.marker"),
+        )]),
+        &mut lock,
+        &paths,
+        None,
+        false,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
+
+    let old_entry = lock.plugins["example.com/test/plugin"].clone();
+    assert_ne!(
+        old_entry.config_hash,
+        lazytmux::lockfile::remote_plugin_config_hash(&cfg.plugins[0]),
+        "test setup requires update to rewrite the in-memory lock entry in the no-op path"
+    );
+
+    let original_mode = std::fs::metadata(&paths.failures_root).unwrap().permissions().mode();
+    let mut denied = std::fs::metadata(&paths.failures_root).unwrap().permissions();
+    denied.set_mode(0o000);
+    std::fs::set_permissions(&paths.failures_root, denied).unwrap();
+
+    let result = plugin::update(&cfg, &mut lock, &paths, None, &NullReporter).await;
+
+    let mut restored = std::fs::metadata(&paths.failures_root).unwrap().permissions();
+    restored.set_mode(original_mode);
+    std::fs::set_permissions(&paths.failures_root, restored).unwrap();
+
+    assert!(result.is_err(), "update should return error when marker cleanup fails");
+    assert_eq!(
+        lock.plugins["example.com/test/plugin"], old_entry,
+        "marker cleanup failure must not advance the in-memory lock entry"
+    );
+    assert_eq!(git(&["rev-parse", "HEAD"], &paths.plugin_dir("example.com/test/plugin")), commit);
+}
+
+#[cfg(unix)]
 #[test]
 fn clean_unlinks_symlinked_undeclared_plugin_without_removing_target_repo() {
     let dir = tempdir().unwrap();

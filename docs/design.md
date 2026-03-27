@@ -551,7 +551,7 @@ When the target directory already exists:
 This is not a lock-free atomic operation, but under the global operation lock
 it is safe for lazy.tmux's own reads and writes.
 
-### 7.4 Lock File Commit Timing
+### 7.5 Lock File Commit Timing
 
 - A plugin's lock entry is updated only after its directory is successfully
   published and built.

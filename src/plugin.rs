@@ -312,14 +312,14 @@ pub async fn update(
 
         if !revision_changed && target_dir.exists() {
             let _ = std::fs::remove_dir_all(&staging);
-            lock.plugins.insert(
-                id.clone(),
-                LockEntry { tracking: tracking_record, commit: new_commit, config_hash },
-            );
             if let Err(err) = state::clear_failure_markers(&paths.failures_root, id) {
                 cleanup_pending_update_staging(&mut prepare_results[idx + 1..]);
                 return Err(err);
             }
+            lock.plugins.insert(
+                id.clone(),
+                LockEntry { tracking: tracking_record, commit: new_commit, config_hash },
+            );
             reporter.report(ProgressEvent::PluginDone {
                 id,
                 name,
@@ -404,43 +404,40 @@ pub async fn restore(
 
     // Phase 1: Select candidates — skip plugins without lock entries or already
     // at the correct commit.
-    let candidates: Vec<_> = config
-        .plugins
-        .iter()
-        .filter(|spec| {
-            let PluginSource::Remote { id, .. } = &spec.source else {
-                return false;
-            };
-            if let Some(target) = target_id
-                && id != target
-            {
-                return false;
-            }
-            let name = spec.name.as_str();
-            let Some(entry) = lock.plugins.get(id.as_str()) else {
-                reporter.report(ProgressEvent::PluginSkipped {
-                    id,
-                    name,
-                    reason: "no lock entry".to_string(),
-                });
-                return false;
-            };
-            let target_dir = paths.plugin_dir(id);
-            let current_commit =
-                if target_dir.exists() { git::head_commit_sync(&target_dir).ok() } else { None };
-            let revision_changed = current_commit.as_deref() != Some(&entry.commit);
-            if !revision_changed && target_dir.exists() {
-                let _ = state::clear_failure_markers(&paths.failures_root, id);
-                reporter.report(ProgressEvent::PluginDone {
-                    id,
-                    name,
-                    summary: "already restored".to_string(),
-                });
-                return false;
-            }
-            true
-        })
-        .collect();
+    let mut candidates = Vec::new();
+    for spec in &config.plugins {
+        let PluginSource::Remote { id, .. } = &spec.source else {
+            continue;
+        };
+        if let Some(target) = target_id
+            && id != target
+        {
+            continue;
+        }
+        let name = spec.name.as_str();
+        let Some(entry) = lock.plugins.get(id.as_str()) else {
+            reporter.report(ProgressEvent::PluginSkipped {
+                id,
+                name,
+                reason: "no lock entry".to_string(),
+            });
+            continue;
+        };
+        let target_dir = paths.plugin_dir(id);
+        let current_commit =
+            if target_dir.exists() { git::head_commit_sync(&target_dir).ok() } else { None };
+        let revision_changed = current_commit.as_deref() != Some(&entry.commit);
+        if !revision_changed && target_dir.exists() {
+            state::clear_failure_markers(&paths.failures_root, id)?;
+            reporter.report(ProgressEvent::PluginDone {
+                id,
+                name,
+                summary: "already restored".to_string(),
+            });
+            continue;
+        }
+        candidates.push(spec);
+    }
 
     // Phase 2: Parallel prepare — ensure locked revision and stage.
     let prepare_jobs: Vec<_> = candidates
