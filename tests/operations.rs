@@ -1,6 +1,6 @@
 mod utils;
 #[cfg(unix)]
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -233,6 +233,63 @@ async fn update_reuses_repo_cache_after_remote_advance() {
     assert_eq!(
         lazytmux::git::head_commit_sync(&paths.plugin_dir("example.com/test/plugin")).unwrap(),
         commit_b
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn update_noop_marker_clear_failure_cleans_pending_staging_dirs() {
+    let dir = tempdir().unwrap();
+    let (bare_a, commit_a) = make_bare_repo(&dir.path().join("repo-a"));
+    let (bare_b, commit_b) = make_bare_repo(&dir.path().join("repo-b"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_a = format!("file://{}", bare_a.display());
+    let clone_b = format!("file://{}", bare_b.display());
+    let mut cfg = make_config(vec![
+        make_plugin(
+            "test/plugin-a",
+            "example.com/test/plugin-a",
+            &clone_a,
+            Tracking::DefaultBranch,
+            None,
+        ),
+        make_plugin(
+            "test/plugin-b",
+            "example.com/test/plugin-b",
+            &clone_b,
+            Tracking::DefaultBranch,
+            None,
+        ),
+    ]);
+    cfg.options.concurrency = 2;
+
+    let mut lock = LockFile::new();
+    lock.plugins.insert("example.com/test/plugin-a".into(), LockEntry::branch("main", &commit_a));
+    lock.plugins.insert("example.com/test/plugin-b".into(), LockEntry::branch("main", &commit_b));
+
+    plugin::install(&cfg, &mut lock, &paths, None, false, &NullReporter).await.unwrap();
+
+    let original_mode = std::fs::metadata(&paths.failures_root).unwrap().permissions().mode();
+    let mut denied = std::fs::metadata(&paths.failures_root).unwrap().permissions();
+    denied.set_mode(0o000);
+    std::fs::set_permissions(&paths.failures_root, denied).unwrap();
+
+    let result = plugin::update(&cfg, &mut lock, &paths, None, &NullReporter).await;
+
+    let mut restored = std::fs::metadata(&paths.failures_root).unwrap().permissions();
+    restored.set_mode(original_mode);
+    std::fs::set_permissions(&paths.failures_root, restored).unwrap();
+
+    assert!(result.is_err(), "update should return error when marker cleanup fails");
+    assert!(
+        !paths.staging_dir("example.com/test/plugin-a").exists(),
+        "current plugin staging should be cleaned"
+    );
+    assert!(
+        !paths.staging_dir("example.com/test/plugin-b").exists(),
+        "pending plugin staging should be cleaned after early return"
     );
 }
 

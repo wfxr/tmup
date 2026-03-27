@@ -1,8 +1,10 @@
 mod utils;
+use std::sync::Mutex;
+
 use lazytmux::lockfile::{LockEntry, LockFile, TrackingRecord};
 use lazytmux::model::{Config, Options, PluginSource, PluginSpec, Tracking};
 use lazytmux::plugin;
-use lazytmux::progress::NullReporter;
+use lazytmux::progress::{NullReporter, ProgressEvent, ProgressReporter, Stage};
 use lazytmux::state::Paths;
 use tempfile::tempdir;
 use utils::*;
@@ -32,6 +34,34 @@ fn make_config_with_tracking(clone_url: &str, tracking: Tracking, build: Option<
             build: build.map(String::from),
             opts: vec![],
         }],
+    }
+}
+
+#[derive(Debug)]
+struct FailedEvent {
+    stage: Option<Stage>,
+    context_keys: Vec<String>,
+}
+
+#[derive(Default)]
+struct CaptureFailures {
+    events: Mutex<Vec<FailedEvent>>,
+}
+
+impl CaptureFailures {
+    fn take(&self) -> Vec<FailedEvent> {
+        std::mem::take(&mut *self.events.lock().unwrap())
+    }
+}
+
+impl ProgressReporter for CaptureFailures {
+    fn report(&self, event: ProgressEvent<'_>) {
+        if let ProgressEvent::PluginFailed { stage, context, .. } = event {
+            self.events.lock().unwrap().push(FailedEvent {
+                stage,
+                context_keys: context.into_iter().map(|(key, _)| key.to_string()).collect(),
+            });
+        }
     }
 }
 
@@ -162,6 +192,90 @@ async fn restore_build_failure_returns_error() {
     let markers = lazytmux::state::read_failure_markers(&paths.failures_root).unwrap();
     assert_eq!(markers.len(), 1);
     assert_eq!(markers[0].plugin_id, "example.com/test/plugin");
+}
+
+#[tokio::test]
+async fn install_failure_reports_stage_and_context_metadata() {
+    let dir = tempdir().unwrap();
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let cfg = make_config("file:///definitely/missing/repo.git", None);
+    let mut lock = LockFile::new();
+    let reporter = CaptureFailures::default();
+
+    let result = plugin::install(&cfg, &mut lock, &paths, None, false, &reporter).await;
+    assert!(result.is_err());
+
+    let events = reporter.take();
+    assert_eq!(events.len(), 1, "expected exactly one failure event");
+    assert!(matches!(events[0].stage, Some(Stage::Fetching)));
+    assert!(events[0].context_keys.contains(&"clone_url".to_string()));
+    assert!(events[0].context_keys.contains(&"tracking".to_string()));
+    assert!(events[0].context_keys.contains(&"target_dir".to_string()));
+}
+
+#[tokio::test]
+async fn update_failure_reports_stage_and_context_metadata() {
+    let dir = tempdir().unwrap();
+    let (bare, _commit) = make_bare_repo(&dir.path().join("repo"));
+
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let cfg_ok = make_config(&clone_url, None);
+    let mut lock = LockFile::new();
+    plugin::install(&cfg_ok, &mut lock, &paths, None, false, &NullReporter).await.unwrap();
+
+    push_commit(&bare, "next");
+
+    let cfg_fail = make_config(&clone_url, Some("exit 1"));
+    let reporter = CaptureFailures::default();
+    let result = plugin::update(&cfg_fail, &mut lock, &paths, None, &reporter).await;
+    assert!(result.is_err());
+
+    let events = reporter.take();
+    assert_eq!(events.len(), 1, "expected exactly one failure event");
+    assert!(matches!(events[0].stage, Some(Stage::Applying)));
+    assert!(events[0].context_keys.contains(&"clone_url".to_string()));
+    assert!(events[0].context_keys.contains(&"tracking".to_string()));
+    assert!(events[0].context_keys.contains(&"target_dir".to_string()));
+    assert!(events[0].context_keys.contains(&"resolved_commit".to_string()));
+}
+
+#[tokio::test]
+async fn restore_failure_reports_stage_and_context_metadata() {
+    let dir = tempdir().unwrap();
+    let (bare, commit) = make_bare_repo(&dir.path().join("repo"));
+
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let cfg = make_config(&clone_url, Some("exit 1"));
+
+    let mut lock = LockFile::new();
+    lock.plugins.insert(
+        "example.com/test/plugin".into(),
+        LockEntry {
+            tracking: TrackingRecord { kind: "branch".into(), value: "main".into() },
+            commit,
+            config_hash: None,
+        },
+    );
+
+    let reporter = CaptureFailures::default();
+    let result = plugin::restore(&cfg, &lock, &paths, None, &reporter).await;
+    assert!(result.is_err());
+
+    let events = reporter.take();
+    assert_eq!(events.len(), 1, "expected exactly one failure event");
+    assert!(matches!(events[0].stage, Some(Stage::Applying)));
+    assert!(events[0].context_keys.contains(&"clone_url".to_string()));
+    assert!(events[0].context_keys.contains(&"tracking".to_string()));
+    assert!(events[0].context_keys.contains(&"target_dir".to_string()));
+    assert!(events[0].context_keys.contains(&"locked_commit".to_string()));
 }
 
 #[tokio::test]

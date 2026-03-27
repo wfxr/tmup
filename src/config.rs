@@ -43,7 +43,8 @@ fn parse_options(doc: &KdlDocument) -> Result<Options> {
     if let Some(v) = children.get_arg("concurrency") {
         let value = v.as_integer().context("concurrency must be an integer")?;
         ensure!(value >= 1, "concurrency must be at least 1");
-        opts.concurrency = value as usize;
+        opts.concurrency =
+            usize::try_from(value).context("concurrency is too large for this platform")?;
     }
 
     Ok(opts)

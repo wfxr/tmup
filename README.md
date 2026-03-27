@@ -73,6 +73,7 @@ mkdir -p ~/.config/tmux
 cat > ~/.config/tmux/lazy.kdl << 'EOF'
 options {
     auto-install #true
+    concurrency 16
 }
 
 plugin "tmux-plugins/tmux-sensible"
@@ -117,6 +118,7 @@ example, if `LAZY_TMUX_CONFIG=/path/to/custom.kdl`, lazytmux reads and writes
 ```kdl
 options {
     auto-install #true
+    concurrency 16
 }
 
 // GitHub shorthand — track default branch
@@ -152,6 +154,10 @@ plugin "~/dev/my-tmux-plugin" local=#true name="my-plugin-dev"
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `auto-install` | bool | `#true` | Install missing plugins during `init` |
+| `concurrency` | integer | `16` | Max concurrent remote prepare jobs; `1` forces serial prepare |
+
+`concurrency` only affects prepare-phase git work (fetch/resolve/stage). Publish,
+build, lock mutation, and tmux loading remain serial.
 
 ### Plugin properties
 

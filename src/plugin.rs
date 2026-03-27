@@ -1,16 +1,19 @@
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
 use crate::lockfile::{
-    LockEntry, LockFile, config_fingerprint, remote_plugin_config_hash, write_lockfile_atomic,
+    LockEntry, LockFile, TrackingRecord, config_fingerprint, remote_plugin_config_hash,
+    write_lockfile_atomic,
 };
 use crate::model::{Config, PluginSource, Tracking};
 use crate::planner::{self, PluginStatus, collect_failed_builds};
 use crate::progress::{self, ProgressEvent, ProgressReporter, Stage};
 use crate::state::{self, FailureKey, FailureMarker, Paths, build_command_hash, timestamp_now};
 use crate::{git, prepare, repo, short_hash};
+
+type UpdatePrepareResult = (PathBuf, String, TrackingRecord, Option<String>);
 
 /// Install missing remote plugins. Lock-first: uses lock entry if present.
 ///
@@ -115,13 +118,14 @@ pub async fn install(
             Ok(v) => v,
             Err(e) => {
                 let (summary, detail) = progress::summarize_error(&e);
+                let context = remote_failure_context(spec, paths);
                 reporter.report(ProgressEvent::PluginFailed {
                     id,
                     name,
-                    stage: None,
+                    stage: Some(Stage::Fetching),
                     summary,
                     detail,
-                    context: vec![],
+                    context,
                 });
                 failures.push(format!("{id}: {e}"));
                 continue;
@@ -164,13 +168,15 @@ pub async fn install(
             }
             Err(e) => {
                 let (summary, detail) = progress::summarize_error(&e);
+                let context =
+                    remote_failure_context_with_revision(spec, paths, "resolved_commit", &commit);
                 reporter.report(ProgressEvent::PluginFailed {
                     id,
                     name,
-                    stage: None,
+                    stage: Some(Stage::Applying),
                     summary,
                     detail,
-                    context: vec![],
+                    context,
                 });
                 failures.push(format!("{id}: {e}"));
             }
@@ -275,25 +281,32 @@ pub async fn update(
             }
         })
         .collect();
-    let prepare_results = prepare::run_bounded(config.options.concurrency, prepare_jobs).await;
+    let mut prepare_results: Vec<Option<Result<UpdatePrepareResult, anyhow::Error>>> =
+        prepare::run_bounded(config.options.concurrency, prepare_jobs)
+            .await
+            .into_iter()
+            .map(Some)
+            .collect();
 
     // Phase 3: Serial apply in declaration order.
-    for (spec, result) in candidates.iter().zip(prepare_results) {
+    for (idx, spec) in candidates.iter().enumerate() {
         let PluginSource::Remote { id, .. } = &spec.source else { unreachable!() };
         let name = spec.name.as_str();
         let config_hash = remote_plugin_config_hash(spec);
+        let result = prepare_results[idx].take().expect("prepare result should exist");
 
         let (staging, new_commit, tracking_record, disk_commit) = match result {
             Ok(v) => v,
             Err(e) => {
                 let (summary, detail) = progress::summarize_error(&e);
+                let context = remote_failure_context(spec, paths);
                 reporter.report(ProgressEvent::PluginFailed {
                     id,
                     name,
-                    stage: None,
+                    stage: Some(Stage::Fetching),
                     summary,
                     detail,
-                    context: vec![],
+                    context,
                 });
                 failures.push(format!("{id}: {e}"));
                 continue;
@@ -309,7 +322,10 @@ pub async fn update(
                 id.clone(),
                 LockEntry { tracking: tracking_record, commit: new_commit, config_hash },
             );
-            state::clear_failure_markers(&paths.failures_root, id)?;
+            if let Err(err) = state::clear_failure_markers(&paths.failures_root, id) {
+                cleanup_pending_update_staging(&mut prepare_results[idx + 1..]);
+                return Err(err);
+            }
             reporter.report(ProgressEvent::PluginDone {
                 id,
                 name,
@@ -348,13 +364,22 @@ pub async fn update(
             }
             Err(e) => {
                 let (summary, detail) = progress::summarize_error(&e);
+                let mut context = remote_failure_context_with_revision(
+                    spec,
+                    paths,
+                    "resolved_commit",
+                    &new_commit,
+                );
+                if let Some(old_commit) = disk_commit.as_deref() {
+                    context.push(("previous_commit", old_commit.to_string()));
+                }
                 reporter.report(ProgressEvent::PluginFailed {
                     id,
                     name,
-                    stage: None,
+                    stage: Some(Stage::Applying),
                     summary,
                     detail,
-                    context: vec![],
+                    context,
                 });
                 failures.push(format!("{id}: {e}"));
             }
@@ -458,13 +483,15 @@ pub async fn restore(
             Ok(v) => v,
             Err(e) => {
                 let (summary, detail) = progress::summarize_error(&e);
+                let mut context = remote_failure_context(spec, paths);
+                context.push(("locked_commit", entry.commit.clone()));
                 reporter.report(ProgressEvent::PluginFailed {
                     id,
                     name,
-                    stage: None,
+                    stage: Some(Stage::Fetching),
                     summary,
                     detail,
-                    context: vec![],
+                    context,
                 });
                 failures.push(format!("{id}: {e}"));
                 continue;
@@ -488,13 +515,15 @@ pub async fn restore(
             spec.build.as_deref(),
         ) {
             let (summary, detail) = progress::summarize_error(&e);
+            let mut context = remote_failure_context(spec, paths);
+            context.push(("locked_commit", entry.commit.clone()));
             reporter.report(ProgressEvent::PluginFailed {
                 id,
                 name,
-                stage: None,
+                stage: Some(Stage::Applying),
                 summary,
                 detail,
-                context: vec![],
+                context,
             });
             failures.push(format!("{id}: {e}"));
         } else {
@@ -600,6 +629,50 @@ fn publish_and_track(
             Err(e)
         }
     }
+}
+
+fn cleanup_pending_update_staging(
+    pending: &mut [Option<Result<UpdatePrepareResult, anyhow::Error>>],
+) {
+    for item in pending {
+        if let Some(Ok((staging, ..))) = item.take() {
+            let _ = std::fs::remove_dir_all(staging);
+        }
+    }
+}
+
+fn tracking_selector(tracking: &Tracking) -> String {
+    match tracking {
+        Tracking::DefaultBranch => "default-branch".to_string(),
+        Tracking::Branch(branch) => format!("branch:{branch}"),
+        Tracking::Tag(tag) => format!("tag:{tag}"),
+        Tracking::Commit(commit) => format!("commit:{commit}"),
+    }
+}
+
+fn remote_failure_context(
+    spec: &crate::model::PluginSpec,
+    paths: &Paths,
+) -> Vec<(&'static str, String)> {
+    let PluginSource::Remote { id, clone_url, .. } = &spec.source else {
+        return vec![];
+    };
+    vec![
+        ("clone_url", clone_url.clone()),
+        ("tracking", tracking_selector(&spec.tracking)),
+        ("target_dir", paths.plugin_dir(id).display().to_string()),
+    ]
+}
+
+fn remote_failure_context_with_revision(
+    spec: &crate::model::PluginSpec,
+    paths: &Paths,
+    key: &'static str,
+    revision: &str,
+) -> Vec<(&'static str, String)> {
+    let mut context = remote_failure_context(spec, paths);
+    context.push((key, revision.to_string()));
+    context
 }
 
 fn cleanup_empty_parents(path: &std::path::Path, stop_at: &std::path::Path) {

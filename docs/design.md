@@ -145,6 +145,7 @@ direct children are plugin directories. This is an explicit non-goal.
 
 options {
     auto-install #true
+    concurrency 16
 }
 
 // Simplest form: GitHub shorthand, track default branch
@@ -209,6 +210,7 @@ Rules:
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `auto-install` | bool | `true` | Install missing plugins during `init` |
+| `concurrency` | integer | `16` | Max concurrent remote prepare jobs; `1` forces serial prepare |
 
 ### 4.4 Validation Rules
 
@@ -217,6 +219,7 @@ Rules:
 3. `local=true` requires a path that expands to an absolute local path.
 4. Remote plugins always enter the lock snapshot after successful sync; local plugins never do.
 5. Local plugins cannot declare `branch` / `tag` / `commit`.
+6. `concurrency` must be an integer >= 1 and fit the platform `usize`.
 
 ### 4.5 Lock-Affecting Inputs
 
