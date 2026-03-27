@@ -58,7 +58,7 @@ pub async fn install(
         reporter.report(ProgressEvent::PluginStage {
             id,
             name,
-            stage: Stage::Cloning,
+            stage: Stage::Fetching,
             detail: Some(clone_url.clone()),
         });
 
@@ -204,7 +204,7 @@ pub async fn update(
         reporter.report(ProgressEvent::PluginStage {
             id,
             name,
-            stage: Stage::Cloning,
+            stage: Stage::Fetching,
             detail: Some(clone_url.clone()),
         });
 
@@ -366,7 +366,7 @@ pub async fn restore(
         reporter.report(ProgressEvent::PluginStage {
             id,
             name,
-            stage: Stage::Cloning,
+            stage: Stage::Fetching,
             detail: Some(clone_url.clone()),
         });
 

@@ -561,7 +561,7 @@ impl StreamRenderer {
     fn stage_message(&self, id: &str, name: &str, stage: Stage, detail: Option<&str>) -> String {
         let label = self.label(id, name);
         match (stage, detail) {
-            (Stage::Cloning, Some(url)) => {
+            (Stage::Cloning | Stage::Fetching, Some(url)) => {
                 format!("{label} {}", url.blue())
             }
             (Stage::Resolving, Some(detail)) => {
@@ -806,10 +806,10 @@ mod tests {
             renderer.render(ProgressEvent::PluginStage {
                 id: "github.com/tmux-plugins/tmux-sensible",
                 name: "tmux-sensible",
-                stage: Stage::Cloning,
+                stage: Stage::Fetching,
                 detail: None,
             }),
-            vec!["     Cloning tmux-sensible".to_string()]
+            vec!["    Fetching tmux-sensible".to_string()]
         );
         assert_eq!(
             renderer.render(ProgressEvent::PluginDone {
@@ -901,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn stream_renderer_shows_clone_url_for_cloning_stage() {
+    fn stream_renderer_shows_clone_url_for_fetching_stage() {
         let mut labels = HashMap::new();
         labels.insert("github.com/tmux-plugins/tmux-sensible".to_string(), "tmux-sensible".into());
         let renderer = StreamRenderer::new(labels);
@@ -909,11 +909,11 @@ mod tests {
             renderer.render(ProgressEvent::PluginStage {
                 id: "github.com/tmux-plugins/tmux-sensible",
                 name: "tmux-sensible",
-                stage: Stage::Cloning,
+                stage: Stage::Fetching,
                 detail: Some("https://github.com/tmux-plugins/tmux-sensible".to_string()),
             }),
             vec![
-                "     Cloning tmux-sensible https://github.com/tmux-plugins/tmux-sensible"
+                "    Fetching tmux-sensible https://github.com/tmux-plugins/tmux-sensible"
                     .to_string()
             ]
         );

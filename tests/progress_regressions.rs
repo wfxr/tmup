@@ -359,7 +359,7 @@ fn init_ui_child_stops_after_sync_failure() {
     assert!(!output.status.success(), "ui child should fail when sync fails");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Cloning"), "stderr should show sync started, got:\n{stderr}");
+    assert!(stderr.contains("Fetching"), "stderr should show sync started, got:\n{stderr}");
     assert!(
         !stderr.contains("Loading tmux applying load plan"),
         "init should not show a tmux-loading stage after sync failure, got:\n{stderr}"
@@ -921,7 +921,7 @@ plugin "https://example.com/test/plugin.git" build="exit 1"
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Cloning"), "stderr:\n{stderr}");
+    assert!(stderr.contains("Fetching"), "stderr:\n{stderr}");
     assert!(
         !stderr.contains("Loading tmux applying load plan"),
         "tmux loading stage should stay silent even when init continues after plugin failures, got:\n{stderr}"

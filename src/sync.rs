@@ -287,7 +287,7 @@ async fn resolve_desired_plugin(
     reporter.report(ProgressEvent::PluginStage {
         id,
         name,
-        stage: Stage::Cloning,
+        stage: Stage::Fetching,
         detail: Some(clone_url.clone()),
     });
 
