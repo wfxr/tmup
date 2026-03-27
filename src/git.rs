@@ -60,18 +60,39 @@ pub async fn clone_local_repo(source: &Path, dest: &Path) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     let output = Command::new("git")
-        .args(["clone", "--local", "--no-hardlinks"])
+        .args(["clone", "--local", "--no-hardlinks", "--no-checkout"])
         .arg(source)
         .arg(dest)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .await
-        .context("failed to run git clone --local --no-hardlinks")?;
+        .context("failed to run git clone --local --no-hardlinks --no-checkout")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git clone --local --no-hardlinks failed: {stderr}");
+        bail!("git clone --local --no-hardlinks --no-checkout failed: {stderr}");
     }
+    Ok(())
+}
+
+/// Copy partial-clone settings from one repo to another for a given remote.
+pub async fn inherit_partial_clone_config(source: &Path, dest: &Path, remote: &str) -> Result<()> {
+    let promisor_key = format!("remote.{remote}.promisor");
+    let Some(promisor) = git_config_get(source, &promisor_key).await? else {
+        return Ok(());
+    };
+    if promisor != "true" {
+        return Ok(());
+    }
+
+    git_config_set(dest, "extensions.partialClone", remote).await?;
+    git_config_set(dest, &promisor_key, "true").await?;
+
+    let filter_key = format!("remote.{remote}.partialclonefilter");
+    if let Some(filter) = git_config_get(source, &filter_key).await? {
+        git_config_set(dest, &filter_key, &filter).await?;
+    }
+
     Ok(())
 }
 
@@ -135,6 +156,41 @@ pub async fn set_remote_url(repo: &Path, remote: &str, url: &str) -> Result<()> 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("git remote set-url failed: {stderr}");
+    }
+    Ok(())
+}
+
+async fn git_config_get(repo: &Path, key: &str) -> Result<Option<String>> {
+    let output = Command::new("git")
+        .args(["config", "--get", key])
+        .current_dir(repo)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .context("failed to run git config --get")?;
+    if !output.status.success() {
+        if output.status.code() == Some(1) {
+            return Ok(None);
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git config --get {key} failed: {stderr}");
+    }
+    Ok(Some(String::from_utf8_lossy(&output.stdout).trim().to_string()))
+}
+
+async fn git_config_set(repo: &Path, key: &str, value: &str) -> Result<()> {
+    let output = Command::new("git")
+        .args(["config", key, value])
+        .current_dir(repo)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .context("failed to run git config")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git config {key} failed: {stderr}");
     }
     Ok(())
 }
@@ -320,4 +376,51 @@ pub fn publish_replace(staging: &Path, target: &Path, build: Option<&str>) -> Re
             .with_context(|| format!("failed to remove existing target: {}", target.display()))?;
     }
     finalize_publish(staging, target)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    fn git(args: &[&str], dir: &Path) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("HOME", dir)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@test")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@test")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[tokio::test]
+    async fn inherit_partial_clone_config_surfaces_malformed_source_config() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source");
+        let dest = dir.path().join("dest");
+
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&dest).unwrap();
+        git(&["init"], &source);
+        git(&["init"], &dest);
+
+        fs::write(source.join(".git/config"), "[broken\n").unwrap();
+
+        let err = inherit_partial_clone_config(&source, &dest, "origin").await.unwrap_err();
+        assert!(err.to_string().contains("git config --get remote.origin.promisor failed"));
+    }
 }

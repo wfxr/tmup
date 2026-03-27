@@ -159,8 +159,10 @@ pub async fn materialize_staging_at_revision(
     clone_url: &str,
     revision: &ResolvedRevision,
 ) -> Result<PreparedRepo> {
+    let cache_dir = paths.repo_cache_dir(plugin_id);
     let staging_dir = materialize_staging(paths, plugin_id).await?;
     git::set_remote_url(&staging_dir, "origin", clone_url).await?;
+    git::inherit_partial_clone_config(&cache_dir, &staging_dir, "origin").await?;
     if let Err(err) = git::checkout(&staging_dir, &revision.commit).await {
         let _ = std::fs::remove_dir_all(&staging_dir);
         return Err(err);
