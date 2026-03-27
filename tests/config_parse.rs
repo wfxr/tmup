@@ -177,3 +177,11 @@ fn rejects_zero_concurrency() {
     let err = parse_config("options { concurrency 0 }").unwrap_err();
     assert!(err.to_string().contains("concurrency must be at least 1"));
 }
+
+#[test]
+fn rejects_too_large_concurrency() {
+    let too_large = (usize::MAX as u128) + 1;
+    let input = format!("options {{ concurrency {too_large} }}");
+    let err = parse_config(&input).unwrap_err();
+    assert!(err.to_string().contains("concurrency is too large for this platform"), "{err}");
+}

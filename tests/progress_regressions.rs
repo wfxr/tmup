@@ -9,7 +9,11 @@ use tempfile::tempdir;
 use utils::git;
 
 fn make_remote_repo(root: &Path) -> PathBuf {
-    let work = root.join("work");
+    make_remote_repo_named(root, "plugin")
+}
+
+fn make_remote_repo_named(root: &Path, name: &str) -> PathBuf {
+    let work = root.join(format!("work-{name}"));
     std::fs::create_dir_all(&work).unwrap();
 
     git(&["init", "-b", "main"], &work);
@@ -19,7 +23,7 @@ fn make_remote_repo(root: &Path) -> PathBuf {
 
     let bare_parent = root.join("remotes/example.com/test");
     std::fs::create_dir_all(&bare_parent).unwrap();
-    let bare = bare_parent.join("plugin.git");
+    let bare = bare_parent.join(format!("{name}.git"));
     git(&["clone", "--bare", work.to_str().unwrap(), bare.to_str().unwrap()], root);
     bare
 }
@@ -270,6 +274,100 @@ esac
     bin_dir
 }
 
+fn write_git_fetch_probe_wrapper(root: &Path, probe_dir: &Path) -> PathBuf {
+    let bin_dir = root.join("bin-git-probe");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    std::fs::create_dir_all(probe_dir).unwrap();
+    let script = bin_dir.join("git");
+    std::fs::write(
+        &script,
+        format!(
+            r#"#!/bin/sh
+set -eu
+probe_dir="{probe_dir}"
+lock_dir="$probe_dir/.lock"
+
+acquire_lock() {{
+  while ! mkdir "$lock_dir" 2>/dev/null; do
+    sleep 0.01
+  done
+}}
+
+release_lock() {{
+  rmdir "$lock_dir"
+}}
+
+read_num() {{
+  file="$1"
+  if [ -f "$file" ]; then
+    cat "$file"
+  else
+    printf '%s\n' 0
+  fi
+}}
+
+if [ "${{1-}}" = "fetch" ] && [ "${{2-}}" = "origin" ]; then
+  acquire_lock
+  in_flight=$(read_num "$probe_dir/in_flight")
+  in_flight=$((in_flight + 1))
+  printf '%s\n' "$in_flight" > "$probe_dir/in_flight"
+  max_in_flight=$(read_num "$probe_dir/max_in_flight")
+  if [ "$in_flight" -gt "$max_in_flight" ]; then
+    printf '%s\n' "$in_flight" > "$probe_dir/max_in_flight"
+  fi
+  release_lock
+
+  sleep 0.2
+
+  acquire_lock
+  in_flight=$(read_num "$probe_dir/in_flight")
+  if [ "$in_flight" -gt 0 ]; then
+    in_flight=$((in_flight - 1))
+  fi
+  printf '%s\n' "$in_flight" > "$probe_dir/in_flight"
+  release_lock
+fi
+
+if [ -z "${{REAL_GIT-}}" ]; then
+  printf '%s\n' "REAL_GIT is not set" >&2
+  exit 2
+fi
+
+exec "$REAL_GIT" "$@"
+"#,
+            probe_dir = probe_dir.display(),
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+    }
+    bin_dir
+}
+
+fn find_sync_log(logs_root: &Path) -> PathBuf {
+    std::fs::read_dir(logs_root)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| {
+            p.extension().is_some_and(|ext| ext == "log")
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|name| name.ends_with("-sync.log"))
+        })
+        .expect("expected a sync log file")
+}
+
+fn resolve_real_git() -> String {
+    let output = std::process::Command::new("sh").args(["-c", "command -v git"]).output().unwrap();
+    assert!(output.status.success(), "failed to locate real git");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
 #[cfg(unix)]
 #[test]
 fn sync_surfaces_lockfile_write_failure() {
@@ -312,6 +410,98 @@ fn sync_surfaces_lockfile_write_failure() {
             || stderr.contains("failed to rename")
             || stderr.contains("Permission denied"),
         "stderr should include the real lockfile write error, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn sync_failure_log_includes_stage_and_context_metadata() {
+    let dir = tempdir().unwrap();
+    let bare = make_remote_repo(dir.path());
+    let gitconfig = write_git_rewrite_config(dir.path());
+    std::fs::remove_dir_all(&bare).unwrap();
+
+    let config_dir = dir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let config_path = config_dir.join("lazy.kdl");
+    std::fs::write(&config_path, r#"plugin "https://example.com/test/plugin.git""#).unwrap();
+
+    let output = Command::cargo_bin("lazytmux")
+        .unwrap()
+        .arg("sync")
+        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("XDG_CONFIG_HOME", dir.path().join("config"))
+        .env("XDG_DATA_HOME", dir.path().join("data"))
+        .env("XDG_STATE_HOME", dir.path().join("state"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", gitconfig)
+        .env("HOME", dir.path())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "sync should fail when rewritten remote cannot be fetched");
+
+    let logs_root = dir.path().join("state/lazytmux/logs");
+    let log_path = find_sync_log(&logs_root);
+    let log = std::fs::read_to_string(log_path).unwrap();
+
+    assert!(log.contains("id=example.com/test/plugin"), "log: {log}");
+    assert!(log.contains("stage=fetching"), "log: {log}");
+    assert!(log.contains("clone_url: https://example.com/test/plugin.git"), "log: {log}");
+    assert!(log.contains("tracking: default-branch"), "log: {log}");
+}
+
+#[cfg(unix)]
+#[test]
+fn sync_command_prepare_runs_with_real_parallelism_when_enabled() {
+    let dir = tempdir().unwrap();
+    make_remote_repo_named(dir.path(), "plugin-a");
+    make_remote_repo_named(dir.path(), "plugin-b");
+    let gitconfig = write_git_rewrite_config(dir.path());
+
+    let config_dir = dir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let config_path = config_dir.join("lazy.kdl");
+    std::fs::write(
+        &config_path,
+        r#"
+options { concurrency 2 }
+plugin "https://example.com/test/plugin-a.git"
+plugin "https://example.com/test/plugin-b.git"
+        "#,
+    )
+    .unwrap();
+
+    let probe_dir = dir.path().join("git-probe");
+    let wrapper_dir = write_git_fetch_probe_wrapper(dir.path(), &probe_dir);
+    let path = format!("{}:{}", wrapper_dir.display(), std::env::var("PATH").unwrap_or_default());
+    let real_git = resolve_real_git();
+
+    let output = Command::cargo_bin("lazytmux")
+        .unwrap()
+        .arg("sync")
+        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("XDG_CONFIG_HOME", dir.path().join("config"))
+        .env("XDG_DATA_HOME", dir.path().join("data"))
+        .env("XDG_STATE_HOME", dir.path().join("state"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", gitconfig)
+        .env("HOME", dir.path())
+        .env("PATH", path)
+        .env("REAL_GIT", real_git)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "sync should succeed with two healthy remotes");
+
+    let max_in_flight = std::fs::read_to_string(probe_dir.join("max_in_flight"))
+        .unwrap_or_else(|_| "0".to_string())
+        .trim()
+        .parse::<usize>()
+        .unwrap_or(0);
+
+    assert!(
+        max_in_flight >= 2,
+        "expected overlapping git fetch jobs during sync prepare, got max_in_flight={max_in_flight}"
     );
 }
 

@@ -163,8 +163,13 @@ pub async fn run(
     for (spec, result) in candidates.iter().zip(prepare_results) {
         let id = spec.remote_id().unwrap();
         let name = spec.name.as_str();
+        let PluginSource::Remote { clone_url, .. } = &spec.source else {
+            unreachable!("sync only processes remote plugins")
+        };
+        let tracking = describe_tracking_selector(&spec.tracking);
         match result {
             Ok(resolved) => {
+                let resolved_commit = resolved.entry.commit.clone();
                 if let Err(err) =
                     reconcile_plugin(spec, lock, paths, mode, resolved, reporter).await
                 {
@@ -172,10 +177,15 @@ pub async fn run(
                     reporter.report(ProgressEvent::PluginFailed {
                         id,
                         name,
-                        stage: None,
+                        stage: Some(Stage::Applying),
                         summary,
                         detail,
-                        context: vec![],
+                        context: vec![
+                            ("clone_url", clone_url.clone()),
+                            ("tracking", tracking.clone()),
+                            ("resolved_commit", resolved_commit),
+                            ("target_dir", paths.plugin_dir(id).display().to_string()),
+                        ],
                     });
                     outcome.plugin_failures.push(format!("{id}: {err}"));
                 }
@@ -185,10 +195,10 @@ pub async fn run(
                 reporter.report(ProgressEvent::PluginFailed {
                     id,
                     name,
-                    stage: None,
+                    stage: Some(Stage::Fetching),
                     summary,
                     detail,
-                    context: vec![],
+                    context: vec![("clone_url", clone_url.clone()), ("tracking", tracking.clone())],
                 });
                 outcome.plugin_failures.push(format!("{id}: {err}"));
             }
@@ -371,6 +381,15 @@ fn tracks_same_revision(spec: &PluginSpec, locked: &TrackingRecord) -> bool {
         Tracking::Branch(branch) => locked.kind == "branch" && locked.value == *branch,
         Tracking::Tag(tag) => locked.kind == "tag" && locked.value == *tag,
         Tracking::Commit(commit) => locked.kind == "commit" && locked.value == *commit,
+    }
+}
+
+fn describe_tracking_selector(tracking: &Tracking) -> String {
+    match tracking {
+        Tracking::DefaultBranch => "default-branch".to_string(),
+        Tracking::Branch(branch) => format!("branch:{branch}"),
+        Tracking::Tag(tag) => format!("tag:{tag}"),
+        Tracking::Commit(commit) => format!("commit:{commit}"),
     }
 }
 
