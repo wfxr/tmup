@@ -346,6 +346,58 @@ async fn restore_same_commit_noop_clears_failure_markers() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn restore_same_commit_noop_propagates_marker_cleanup_failures() {
+    let dir = tempdir().unwrap();
+    let (bare, commit) = make_bare_repo(&dir.path().join("repo"));
+
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let cfg_ok = make_config(&clone_url, Some("touch built.marker"));
+    let mut lock = LockFile::new();
+    plugin::install(&cfg_ok, &mut lock, &paths, None, false, &NullReporter).await.unwrap();
+
+    let marker = lazytmux::state::FailureMarker {
+        plugin_id: "example.com/test/plugin".into(),
+        commit,
+        build_hash: "fakehash".into(),
+        build_command: "exit 1".into(),
+        failed_at: "2024-01-01T00:00:00Z".into(),
+        stderr_summary: String::new(),
+    };
+    lazytmux::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
+
+    #[cfg(unix)]
+    let original_mode = {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(&paths.failures_root).unwrap().permissions().mode()
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut denied = std::fs::metadata(&paths.failures_root).unwrap().permissions();
+        denied.set_mode(0o000);
+        std::fs::set_permissions(&paths.failures_root, denied).unwrap();
+    }
+
+    let result = plugin::restore(&cfg_ok, &lock, &paths, None, &NullReporter).await;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut restored = std::fs::metadata(&paths.failures_root).unwrap().permissions();
+        restored.set_mode(original_mode);
+        std::fs::set_permissions(&paths.failures_root, restored).unwrap();
+    }
+
+    assert!(result.is_err(), "restore should surface marker cleanup failures");
+    let markers = lazytmux::state::read_failure_markers(&paths.failures_root).unwrap();
+    assert_eq!(markers.len(), 1, "failed cleanup should leave the marker in place");
+}
+
 // ---------------------------------------------------------------------------
 // Regression: failed update → remote rollback → same-commit update clears markers
 // ---------------------------------------------------------------------------
