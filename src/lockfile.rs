@@ -205,5 +205,5 @@ fn hash_json<T: Serialize>(value: &T) -> String {
     let bytes = serde_json::to_vec(value).expect("hash input serialization must succeed");
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
+    base16ct::lower::encode_string(&hasher.finalize())
 }

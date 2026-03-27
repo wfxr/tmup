@@ -181,7 +181,7 @@ fn map_try_write_result<T>(result: std::io::Result<T>) -> std::io::Result<Option
 pub fn build_command_hash(input: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(input.as_bytes());
-    format!("{:x}", hasher.finalize())
+    base16ct::lower::encode_string(&hasher.finalize())
 }
 
 /// Key for identifying a known build failure, used to suppress auto-retry.
