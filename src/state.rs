@@ -12,8 +12,6 @@ pub struct Paths {
     pub plugin_root: PathBuf,
     /// Staging area for in-progress installs: {data}/.staging/
     pub staging_root: PathBuf,
-    /// Backup area for replace rollback: {data}/.backup/
-    pub backup_root: PathBuf,
     /// Lock file for serializing write operations: {state}/operations.lock
     pub lock_path: PathBuf,
     /// Build failure markers: {state}/failures/
@@ -45,7 +43,6 @@ impl Paths {
         Ok(Self {
             plugin_root: data_dir.join("plugins"),
             staging_root: data_dir.join(".staging"),
-            backup_root: data_dir.join(".backup"),
             lock_path: state_dir.join("operations.lock"),
             failures_root: state_dir.join("failures"),
             logs_root: state_dir.join("logs"),
@@ -63,7 +60,6 @@ impl Paths {
         Self {
             plugin_root: data.join("plugins"),
             staging_root: data.join(".staging"),
-            backup_root: data.join(".backup"),
             lock_path: state.join("operations.lock"),
             failures_root: state.join("failures"),
             logs_root: state.join("logs"),
@@ -87,7 +83,6 @@ impl Paths {
         Ok(Self {
             plugin_root: data_root.join("plugins"),
             staging_root: data_root.join(".staging"),
-            backup_root: data_root.join(".backup"),
             lock_path: state_root.join("operations.lock"),
             failures_root: state_root.join("failures"),
             logs_root: state_root.join("logs"),
@@ -112,7 +107,6 @@ impl Paths {
     pub fn ensure_dirs(&self) -> Result<()> {
         fs::create_dir_all(&self.plugin_root)?;
         fs::create_dir_all(&self.staging_root)?;
-        fs::create_dir_all(&self.backup_root)?;
         fs::create_dir_all(&self.failures_root)?;
         fs::create_dir_all(&self.logs_root)?;
         fs::create_dir_all(&self.init_results_root)?;
@@ -155,14 +149,6 @@ impl Paths {
         let hash = &build_command_hash(id)[..12];
         let pid = std::process::id();
         self.staging_root.join(format!("{hash}-{pid}"))
-    }
-
-    /// Create a backup directory path for a plugin.
-    pub fn backup_dir(&self, id: &str) -> PathBuf {
-        let id = checked_plugin_id(id);
-        let hash = &build_command_hash(id)[..12];
-        let pid = std::process::id();
-        self.backup_root.join(format!("{hash}-{pid}"))
     }
 }
 

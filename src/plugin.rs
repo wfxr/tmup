@@ -65,12 +65,16 @@ pub async fn install(
         // Determine target commit — git failures are per-plugin, not fatal.
         let prep: Result<_> = async {
             if let Some(entry) = lock.plugins.get(id.as_str()) {
+                let revision =
+                    repo::ensure_locked_revision(paths, id, clone_url, &entry.commit).await?;
                 let prepared =
-                    repo::prepare_locked_staging(paths, id, clone_url, &entry.commit).await?;
+                    repo::materialize_staging_at_revision(paths, id, clone_url, &revision).await?;
                 Ok((prepared.staging_dir, entry.commit.clone(), entry.tracking.clone()))
             } else {
+                let revision =
+                    repo::resolve_tracking_revision(paths, id, clone_url, &spec.tracking).await?;
                 let prepared =
-                    repo::prepare_tracking_staging(paths, id, clone_url, &spec.tracking).await?;
+                    repo::materialize_staging_at_revision(paths, id, clone_url, &revision).await?;
                 let commit = prepared.commit;
                 let record = prepared.tracking.expect("tracking metadata required");
                 reporter.report(ProgressEvent::PluginStage {
@@ -210,8 +214,10 @@ pub async fn update(
 
         // Git preparation — failures are per-plugin, not fatal.
         let prep = async {
+            let revision =
+                repo::resolve_tracking_revision(paths, id, clone_url, &spec.tracking).await?;
             let prepared =
-                repo::prepare_tracking_staging(paths, id, clone_url, &spec.tracking).await?;
+                repo::materialize_staging_at_revision(paths, id, clone_url, &revision).await?;
             let new_commit = prepared.commit;
             let record = prepared.tracking.expect("tracking metadata required");
             reporter.report(ProgressEvent::PluginStage {
@@ -371,9 +377,19 @@ pub async fn restore(
         });
 
         // Clone into staging and checkout lock commit — per-plugin failure.
-        let staging = match repo::prepare_locked_staging(paths, id, clone_url, &entry.commit).await
+        let staging = match repo::ensure_locked_revision(paths, id, clone_url, &entry.commit).await
         {
-            Ok(prepared) => prepared.staging_dir,
+            Ok(revision) => {
+                match repo::materialize_staging_at_revision(paths, id, clone_url, &revision).await {
+                    Ok(prepared) => prepared.staging_dir,
+                    Err(e) => {
+                        let (summary, detail) = progress::summarize_error(&e);
+                        reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
+                        failures.push(format!("{id}: {e}"));
+                        continue;
+                    }
+                }
+            }
             Err(e) => {
                 let (summary, detail) = progress::summarize_error(&e);
                 reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
@@ -476,8 +492,7 @@ fn publish_and_track(
     build: Option<&str>,
 ) -> Result<()> {
     let result = if target.exists() {
-        let backup = paths.backup_dir(id);
-        git::publish_replace(staging, target, &backup, build)
+        git::publish_replace(staging, target, build)
     } else {
         git::publish_fresh_install(staging, target, build)
     };

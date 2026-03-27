@@ -171,25 +171,3 @@ pub async fn materialize_staging_at_revision(
         tracking: revision.tracking.clone(),
     })
 }
-
-/// Prepare a staging repo by resolving the floating tracking selector from cache.
-pub async fn prepare_tracking_staging(
-    paths: &Paths,
-    plugin_id: &str,
-    clone_url: &str,
-    tracking: &Tracking,
-) -> Result<PreparedRepo> {
-    let revision = resolve_tracking_revision(paths, plugin_id, clone_url, tracking).await?;
-    materialize_staging_at_revision(paths, plugin_id, clone_url, &revision).await
-}
-
-/// Prepare a staging repo for a specific locked commit.
-pub async fn prepare_locked_staging(
-    paths: &Paths,
-    plugin_id: &str,
-    clone_url: &str,
-    commit: &str,
-) -> Result<PreparedRepo> {
-    let revision = ensure_locked_revision(paths, plugin_id, clone_url, commit).await?;
-    materialize_staging_at_revision(paths, plugin_id, clone_url, &revision).await
-}

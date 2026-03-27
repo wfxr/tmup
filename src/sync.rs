@@ -292,13 +292,15 @@ async fn resolve_desired_plugin(
     });
 
     let prep = async {
-        let prepared = if let Some(entry) = current_entry
+        let revision = if let Some(entry) = current_entry
             && tracks_same_revision(spec, &entry.tracking)
         {
-            repo::prepare_locked_staging(paths, id, clone_url, &entry.commit).await?
+            repo::ensure_locked_revision(paths, id, clone_url, &entry.commit).await?
         } else {
-            repo::prepare_tracking_staging(paths, id, clone_url, &spec.tracking).await?
+            repo::resolve_tracking_revision(paths, id, clone_url, &spec.tracking).await?
         };
+        let prepared =
+            repo::materialize_staging_at_revision(paths, id, clone_url, &revision).await?;
 
         let commit = prepared.commit;
         let tracking = if let Some(entry) = current_entry
@@ -422,8 +424,7 @@ async fn reconcile_plugin(
 
     let build = spec.build.as_deref();
     let publish_result = if target_dir.exists() {
-        let backup = paths.backup_dir(&id);
-        git::publish_replace(&staging_dir, &target_dir, &backup, build)
+        git::publish_replace(&staging_dir, &target_dir, build)
     } else {
         git::publish_fresh_install(&staging_dir, &target_dir, build)
     };

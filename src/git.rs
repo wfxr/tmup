@@ -306,12 +306,7 @@ pub fn publish_fresh_install(staging: &Path, target: &Path, build: Option<&str>)
 /// Publish protocol: replace existing plugin.
 ///
 /// Build runs in staging before touching the live target.
-pub fn publish_replace(
-    staging: &Path,
-    target: &Path,
-    _backup: &Path,
-    build: Option<&str>,
-) -> Result<()> {
+pub fn publish_replace(staging: &Path, target: &Path, build: Option<&str>) -> Result<()> {
     if let Some(cmd) = build {
         let output = run_build(staging, cmd)?;
         if !output.status.success() {

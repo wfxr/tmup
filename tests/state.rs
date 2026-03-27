@@ -8,7 +8,6 @@ use tempfile::tempdir;
 fn paths_keep_plugins_and_staging_on_same_data_root() {
     let paths = Paths::for_test("/tmp/data", "/tmp/state");
     assert_eq!(paths.plugin_root.parent().unwrap(), paths.staging_root.parent().unwrap());
-    assert_eq!(paths.plugin_root.parent().unwrap(), paths.backup_root.parent().unwrap());
 }
 
 #[test]

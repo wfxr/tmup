@@ -6,6 +6,17 @@ use lazytmux::{git, repo};
 use tempfile::tempdir;
 use utils::*;
 
+async fn prepare_tracking(
+    paths: &Paths,
+    plugin_id: &str,
+    clone_url: &str,
+    tracking: &Tracking,
+) -> repo::PreparedRepo {
+    let revision =
+        repo::resolve_tracking_revision(paths, plugin_id, clone_url, tracking).await.unwrap();
+    repo::materialize_staging_at_revision(paths, plugin_id, clone_url, &revision).await.unwrap()
+}
+
 #[tokio::test]
 async fn prepare_tracking_staging_creates_cache_and_checks_out_latest_commit() {
     let dir = tempdir().unwrap();
@@ -14,14 +25,9 @@ async fn prepare_tracking_staging_creates_cache_and_checks_out_latest_commit() {
     paths.ensure_dirs().unwrap();
     let clone_url = format!("file://{}", bare.display());
 
-    let prepared = repo::prepare_tracking_staging(
-        &paths,
-        "example.com/test/plugin",
-        &clone_url,
-        &Tracking::DefaultBranch,
-    )
-    .await
-    .unwrap();
+    let prepared =
+        prepare_tracking(&paths, "example.com/test/plugin", &clone_url, &Tracking::DefaultBranch)
+            .await;
 
     assert_eq!(git::head_commit(&prepared.staging_dir).await.unwrap(), commit);
     assert!(paths.repo_cache_dir("example.com/test/plugin").exists());
@@ -45,14 +51,9 @@ async fn prepare_tracking_handles_non_main_default_branch() {
     paths.ensure_dirs().unwrap();
     let clone_url = format!("file://{}", bare.display());
 
-    let prepared = repo::prepare_tracking_staging(
-        &paths,
-        "example.com/test/plugin",
-        &clone_url,
-        &Tracking::DefaultBranch,
-    )
-    .await
-    .unwrap();
+    let prepared =
+        prepare_tracking(&paths, "example.com/test/plugin", &clone_url, &Tracking::DefaultBranch)
+            .await;
 
     assert_eq!(git::head_commit(&prepared.staging_dir).await.unwrap(), commit);
     assert!(paths.repo_cache_dir("example.com/test/plugin").exists());
@@ -69,25 +70,15 @@ async fn prepare_tracking_refreshes_cache_origin_when_clone_url_changes() {
     let clone_url_a = format!("file://{}", bare_a.display());
     let clone_url_b = format!("file://{}", bare_b.display());
 
-    let first = repo::prepare_tracking_staging(
-        &paths,
-        "example.com/test/plugin",
-        &clone_url_a,
-        &Tracking::DefaultBranch,
-    )
-    .await
-    .unwrap();
+    let first =
+        prepare_tracking(&paths, "example.com/test/plugin", &clone_url_a, &Tracking::DefaultBranch)
+            .await;
     assert_eq!(git::head_commit(&first.staging_dir).await.unwrap(), commit_a);
     std::fs::remove_dir_all(&first.staging_dir).unwrap();
 
-    let second = repo::prepare_tracking_staging(
-        &paths,
-        "example.com/test/plugin",
-        &clone_url_b,
-        &Tracking::DefaultBranch,
-    )
-    .await
-    .unwrap();
+    let second =
+        prepare_tracking(&paths, "example.com/test/plugin", &clone_url_b, &Tracking::DefaultBranch)
+            .await;
 
     assert_eq!(git::head_commit(&second.staging_dir).await.unwrap(), commit_b);
     assert_eq!(
@@ -109,10 +100,7 @@ async fn prepare_tracking_cleans_stale_staging_dir_before_clone() {
     std::fs::create_dir_all(&stale_staging).unwrap();
     std::fs::write(stale_staging.join("partial-clone.txt"), "stale").unwrap();
 
-    let prepared =
-        repo::prepare_tracking_staging(&paths, plugin_id, &clone_url, &Tracking::DefaultBranch)
-            .await
-            .unwrap();
+    let prepared = prepare_tracking(&paths, plugin_id, &clone_url, &Tracking::DefaultBranch).await;
 
     assert_eq!(git::head_commit(&prepared.staging_dir).await.unwrap(), commit);
     assert!(!prepared.staging_dir.join("partial-clone.txt").exists());
@@ -128,14 +116,9 @@ async fn prepare_tracking_ignores_remote_head_update_failures() {
     paths.ensure_dirs().unwrap();
     let clone_url = format!("file://{}", bare.display());
 
-    let prepared = repo::prepare_tracking_staging(
-        &paths,
-        "example.com/test/plugin",
-        &clone_url,
-        &Tracking::DefaultBranch,
-    )
-    .await
-    .unwrap();
+    let prepared =
+        prepare_tracking(&paths, "example.com/test/plugin", &clone_url, &Tracking::DefaultBranch)
+            .await;
 
     assert_eq!(git::head_commit(&prepared.staging_dir).await.unwrap(), commit);
 }
