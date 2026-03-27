@@ -154,13 +154,27 @@ pub async fn run(
                     reconcile_plugin(spec, lock, paths, mode, resolved, reporter).await
                 {
                     let (summary, detail) = progress::summarize_error(&err);
-                    reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
+                    reporter.report(ProgressEvent::PluginFailed {
+                        id,
+                        name,
+                        stage: None,
+                        summary,
+                        detail,
+                        context: vec![],
+                    });
                     outcome.plugin_failures.push(format!("{id}: {err}"));
                 }
             }
             Err(err) => {
                 let (summary, detail) = progress::summarize_error(&err);
-                reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
+                reporter.report(ProgressEvent::PluginFailed {
+                    id,
+                    name,
+                    stage: None,
+                    summary,
+                    detail,
+                    context: vec![],
+                });
                 outcome.plugin_failures.push(format!("{id}: {err}"));
             }
         }

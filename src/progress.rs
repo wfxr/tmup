@@ -114,10 +114,14 @@ pub enum ProgressEvent<'a> {
         id: &'a str,
         /// Human-readable plugin name.
         name: &'a str,
+        /// The processing stage at which the failure occurred.
+        stage: Option<Stage>,
         /// One-line failure summary suitable for terminal output.
         summary: String,
         /// Full diagnostic text written to the log file.
         detail: String,
+        /// Extra key-value context written to the log file.
+        context: Vec<(&'static str, String)>,
     },
     /// The overall operation failed with a short summary and full diagnostic detail.
     OperationFailed {
@@ -393,7 +397,7 @@ impl DetailLog {
         self.file.is_some()
     }
 
-    fn write(&mut self, section: &str, summary: &str, detail: &str) {
+    fn write(&mut self, section: &str, summary: &str, detail: &str, context: &[(&str, &str)]) {
         if self.file.is_none() {
             let _ = std::fs::create_dir_all(&self.logs_root);
             if let Ok(f) = std::fs::File::create(&self.log_path) {
@@ -403,6 +407,9 @@ impl DetailLog {
         if let Some(ref mut f) = self.file {
             let _ = writeln!(f, "== {section} ==");
             let _ = writeln!(f, "summary: {summary}");
+            for (key, value) in context {
+                let _ = writeln!(f, "{key}: {value}");
+            }
             let _ = writeln!(f);
             let _ = writeln!(f, "{detail}");
             let _ = writeln!(f);
@@ -529,17 +536,11 @@ impl StreamRenderer {
                     ),
                 )]
             }
-            ProgressEvent::PluginFailed { id, name, summary, .. } => {
-                vec![RenderedLine::new(
-                    LineKind::Failure,
-                    "Failed",
-                    format!(
-                        "{} {}",
-                        self.label(id, name),
-                        sanitize_summary(&summary, SUMMARY_MAX_LEN)
-                    ),
-                )]
-            }
+            ProgressEvent::PluginFailed { id, name, summary, .. } => vec![RenderedLine::new(
+                LineKind::Failure,
+                "Failed",
+                format!("{} {}", self.label(id, name), sanitize_summary(&summary, SUMMARY_MAX_LEN)),
+            )],
             ProgressEvent::OperationFailed { summary, .. } => {
                 vec![RenderedLine::new(
                     LineKind::Failure,
@@ -647,13 +648,20 @@ impl<W: Write + Send> ProgressReporter for StreamReporter<W> {
         let mut inner = self.state.lock().unwrap();
         let should_finish = matches!(event, ProgressEvent::OperationEnd { .. });
         match &event {
-            ProgressEvent::PluginFailed { name, summary, detail, .. } => {
+            ProgressEvent::PluginFailed { id, name, stage, summary, detail, context } => {
                 let summary = sanitize_summary(summary, SUMMARY_MAX_LEN);
-                inner.log.write(&format!("plugin: {name}"), &summary, detail);
+                let mut section = format!("plugin id={id} name={name}");
+                if let Some(stage) = stage {
+                    use std::fmt::Write;
+                    let _ = write!(section, " stage={stage}");
+                }
+                let ctx: Vec<(&str, &str)> =
+                    context.iter().map(|(k, v)| (*k, v.as_str())).collect();
+                inner.log.write(&section, &summary, detail, &ctx);
             }
             ProgressEvent::OperationFailed { summary, detail } => {
                 let summary = sanitize_summary(summary, SUMMARY_MAX_LEN);
-                inner.log.write("operation", &summary, detail);
+                inner.log.write("operation", &summary, detail, &[]);
             }
             _ => {}
         }
@@ -996,8 +1004,10 @@ mod tests {
             renderer.render(ProgressEvent::PluginFailed {
                 id: "github.com/tmux-plugins/tmux-sensible",
                 name: "tmux-sensible",
+                stage: None,
                 summary: "git clone --bare failed".to_string(),
                 detail: String::new(),
+                context: vec![],
             }),
             vec!["      Failed tmux-sensible git clone --bare failed".to_string()]
         );
@@ -1042,5 +1052,77 @@ mod tests {
         let (action, suffix) = split_done_summary("synced 8c1eeec");
         assert_eq!(action, "Synced");
         assert_eq!(suffix, "commit@8c1eeec");
+    }
+
+    #[test]
+    fn detail_log_includes_canonical_plugin_identity_and_stage() {
+        let dir = tempfile::tempdir().unwrap();
+        let reporter =
+            StreamReporter::new_with_writer(dir.path(), "test", HashMap::new(), Vec::new());
+        reporter.report(ProgressEvent::PluginFailed {
+            id: "github.com/tmux-plugins/tmux-sensible",
+            name: "tmux-sensible",
+            stage: Some(Stage::Fetching),
+            summary: "git fetch origin failed".to_string(),
+            detail: "full error output here".to_string(),
+            context: vec![
+                ("clone_url", "https://github.com/tmux-plugins/tmux-sensible.git".to_string()),
+                ("tracking", "default-branch".to_string()),
+            ],
+        });
+        drop(reporter);
+
+        let log_file = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .find(|e| e.path().extension().is_some_and(|ext| ext == "log"))
+            .expect("log file should be created");
+        let log = std::fs::read_to_string(log_file.path()).unwrap();
+
+        assert!(log.contains("id=github.com/tmux-plugins/tmux-sensible"), "log: {log}");
+        assert!(log.contains("name=tmux-sensible"), "log: {log}");
+        assert!(log.contains("stage=fetching"), "log: {log}");
+        assert!(log.contains("summary: git fetch origin failed"), "log: {log}");
+        assert!(
+            log.contains("clone_url: https://github.com/tmux-plugins/tmux-sensible.git"),
+            "log: {log}"
+        );
+        assert!(log.contains("tracking: default-branch"), "log: {log}");
+    }
+
+    #[test]
+    fn detail_log_differentiates_same_name_plugins_by_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let reporter =
+            StreamReporter::new_with_writer(dir.path(), "test", HashMap::new(), Vec::new());
+        reporter.report(ProgressEvent::PluginFailed {
+            id: "github.com/alice/tmux-sensible",
+            name: "tmux-sensible",
+            stage: Some(Stage::Fetching),
+            summary: "clone failed".to_string(),
+            detail: "detail-a".to_string(),
+            context: vec![],
+        });
+        reporter.report(ProgressEvent::PluginFailed {
+            id: "github.com/bob/tmux-sensible",
+            name: "tmux-sensible",
+            stage: Some(Stage::Resolving),
+            summary: "resolve failed".to_string(),
+            detail: "detail-b".to_string(),
+            context: vec![],
+        });
+        drop(reporter);
+
+        let log_file = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .find(|e| e.path().extension().is_some_and(|ext| ext == "log"))
+            .expect("log file should be created");
+        let log = std::fs::read_to_string(log_file.path()).unwrap();
+
+        assert!(log.contains("id=github.com/alice/tmux-sensible"), "log: {log}");
+        assert!(log.contains("id=github.com/bob/tmux-sensible"), "log: {log}");
+        assert!(log.contains("stage=fetching"), "log: {log}");
+        assert!(log.contains("stage=resolving"), "log: {log}");
     }
 }

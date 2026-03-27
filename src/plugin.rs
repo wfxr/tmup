@@ -96,7 +96,14 @@ pub async fn install(
             Ok(v) => v,
             Err(e) => {
                 let (summary, detail) = progress::summarize_error(&e);
-                reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
+                reporter.report(ProgressEvent::PluginFailed {
+                    id,
+                    name,
+                    stage: None,
+                    summary,
+                    detail,
+                    context: vec![],
+                });
                 failures.push(format!("{id}: {e}"));
                 continue;
             }
@@ -138,7 +145,14 @@ pub async fn install(
             }
             Err(e) => {
                 let (summary, detail) = progress::summarize_error(&e);
-                reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
+                reporter.report(ProgressEvent::PluginFailed {
+                    id,
+                    name,
+                    stage: None,
+                    summary,
+                    detail,
+                    context: vec![],
+                });
                 failures.push(format!("{id}: {e}"));
             }
         }
@@ -238,7 +252,14 @@ pub async fn update(
             Ok(v) => v,
             Err(e) => {
                 let (summary, detail) = progress::summarize_error(&e);
-                reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
+                reporter.report(ProgressEvent::PluginFailed {
+                    id,
+                    name,
+                    stage: None,
+                    summary,
+                    detail,
+                    context: vec![],
+                });
                 failures.push(format!("{id}: {e}"));
                 continue;
             }
@@ -297,7 +318,14 @@ pub async fn update(
             }
             Err(e) => {
                 let (summary, detail) = progress::summarize_error(&e);
-                reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
+                reporter.report(ProgressEvent::PluginFailed {
+                    id,
+                    name,
+                    stage: None,
+                    summary,
+                    detail,
+                    context: vec![],
+                });
                 failures.push(format!("{id}: {e}"));
             }
         }
@@ -384,7 +412,14 @@ pub async fn restore(
                     Ok(prepared) => prepared.staging_dir,
                     Err(e) => {
                         let (summary, detail) = progress::summarize_error(&e);
-                        reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
+                        reporter.report(ProgressEvent::PluginFailed {
+                            id,
+                            name,
+                            stage: None,
+                            summary,
+                            detail,
+                            context: vec![],
+                        });
                         failures.push(format!("{id}: {e}"));
                         continue;
                     }
@@ -392,7 +427,14 @@ pub async fn restore(
             }
             Err(e) => {
                 let (summary, detail) = progress::summarize_error(&e);
-                reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
+                reporter.report(ProgressEvent::PluginFailed {
+                    id,
+                    name,
+                    stage: None,
+                    summary,
+                    detail,
+                    context: vec![],
+                });
                 failures.push(format!("{id}: {e}"));
                 continue;
             }
@@ -414,7 +456,14 @@ pub async fn restore(
             spec.build.as_deref(),
         ) {
             let (summary, detail) = progress::summarize_error(&e);
-            reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
+            reporter.report(ProgressEvent::PluginFailed {
+                id,
+                name,
+                stage: None,
+                summary,
+                detail,
+                context: vec![],
+            });
             failures.push(format!("{id}: {e}"));
         } else {
             reporter.report(ProgressEvent::PluginDone {
