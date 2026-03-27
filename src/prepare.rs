@@ -1,53 +1,8 @@
 //! Bounded concurrent prepare executor for remote plugin operations.
 
 use std::future::Future;
-use std::path::PathBuf;
 
 use futures::stream::{self, StreamExt};
-
-use crate::lockfile::TrackingRecord;
-
-/// Immutable result of a successful prepare job.
-pub struct PreparedPlugin {
-    /// Declaration-order index for deterministic apply.
-    pub index: usize,
-    /// Canonical remote plugin identifier.
-    pub id: String,
-    /// Human-readable plugin name.
-    pub name: String,
-    /// Clone URL for the plugin repository.
-    pub clone_url: String,
-    /// Resolved commit to publish.
-    pub resolved_commit: String,
-    /// Tracking metadata resolved from the config or lock.
-    pub tracking: Option<TrackingRecord>,
-    /// Staging directory containing the checkout.
-    pub staging_dir: PathBuf,
-    /// Current disk HEAD commit, if the plugin is already installed.
-    pub disk_commit: Option<String>,
-    /// Config hash for the lock entry.
-    pub config_hash: String,
-}
-
-/// Result of a failed prepare job.
-pub struct PreparedFailure {
-    /// Declaration-order index.
-    pub index: usize,
-    /// Canonical remote plugin identifier.
-    pub id: String,
-    /// Human-readable plugin name.
-    pub name: String,
-    /// The error that caused preparation to fail.
-    pub error: anyhow::Error,
-}
-
-/// Outcome of a single prepare job.
-pub enum PrepareOutcome {
-    /// Plugin is ready for serial apply.
-    Ready(PreparedPlugin),
-    /// Plugin preparation failed.
-    Failed(PreparedFailure),
-}
 
 /// Run up to `limit` futures concurrently, returning results in input order.
 pub async fn run_bounded<F, T>(limit: usize, jobs: Vec<F>) -> Vec<T>

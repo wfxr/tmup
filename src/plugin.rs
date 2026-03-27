@@ -117,17 +117,15 @@ pub async fn install(
         let (staging, commit, tracking_record) = match result {
             Ok(v) => v,
             Err(e) => {
-                let (summary, detail) = progress::summarize_error(&e);
                 let context = remote_failure_context(spec, paths);
-                reporter.report(ProgressEvent::PluginFailed {
+                failures.push(report_plugin_failure(
+                    reporter,
                     id,
                     name,
-                    stage: Some(Stage::Fetching),
-                    summary,
-                    detail,
+                    Stage::Fetching,
+                    &e,
                     context,
-                });
-                failures.push(format!("{id}: {e}"));
+                ));
                 continue;
             }
         };
@@ -167,18 +165,16 @@ pub async fn install(
                 );
             }
             Err(e) => {
-                let (summary, detail) = progress::summarize_error(&e);
                 let context =
                     remote_failure_context_with_revision(spec, paths, "resolved_commit", &commit);
-                reporter.report(ProgressEvent::PluginFailed {
+                failures.push(report_plugin_failure(
+                    reporter,
                     id,
                     name,
-                    stage: Some(Stage::Applying),
-                    summary,
-                    detail,
+                    Stage::Applying,
+                    &e,
                     context,
-                });
-                failures.push(format!("{id}: {e}"));
+                ));
             }
         }
     }
@@ -298,17 +294,15 @@ pub async fn update(
         let (staging, new_commit, tracking_record, disk_commit) = match result {
             Ok(v) => v,
             Err(e) => {
-                let (summary, detail) = progress::summarize_error(&e);
                 let context = remote_failure_context(spec, paths);
-                reporter.report(ProgressEvent::PluginFailed {
+                failures.push(report_plugin_failure(
+                    reporter,
                     id,
                     name,
-                    stage: Some(Stage::Fetching),
-                    summary,
-                    detail,
+                    Stage::Fetching,
+                    &e,
                     context,
-                });
-                failures.push(format!("{id}: {e}"));
+                ));
                 continue;
             }
         };
@@ -363,7 +357,6 @@ pub async fn update(
                 );
             }
             Err(e) => {
-                let (summary, detail) = progress::summarize_error(&e);
                 let mut context = remote_failure_context_with_revision(
                     spec,
                     paths,
@@ -373,15 +366,14 @@ pub async fn update(
                 if let Some(old_commit) = disk_commit.as_deref() {
                     context.push(("previous_commit", old_commit.to_string()));
                 }
-                reporter.report(ProgressEvent::PluginFailed {
+                failures.push(report_plugin_failure(
+                    reporter,
                     id,
                     name,
-                    stage: Some(Stage::Applying),
-                    summary,
-                    detail,
+                    Stage::Applying,
+                    &e,
                     context,
-                });
-                failures.push(format!("{id}: {e}"));
+                ));
             }
         }
     }
@@ -482,18 +474,16 @@ pub async fn restore(
         let staging = match result {
             Ok(v) => v,
             Err(e) => {
-                let (summary, detail) = progress::summarize_error(&e);
                 let mut context = remote_failure_context(spec, paths);
                 context.push(("locked_commit", entry.commit.clone()));
-                reporter.report(ProgressEvent::PluginFailed {
+                failures.push(report_plugin_failure(
+                    reporter,
                     id,
                     name,
-                    stage: Some(Stage::Fetching),
-                    summary,
-                    detail,
+                    Stage::Fetching,
+                    &e,
                     context,
-                });
-                failures.push(format!("{id}: {e}"));
+                ));
                 continue;
             }
         };
@@ -514,18 +504,9 @@ pub async fn restore(
             &target_dir,
             spec.build.as_deref(),
         ) {
-            let (summary, detail) = progress::summarize_error(&e);
             let mut context = remote_failure_context(spec, paths);
             context.push(("locked_commit", entry.commit.clone()));
-            reporter.report(ProgressEvent::PluginFailed {
-                id,
-                name,
-                stage: Some(Stage::Applying),
-                summary,
-                detail,
-                context,
-            });
-            failures.push(format!("{id}: {e}"));
+            failures.push(report_plugin_failure(reporter, id, name, Stage::Applying, &e, context));
         } else {
             reporter.report(ProgressEvent::PluginDone {
                 id,
@@ -639,6 +620,26 @@ fn cleanup_pending_update_staging(
             let _ = std::fs::remove_dir_all(staging);
         }
     }
+}
+
+pub(crate) fn report_plugin_failure(
+    reporter: &dyn ProgressReporter,
+    id: &str,
+    name: &str,
+    stage: Stage,
+    err: &anyhow::Error,
+    context: Vec<(&'static str, String)>,
+) -> String {
+    let (summary, detail) = progress::summarize_error(err);
+    reporter.report(ProgressEvent::PluginFailed {
+        id,
+        name,
+        stage: Some(stage),
+        summary,
+        detail,
+        context,
+    });
+    format!("{id}: {err}")
 }
 
 fn tracking_selector(tracking: &Tracking) -> String {
