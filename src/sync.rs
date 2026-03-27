@@ -10,7 +10,7 @@ use crate::lockfile::{
 use crate::model::{Config, PluginSource, PluginSpec, Tracking};
 use crate::progress::{self, ProgressEvent, ProgressReporter, Stage};
 use crate::state::{self, FailureMarker, Paths, build_command_hash, timestamp_now};
-use crate::{git, planner, plugin, repo, short_hash};
+use crate::{git, planner, plugin, prepare, repo, short_hash};
 
 /// Controls behavioral differences between an interactive sync and tmux init.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,24 +131,39 @@ pub async fn run(
     let desired_hashes = desired_remote_hashes(config);
     let mut outcome = SyncOutcome::default();
 
-    for spec in config.plugins.iter().filter(|spec| match spec.remote_id() {
-        Some(id) => target_id.is_none_or(|target| target == id),
-        None => false,
-    }) {
+    // Phase 1: Select candidates that need reconciliation.
+    let candidates: Vec<&PluginSpec> = config
+        .plugins
+        .iter()
+        .filter(|spec| match spec.remote_id() {
+            Some(id) => target_id.is_none_or(|target| target == id),
+            None => false,
+        })
+        .filter(|spec| {
+            let id = spec.remote_id().unwrap();
+            desired_hashes
+                .get(id)
+                .is_some_and(|hash| plugin_needs_reconcile(spec, lock, hash, policy, paths))
+        })
+        .collect();
+
+    // Phase 2: Parallel prepare — resolve and stage each candidate concurrently.
+    let prepare_jobs: Vec<_> = candidates
+        .iter()
+        .map(|spec| {
+            let id = spec.remote_id().unwrap();
+            let desired_hash = desired_hashes[id].clone();
+            let current_entry = lock.plugins.get(id);
+            resolve_desired_plugin(spec, current_entry, desired_hash, paths, reporter)
+        })
+        .collect();
+    let prepare_results = prepare::run_bounded(config.options.concurrency, prepare_jobs).await;
+
+    // Phase 3: Serial reconcile/apply in declaration order.
+    for (spec, result) in candidates.iter().zip(prepare_results) {
         let id = spec.remote_id().unwrap();
-        let Some(desired_hash) = desired_hashes.get(id) else {
-            continue;
-        };
-        if !plugin_needs_reconcile(spec, lock, desired_hash, policy, paths) {
-            continue;
-        }
-
         let name = spec.name.as_str();
-
-        let current_entry = lock.plugins.get(id);
-        match resolve_desired_plugin(spec, current_entry, desired_hash.to_string(), paths, reporter)
-            .await
-        {
+        match result {
             Ok(resolved) => {
                 if let Err(err) =
                     reconcile_plugin(spec, lock, paths, mode, resolved, reporter).await

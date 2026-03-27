@@ -968,3 +968,60 @@ async fn sync_rebuilds_when_build_changes_and_tracking_changes_to_same_commit() 
     assert!(!target.join("built-v1.marker").exists());
     assert!(target.join("built-v2.marker").exists());
 }
+
+#[tokio::test]
+async fn concurrent_sync_installs_multiple_plugins() {
+    let dir = tempdir().unwrap();
+    let (bare_a, commit_a) = make_bare_repo(&dir.path().join("repo-a"));
+    let (bare_b, commit_b) = make_bare_repo(&dir.path().join("repo-b"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let url_a = format!("file://{}", bare_a.display());
+    let url_b = format!("file://{}", bare_b.display());
+
+    let mut cfg = make_config(vec![
+        make_plugin("test/a", "example.com/test/a", &url_a, Tracking::DefaultBranch, None),
+        make_plugin("test/b", "example.com/test/b", &url_b, Tracking::DefaultBranch, None),
+    ]);
+    cfg.options.concurrency = 2;
+
+    let mut lock = LockFile::new();
+    let outcome =
+        sync::run(&cfg, &mut lock, &paths, None, SyncPolicy::SYNC, SyncMode::Normal, &NullReporter)
+            .await
+            .unwrap();
+
+    assert!(outcome.is_clean(), "unexpected failures: {:?}", outcome.plugin_failures);
+    assert_eq!(lock.plugins["example.com/test/a"].commit, commit_a);
+    assert_eq!(lock.plugins["example.com/test/b"].commit, commit_b);
+}
+
+#[tokio::test]
+async fn concurrent_sync_partial_failure_preserves_successes() {
+    let dir = tempdir().unwrap();
+    let (bare_a, commit_a) = make_bare_repo(&dir.path().join("repo-a"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let url_a = format!("file://{}", bare_a.display());
+    let url_bad = "file:///nonexistent/repo.git".to_string();
+
+    let mut cfg = make_config(vec![
+        make_plugin("test/a", "example.com/test/a", &url_a, Tracking::DefaultBranch, None),
+        make_plugin("test/bad", "example.com/test/bad", &url_bad, Tracking::DefaultBranch, None),
+    ]);
+    cfg.options.concurrency = 2;
+
+    let mut lock = LockFile::new();
+    let outcome =
+        sync::run(&cfg, &mut lock, &paths, None, SyncPolicy::SYNC, SyncMode::Normal, &NullReporter)
+            .await
+            .unwrap();
+
+    assert!(!outcome.is_clean());
+    assert_eq!(outcome.plugin_failures.len(), 1);
+    assert!(outcome.plugin_failures[0].contains("example.com/test/bad"));
+    assert_eq!(lock.plugins["example.com/test/a"].commit, commit_a);
+    assert!(!lock.plugins.contains_key("example.com/test/bad"));
+}
