@@ -59,6 +59,16 @@ fn failure_marker_round_trip() {
 }
 
 #[test]
+fn paths_keep_repo_cache_on_same_data_root() {
+    let paths = Paths::for_test("/tmp/data", "/tmp/state");
+    assert_eq!(paths.plugin_root.parent().unwrap(), paths.repo_cache_root.parent().unwrap());
+    assert_eq!(
+        paths.repo_cache_dir("github.com/user/repo"),
+        paths.repo_cache_root.join("github.com/user/repo.git")
+    );
+}
+
+#[test]
 fn clear_failure_markers_removes_matching() {
     let dir = tempdir().unwrap();
     let failures_root = dir.path().join("failures");

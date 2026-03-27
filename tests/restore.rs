@@ -74,6 +74,44 @@ async fn restore_same_commit_preserves_build_artifacts() {
     );
 }
 
+#[tokio::test]
+async fn restore_uses_cached_commit_without_recloning_remote() {
+    let dir = tempdir().unwrap();
+    let (bare, commit) = make_bare_repo(&dir.path().join("repo"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let cfg = make_config(&clone_url, None);
+
+    let mut lock = LockFile::new();
+    lock.plugins.insert(
+        "example.com/test/plugin".into(),
+        LockEntry {
+            tracking: TrackingRecord { kind: "branch".into(), value: "main".into() },
+            commit: commit.clone(),
+            config_hash: None,
+        },
+    );
+
+    plugin::restore(&cfg, &lock, &paths, None, &NullReporter).await.unwrap();
+    let target = paths.plugin_dir("example.com/test/plugin");
+    assert!(paths.repo_cache_dir("example.com/test/plugin").exists());
+
+    // Remove both the installed checkout and the remote so the second restore
+    // must reconstruct the target from the persistent cache alone.
+    std::fs::remove_dir_all(&target).unwrap();
+    std::fs::remove_dir_all(&bare).unwrap();
+
+    plugin::restore(&cfg, &lock, &paths, None, &NullReporter).await.unwrap();
+
+    assert!(paths.repo_cache_dir("example.com/test/plugin").exists());
+    assert_eq!(
+        lazytmux::git::head_commit_sync(&paths.plugin_dir("example.com/test/plugin")).unwrap(),
+        commit
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Regression: restore build failure must return Err (non-zero exit)
 // ---------------------------------------------------------------------------

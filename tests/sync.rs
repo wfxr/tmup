@@ -217,6 +217,32 @@ async fn sync_installs_new_remote_plugin_and_persists_metadata() {
 }
 
 #[tokio::test]
+async fn sync_creates_repo_cache_for_remote_plugin() {
+    let dir = tempdir().unwrap();
+    let (bare, commit) = make_bare_repo(&dir.path().join("repo"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let plugin = make_plugin(
+        "test/plugin",
+        "example.com/test/plugin",
+        &clone_url,
+        Tracking::DefaultBranch,
+        None,
+    );
+    let cfg = make_config(vec![plugin]);
+    let mut lock = LockFile::new();
+
+    sync::run(&cfg, &mut lock, &paths, None, SyncPolicy::SYNC, SyncMode::Normal, &NullReporter)
+        .await
+        .unwrap();
+
+    assert!(paths.repo_cache_dir("example.com/test/plugin").exists());
+    assert_eq!(plugin_head(&paths, "example.com/test/plugin"), commit);
+}
+
+#[tokio::test]
 async fn init_mode_reconciles_missing_repo_even_when_lock_hash_is_aligned() {
     let dir = tempdir().unwrap();
     let (bare, commit) = make_bare_repo(&dir.path().join("repo"));

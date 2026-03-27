@@ -26,6 +26,8 @@ pub struct Paths {
     pub config_path: PathBuf,
     /// Active lock file (usually next to the active config file)
     pub lockfile_path: PathBuf,
+    /// Persistent cache roots for remote plugins: {data}/.repos/
+    pub repo_cache_root: PathBuf,
 }
 
 impl Paths {
@@ -50,6 +52,7 @@ impl Paths {
             init_results_root: state_dir.join("init-results"),
             config_path: config_dir.join("lazy.kdl"),
             lockfile_path: config_dir.join("lazylock.json"),
+            repo_cache_root: data_dir.join(".repos"),
         })
     }
 
@@ -67,6 +70,7 @@ impl Paths {
             init_results_root: state.join("init-results"),
             config_path: state.join("lazy.kdl"),
             lockfile_path: state.join("lazylock.json"),
+            repo_cache_root: data.join(".repos"),
         }
     }
 
@@ -90,6 +94,7 @@ impl Paths {
             init_results_root: state_root.join("init-results"),
             config_path,
             lockfile_path,
+            repo_cache_root: data_root.join(".repos"),
         })
     }
 
@@ -111,6 +116,7 @@ impl Paths {
         fs::create_dir_all(&self.failures_root)?;
         fs::create_dir_all(&self.logs_root)?;
         fs::create_dir_all(&self.init_results_root)?;
+        fs::create_dir_all(&self.repo_cache_root)?;
         if let Some(parent) = self.lock_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -136,6 +142,11 @@ impl Paths {
     /// Get the install directory for a remote plugin by id.
     pub fn plugin_dir(&self, id: &str) -> PathBuf {
         self.plugin_root.join(checked_plugin_id(id))
+    }
+
+    /// Get the cache directory for a remote plugin id.
+    pub fn repo_cache_dir(&self, id: &str) -> PathBuf {
+        self.repo_cache_root.join(format!("{}.git", checked_plugin_id(id)))
     }
 
     /// Create a staging directory for a plugin operation.

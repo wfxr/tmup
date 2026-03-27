@@ -5,39 +5,95 @@ use std::process::Stdio;
 use anyhow::{Context, Result, bail};
 use tokio::process::Command;
 
-/// Clone a git repository into the staging directory.
-pub async fn clone_repo(url: &str, dest: &Path) -> Result<()> {
+/// Clone a bare git repository into the cache directory.
+pub async fn clone_bare_repo(url: &str, dest: &Path) -> Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
     let output = Command::new("git")
-        .args(["clone", "--filter=blob:none", url])
+        .args(["clone", "--bare", url])
         .arg(dest)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .await
-        .context("failed to run git clone")?;
+        .context("failed to run git clone --bare")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git clone failed: {stderr}");
+        bail!("git clone --bare failed: {stderr}");
     }
     Ok(())
 }
 
-/// Fetch updates in an existing repository.
-pub async fn fetch(repo: &Path) -> Result<()> {
+/// Clone a local repository into a working staging directory without hardlinks.
+pub async fn clone_local_repo(source: &Path, dest: &Path) -> Result<()> {
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let output = Command::new("git")
-        .args(["fetch", "--all", "--prune"])
+        .args(["clone", "--local", "--no-hardlinks"])
+        .arg(source)
+        .arg(dest)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .context("failed to run git clone --local --no-hardlinks")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git clone --local --no-hardlinks failed: {stderr}");
+    }
+    Ok(())
+}
+
+/// Fetch updates from origin with the provided refspecs.
+pub async fn fetch_origin(repo: &Path, refspecs: &[String]) -> Result<()> {
+    let mut command = Command::new("git");
+    command.args(["fetch", "origin", "--prune", "--force"]);
+    command.args(refspecs);
+    let output = command
         .current_dir(repo)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .await
-        .context("failed to run git fetch")?;
+        .context("failed to run git fetch origin")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git fetch failed: {stderr}");
+        bail!("git fetch origin failed: {stderr}");
+    }
+    Ok(())
+}
+
+/// Update the remote HEAD reference to point at its default branch.
+pub async fn set_remote_head(repo: &Path, remote: &str) -> Result<()> {
+    // This is a best-effort hint for default-branch resolution. Some remotes can
+    // still advertise fetchable branch refs while failing `set-head --auto`; in
+    // that case callers fall back to probing common branch names.
+    let _output = Command::new("git")
+        .args(["remote", "set-head", remote, "--auto"])
+        .current_dir(repo)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .context("failed to run git remote set-head")?;
+    Ok(())
+}
+
+/// Set the URL for a named remote.
+pub async fn set_remote_url(repo: &Path, remote: &str, url: &str) -> Result<()> {
+    let output = Command::new("git")
+        .args(["remote", "set-url", remote, url])
+        .current_dir(repo)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .context("failed to run git remote set-url")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git remote set-url failed: {stderr}");
     }
     Ok(())
 }
@@ -90,6 +146,20 @@ pub async fn head_commit(repo: &Path) -> Result<String> {
         bail!("git rev-parse HEAD failed: {stderr}");
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Return whether the given revision resolves to a commit in this repository.
+pub async fn has_commit(repo: &Path, rev: &str) -> Result<bool> {
+    let verify = format!("{rev}^{{commit}}");
+    let output = Command::new("git")
+        .args(["rev-parse", "--verify", &verify])
+        .current_dir(repo)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .context("failed to run git rev-parse --verify")?;
+    Ok(output.status.success())
 }
 
 /// Resolve the remote tracking branch to a commit.
