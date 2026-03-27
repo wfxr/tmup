@@ -27,7 +27,7 @@ lazy.nvim's design philosophy to tmux:
 
 - **Declarative config** — a single `lazy.kdl` file describes everything.
 - **Resolved lock snapshot** — `lazylock.json` records the commits selected from config.
-- **Concurrent operations** — installs and updates run in parallel (planned).
+- **Concurrent operations** — prepare-phase git operations run in parallel with bounded concurrency.
 - **Safe publish protocol** — staging + atomic rename + rollback on build failure.
 - **Script-friendly CLI** — clear exit codes, partial-failure reporting, predictable semantics.
 
@@ -323,7 +323,7 @@ This boundary is intentional, not an oversight.
 
 ## Roadmap
 
-- [ ] **Concurrent operations** — parallel git clone/fetch across plugins (`concurrency` config option)
+- [x] **Concurrent operations** — prepare-phase git operations run in parallel (`options { concurrency 16 }`)
 - [ ] **Incremental fetch** — reuse healthy local repos (fetch + resolve) instead of fresh clone on every sync/install
 - [ ] **`migrate` command** — auto-generate `lazy.kdl` from TPM `set -g @plugin` declarations
 
