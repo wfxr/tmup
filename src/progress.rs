@@ -358,7 +358,7 @@ fn operation_message(stage: OperationStage) -> &'static str {
 }
 
 fn format_operation_failure(summary: &str) -> String {
-    format!("operation  {}", sanitize_summary(summary, SUMMARY_MAX_LEN))
+    format!("operation {}", sanitize_summary(summary, SUMMARY_MAX_LEN))
 }
 
 fn title_case<T: std::fmt::Display>(value: T) -> String {
@@ -523,7 +523,7 @@ impl StreamRenderer {
                     LineKind::Warning,
                     "Skipped",
                     format!(
-                        "{}  {}",
+                        "{} {}",
                         self.label(id, name),
                         sanitize_summary(&reason, SUMMARY_MAX_LEN)
                     ),
@@ -534,7 +534,7 @@ impl StreamRenderer {
                     LineKind::Failure,
                     "Failed",
                     format!(
-                        "{}  {}",
+                        "{} {}",
                         self.label(id, name),
                         sanitize_summary(&summary, SUMMARY_MAX_LEN)
                     ),
@@ -967,6 +967,52 @@ mod tests {
                 "   Resolving tmux-sensible default-branch -> branch@main -> commit@8c1eeec"
                     .to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn stream_renderer_uses_single_space_for_skipped_messages() {
+        let mut labels = HashMap::new();
+        labels.insert("github.com/tmux-plugins/tmux-sensible".to_string(), "tmux-sensible".into());
+        let renderer = StreamRenderer::new(labels);
+
+        assert_eq!(
+            renderer.render(ProgressEvent::PluginSkipped {
+                id: "github.com/tmux-plugins/tmux-sensible",
+                name: "tmux-sensible",
+                reason: "pinned to tag v1.0.0".to_string(),
+            }),
+            vec!["     Skipped tmux-sensible pinned to tag v1.0.0".to_string()]
+        );
+    }
+
+    #[test]
+    fn stream_renderer_uses_single_space_for_failed_messages() {
+        let mut labels = HashMap::new();
+        labels.insert("github.com/tmux-plugins/tmux-sensible".to_string(), "tmux-sensible".into());
+        let renderer = StreamRenderer::new(labels);
+
+        assert_eq!(
+            renderer.render(ProgressEvent::PluginFailed {
+                id: "github.com/tmux-plugins/tmux-sensible",
+                name: "tmux-sensible",
+                summary: "git clone --bare failed".to_string(),
+                detail: String::new(),
+            }),
+            vec!["      Failed tmux-sensible git clone --bare failed".to_string()]
+        );
+    }
+
+    #[test]
+    fn stream_renderer_uses_single_space_for_operation_failures() {
+        let renderer = StreamRenderer::new(HashMap::new());
+
+        assert_eq!(
+            renderer.render(ProgressEvent::OperationFailed {
+                summary: "failed to write lockfile".to_string(),
+                detail: String::new(),
+            }),
+            vec!["      Failed operation failed to write lockfile".to_string()]
         );
     }
 
