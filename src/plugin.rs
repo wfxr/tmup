@@ -10,7 +10,7 @@ use crate::model::{Config, PluginSource, Tracking};
 use crate::planner::{self, PluginStatus, collect_failed_builds};
 use crate::progress::{self, ProgressEvent, ProgressReporter, Stage};
 use crate::state::{self, FailureKey, FailureMarker, Paths, build_command_hash, timestamp_now};
-use crate::{git, repo, short_hash};
+use crate::{git, prepare, repo, short_hash};
 
 /// Install missing remote plugins. Lock-first: uses lock entry if present.
 ///
@@ -29,70 +29,89 @@ pub async fn install(
     paths.ensure_dirs()?;
     let mut failures: Vec<String> = Vec::new();
 
-    for spec in &config.plugins {
-        let PluginSource::Remote { id, clone_url, .. } = &spec.source else {
-            continue;
-        };
+    // Phase 1: Select candidates and clean up broken dirs.
+    let candidates: Vec<_> = config
+        .plugins
+        .iter()
+        .filter(|spec| {
+            let PluginSource::Remote { id, .. } = &spec.source else {
+                return false;
+            };
+            if let Some(target) = target_id
+                && id != target
+            {
+                return false;
+            }
+            let target_dir = paths.plugin_dir(id);
+            let health = planner::inspect_plugin_dir(&target_dir);
+            if matches!(health, planner::RepoHealth::Healthy { .. })
+                && lock.plugins.contains_key(id.as_str())
+            {
+                return false;
+            }
+            if matches!(health, planner::RepoHealth::Broken) {
+                let _ = std::fs::remove_dir_all(&target_dir);
+            }
+            true
+        })
+        .collect();
 
-        if let Some(target) = target_id
-            && id != target
-        {
-            continue;
-        }
-
-        let target_dir = paths.plugin_dir(id);
-        let health = planner::inspect_plugin_dir(&target_dir);
-        if matches!(health, planner::RepoHealth::Healthy { .. })
-            && lock.plugins.contains_key(id.as_str())
-        {
-            continue;
-        }
-
-        // If Broken, remove the broken dir before proceeding
-        if matches!(health, planner::RepoHealth::Broken) {
-            let _ = std::fs::remove_dir_all(&target_dir);
-        }
-
-        let name = spec.name.as_str();
-
-        reporter.report(ProgressEvent::PluginStage {
-            id,
-            name,
-            stage: Stage::Fetching,
-            detail: Some(clone_url.clone()),
-        });
-
-        // Determine target commit — git failures are per-plugin, not fatal.
-        let prep: Result<_> = async {
-            if let Some(entry) = lock.plugins.get(id.as_str()) {
-                let revision =
-                    repo::ensure_locked_revision(paths, id, clone_url, &entry.commit).await?;
-                let prepared =
-                    repo::materialize_staging_at_revision(paths, id, clone_url, &revision).await?;
-                Ok((prepared.staging_dir, entry.commit.clone(), entry.tracking.clone()))
-            } else {
-                let revision =
-                    repo::resolve_tracking_revision(paths, id, clone_url, &spec.tracking).await?;
-                let prepared =
-                    repo::materialize_staging_at_revision(paths, id, clone_url, &revision).await?;
-                let commit = prepared.commit;
-                let record = prepared.tracking.expect("tracking metadata required");
+    // Phase 2: Parallel prepare — resolve and stage each candidate.
+    let lock_ref = &*lock;
+    let prepare_jobs: Vec<_> = candidates
+        .iter()
+        .map(|spec| {
+            let PluginSource::Remote { id, clone_url, .. } = &spec.source else { unreachable!() };
+            async move {
                 reporter.report(ProgressEvent::PluginStage {
                     id,
-                    name,
-                    stage: Stage::Resolving,
-                    detail: Some(repo::describe_tracking_resolution(
-                        &spec.tracking,
-                        &record,
-                        &commit,
-                    )),
+                    name: &spec.name,
+                    stage: Stage::Fetching,
+                    detail: Some(clone_url.clone()),
                 });
-                Ok((prepared.staging_dir, commit, record))
+                if let Some(entry) = lock_ref.plugins.get(id.as_str()) {
+                    let revision =
+                        repo::ensure_locked_revision(paths, id, clone_url, &entry.commit).await?;
+                    let prepared =
+                        repo::materialize_staging_at_revision(paths, id, clone_url, &revision)
+                            .await?;
+                    Ok::<_, anyhow::Error>((
+                        prepared.staging_dir,
+                        entry.commit.clone(),
+                        entry.tracking.clone(),
+                    ))
+                } else {
+                    let revision =
+                        repo::resolve_tracking_revision(paths, id, clone_url, &spec.tracking)
+                            .await?;
+                    let prepared =
+                        repo::materialize_staging_at_revision(paths, id, clone_url, &revision)
+                            .await?;
+                    let commit = prepared.commit;
+                    let record = prepared.tracking.expect("tracking metadata required");
+                    reporter.report(ProgressEvent::PluginStage {
+                        id,
+                        name: &spec.name,
+                        stage: Stage::Resolving,
+                        detail: Some(repo::describe_tracking_resolution(
+                            &spec.tracking,
+                            &record,
+                            &commit,
+                        )),
+                    });
+                    Ok((prepared.staging_dir, commit, record))
+                }
             }
-        }
-        .await;
+        })
+        .collect();
+    let prepare_results = prepare::run_bounded(config.options.concurrency, prepare_jobs).await;
 
-        let (staging, commit, tracking_record) = match prep {
+    // Phase 3: Serial apply in declaration order.
+    for (spec, result) in candidates.iter().zip(prepare_results) {
+        let PluginSource::Remote { id, .. } = &spec.source else { unreachable!() };
+        let name = spec.name.as_str();
+
+        let (staging, commit, tracking_record) = match result {
             Ok(v) => v,
             Err(e) => {
                 let (summary, detail) = progress::summarize_error(&e);
@@ -110,7 +129,6 @@ pub async fn install(
         };
         let config_hash = remote_plugin_config_hash(spec);
 
-        // Check known failure suppression (for init auto-install)
         if skip_known_failures
             && let Some(build_cmd) = &spec.build
             && is_known_failure(paths, id, &commit, build_cmd)?
@@ -131,6 +149,7 @@ pub async fn install(
             detail: spec.build.clone(),
         });
 
+        let target_dir = paths.plugin_dir(id);
         match publish_and_track(paths, id, &commit, &staging, &target_dir, spec.build.as_deref()) {
             Ok(()) => {
                 reporter.report(ProgressEvent::PluginDone {
@@ -182,73 +201,89 @@ pub async fn update(
     paths.ensure_dirs()?;
     let mut failures: Vec<String> = Vec::new();
 
-    for spec in &config.plugins {
-        let PluginSource::Remote { id, clone_url, .. } = &spec.source else {
-            continue;
-        };
+    // Phase 1: Select candidates — skip pinned plugins before scheduling work.
+    let candidates: Vec<_> = config
+        .plugins
+        .iter()
+        .filter(|spec| {
+            let PluginSource::Remote { id, .. } = &spec.source else {
+                return false;
+            };
+            if let Some(target) = target_id
+                && id != target
+            {
+                return false;
+            }
+            let name = spec.name.as_str();
+            match &spec.tracking {
+                Tracking::Tag(t) => {
+                    reporter.report(ProgressEvent::PluginSkipped {
+                        id,
+                        name,
+                        reason: format!("pinned to tag {t}"),
+                    });
+                    false
+                }
+                Tracking::Commit(c) => {
+                    reporter.report(ProgressEvent::PluginSkipped {
+                        id,
+                        name,
+                        reason: format!("pinned to commit {}", short_hash(c)),
+                    });
+                    false
+                }
+                _ => true,
+            }
+        })
+        .collect();
 
-        if let Some(target) = target_id
-            && id != target
-        {
-            continue;
-        }
+    // Phase 2: Parallel prepare — fetch, resolve, stage, read disk commit.
+    let prepare_jobs: Vec<_> = candidates
+        .iter()
+        .map(|spec| {
+            let PluginSource::Remote { id, clone_url, .. } = &spec.source else { unreachable!() };
+            let target_dir = paths.plugin_dir(id);
+            async move {
+                reporter.report(ProgressEvent::PluginStage {
+                    id,
+                    name: &spec.name,
+                    stage: Stage::Fetching,
+                    detail: Some(clone_url.clone()),
+                });
+                let revision =
+                    repo::resolve_tracking_revision(paths, id, clone_url, &spec.tracking).await?;
+                let prepared =
+                    repo::materialize_staging_at_revision(paths, id, clone_url, &revision).await?;
+                let new_commit = prepared.commit;
+                let record = prepared.tracking.expect("tracking metadata required");
+                reporter.report(ProgressEvent::PluginStage {
+                    id,
+                    name: &spec.name,
+                    stage: Stage::Resolving,
+                    detail: Some(repo::describe_tracking_resolution(
+                        &spec.tracking,
+                        &record,
+                        &new_commit,
+                    )),
+                });
+                let disk_commit = if target_dir.exists() {
+                    git::head_commit(&target_dir).await.ok()
+                } else {
+                    None
+                };
+                Ok::<_, anyhow::Error>((prepared.staging_dir, new_commit, record, disk_commit))
+            }
+        })
+        .collect();
+    let prepare_results = prepare::run_bounded(config.options.concurrency, prepare_jobs).await;
 
+    // Phase 3: Serial apply in declaration order.
+    for (spec, result) in candidates.iter().zip(prepare_results) {
+        let PluginSource::Remote { id, .. } = &spec.source else { unreachable!() };
         let name = spec.name.as_str();
-
-        // Skip pinned plugins
-        match &spec.tracking {
-            Tracking::Tag(t) => {
-                reporter.report(ProgressEvent::PluginSkipped {
-                    id,
-                    name,
-                    reason: format!("pinned to tag {t}"),
-                });
-                continue;
-            }
-            Tracking::Commit(c) => {
-                reporter.report(ProgressEvent::PluginSkipped {
-                    id,
-                    name,
-                    reason: format!("pinned to commit {}", short_hash(c)),
-                });
-                continue;
-            }
-            _ => {}
-        }
-
-        let target_dir = paths.plugin_dir(id);
         let config_hash = remote_plugin_config_hash(spec);
 
-        reporter.report(ProgressEvent::PluginStage {
-            id,
-            name,
-            stage: Stage::Fetching,
-            detail: Some(clone_url.clone()),
-        });
-
-        // Git preparation — failures are per-plugin, not fatal.
-        let prep = async {
-            let revision =
-                repo::resolve_tracking_revision(paths, id, clone_url, &spec.tracking).await?;
-            let prepared =
-                repo::materialize_staging_at_revision(paths, id, clone_url, &revision).await?;
-            let new_commit = prepared.commit;
-            let record = prepared.tracking.expect("tracking metadata required");
-            reporter.report(ProgressEvent::PluginStage {
-                id,
-                name,
-                stage: Stage::Resolving,
-                detail: Some(repo::describe_tracking_resolution(
-                    &spec.tracking,
-                    &record,
-                    &new_commit,
-                )),
-            });
-            Ok::<_, anyhow::Error>((prepared.staging_dir, new_commit, record))
-        }
-        .await;
-
-        let (staging, new_commit, tracking_record) = match prep {
+        let (staging, new_commit, tracking_record, disk_commit) = match result {
             Ok(v) => v,
             Err(e) => {
                 let (summary, detail) = progress::summarize_error(&e);
@@ -265,20 +300,15 @@ pub async fn update(
             }
         };
 
-        // Check if the disk HEAD already matches new_commit.
-        let disk_commit =
-            if target_dir.exists() { git::head_commit(&target_dir).await.ok() } else { None };
+        let target_dir = paths.plugin_dir(id);
         let revision_changed = disk_commit.as_deref() != Some(new_commit.as_str());
 
-        // Already at the target commit — just update the lock, skip publish.
         if !revision_changed && target_dir.exists() {
             let _ = std::fs::remove_dir_all(&staging);
             lock.plugins.insert(
                 id.clone(),
                 LockEntry { tracking: tracking_record, commit: new_commit, config_hash },
             );
-            // A no-op update is still a successful operation — clear any
-            // stale failure markers so `list` doesn't show build-failed.
             state::clear_failure_markers(&paths.failures_root, id)?;
             reporter.report(ProgressEvent::PluginDone {
                 id,
@@ -355,76 +385,77 @@ pub async fn restore(
     paths.ensure_dirs()?;
     let mut failures: Vec<String> = Vec::new();
 
-    for spec in &config.plugins {
-        let PluginSource::Remote { id, clone_url, .. } = &spec.source else {
-            continue;
-        };
-
-        if let Some(target) = target_id
-            && id != target
-        {
-            continue;
-        }
-
-        let name = spec.name.as_str();
-
-        let Some(entry) = lock.plugins.get(id.as_str()) else {
-            reporter.report(ProgressEvent::PluginSkipped {
-                id,
-                name,
-                reason: "no lock entry".to_string(),
-            });
-            continue;
-        };
-
-        let target_dir = paths.plugin_dir(id);
-
-        // Check if revision would actually change
-        let current_commit =
-            if target_dir.exists() { git::head_commit(&target_dir).await.ok() } else { None };
-        let revision_changed = current_commit.as_deref() != Some(&entry.commit);
-
-        // Already at the correct commit — nothing to do
-        if !revision_changed && target_dir.exists() {
-            // A no-op restore is still a successful operation — clear any
-            // stale failure markers so `list` doesn't show build-failed.
-            state::clear_failure_markers(&paths.failures_root, id)?;
-            reporter.report(ProgressEvent::PluginDone {
-                id,
-                name,
-                summary: "already restored".to_string(),
-            });
-            continue;
-        }
-
-        reporter.report(ProgressEvent::PluginStage {
-            id,
-            name,
-            stage: Stage::Fetching,
-            detail: Some(clone_url.clone()),
-        });
-
-        // Clone into staging and checkout lock commit — per-plugin failure.
-        let staging = match repo::ensure_locked_revision(paths, id, clone_url, &entry.commit).await
-        {
-            Ok(revision) => {
-                match repo::materialize_staging_at_revision(paths, id, clone_url, &revision).await {
-                    Ok(prepared) => prepared.staging_dir,
-                    Err(e) => {
-                        let (summary, detail) = progress::summarize_error(&e);
-                        reporter.report(ProgressEvent::PluginFailed {
-                            id,
-                            name,
-                            stage: None,
-                            summary,
-                            detail,
-                            context: vec![],
-                        });
-                        failures.push(format!("{id}: {e}"));
-                        continue;
-                    }
-                }
+    // Phase 1: Select candidates — skip plugins without lock entries or already
+    // at the correct commit.
+    let candidates: Vec<_> = config
+        .plugins
+        .iter()
+        .filter(|spec| {
+            let PluginSource::Remote { id, .. } = &spec.source else {
+                return false;
+            };
+            if let Some(target) = target_id
+                && id != target
+            {
+                return false;
             }
+            let name = spec.name.as_str();
+            let Some(entry) = lock.plugins.get(id.as_str()) else {
+                reporter.report(ProgressEvent::PluginSkipped {
+                    id,
+                    name,
+                    reason: "no lock entry".to_string(),
+                });
+                return false;
+            };
+            let target_dir = paths.plugin_dir(id);
+            let current_commit =
+                if target_dir.exists() { git::head_commit_sync(&target_dir).ok() } else { None };
+            let revision_changed = current_commit.as_deref() != Some(&entry.commit);
+            if !revision_changed && target_dir.exists() {
+                let _ = state::clear_failure_markers(&paths.failures_root, id);
+                reporter.report(ProgressEvent::PluginDone {
+                    id,
+                    name,
+                    summary: "already restored".to_string(),
+                });
+                return false;
+            }
+            true
+        })
+        .collect();
+
+    // Phase 2: Parallel prepare — ensure locked revision and stage.
+    let prepare_jobs: Vec<_> = candidates
+        .iter()
+        .map(|spec| {
+            let PluginSource::Remote { id, clone_url, .. } = &spec.source else { unreachable!() };
+            let entry = lock.plugins.get(id.as_str()).unwrap();
+            async move {
+                reporter.report(ProgressEvent::PluginStage {
+                    id,
+                    name: &spec.name,
+                    stage: Stage::Fetching,
+                    detail: Some(clone_url.clone()),
+                });
+                let revision =
+                    repo::ensure_locked_revision(paths, id, clone_url, &entry.commit).await?;
+                let prepared =
+                    repo::materialize_staging_at_revision(paths, id, clone_url, &revision).await?;
+                Ok::<_, anyhow::Error>(prepared.staging_dir)
+            }
+        })
+        .collect();
+    let prepare_results = prepare::run_bounded(config.options.concurrency, prepare_jobs).await;
+
+    // Phase 3: Serial apply in declaration order.
+    for (spec, result) in candidates.iter().zip(prepare_results) {
+        let PluginSource::Remote { id, .. } = &spec.source else { unreachable!() };
+        let name = spec.name.as_str();
+        let entry = lock.plugins.get(id.as_str()).unwrap();
+
+        let staging = match result {
+            Ok(v) => v,
             Err(e) => {
                 let (summary, detail) = progress::summarize_error(&e);
                 reporter.report(ProgressEvent::PluginFailed {
@@ -447,6 +478,7 @@ pub async fn restore(
             detail: spec.build.clone(),
         });
 
+        let target_dir = paths.plugin_dir(id);
         if let Err(e) = publish_and_track(
             paths,
             id,
