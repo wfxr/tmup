@@ -10,7 +10,7 @@ use crate::lockfile::{
 use crate::model::{Config, PluginSource, PluginSpec, Tracking};
 use crate::progress::{self, ProgressEvent, ProgressReporter, Stage};
 use crate::state::{self, FailureMarker, Paths, build_command_hash, timestamp_now};
-use crate::{git, planner, plugin, short_hash};
+use crate::{git, planner, plugin, repo, short_hash};
 
 /// Controls behavioral differences between an interactive sync and tmux init.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -291,46 +291,47 @@ async fn resolve_desired_plugin(
         detail: Some(clone_url.clone()),
     });
 
-    let staging_dir = paths.staging_dir(id);
     let prep = async {
-        git::clone_repo(clone_url, &staging_dir).await?;
-
-        let (commit, tracking) = if let Some(entry) = current_entry
+        let prepared = if let Some(entry) = current_entry
             && tracks_same_revision(spec, &entry.tracking)
         {
-            (entry.commit.clone(), entry.tracking.clone())
+            repo::prepare_locked_staging(paths, id, clone_url, &entry.commit).await?
         } else {
-            let (commit, tracking) = plugin::resolve_tracking(&staging_dir, &spec.tracking).await?;
+            repo::prepare_tracking_staging(paths, id, clone_url, &spec.tracking).await?
+        };
+
+        let commit = prepared.commit;
+        let tracking = if let Some(entry) = current_entry
+            && tracks_same_revision(spec, &entry.tracking)
+        {
+            entry.tracking.clone()
+        } else {
+            let tracking = prepared.tracking.expect("tracking metadata required");
             reporter.report(ProgressEvent::PluginStage {
                 id,
                 name,
                 stage: Stage::Resolving,
-                detail: Some(plugin::describe_tracking_resolution(
+                detail: Some(repo::describe_tracking_resolution(
                     &spec.tracking,
                     &tracking,
                     &commit,
                 )),
             });
-            (commit, tracking)
+            tracking
         };
+
         reporter.report(ProgressEvent::PluginStage {
             id,
             name,
             stage: Stage::CheckingOut,
             detail: None,
         });
-        git::checkout(&staging_dir, &commit).await?;
         Ok::<_, anyhow::Error>(LockEntry { tracking, commit, config_hash: Some(config_hash) })
+            .map(|entry| (prepared.staging_dir, entry))
     }
     .await;
 
-    match prep {
-        Ok(entry) => Ok(ResolvedPlugin { id: id.clone(), staging_dir, entry }),
-        Err(err) => {
-            let _ = std::fs::remove_dir_all(&staging_dir);
-            Err(err)
-        }
-    }
+    prep.map(|(staging_dir, entry)| ResolvedPlugin { id: id.clone(), staging_dir, entry })
 }
 
 fn tracks_same_revision(spec: &PluginSpec, locked: &TrackingRecord) -> bool {

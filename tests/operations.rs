@@ -149,6 +149,90 @@ fn clean_does_not_remove_local_plugin_source() {
     // Just verifying no panic/error
 }
 
+#[tokio::test]
+async fn install_creates_repo_cache_and_uses_locked_commit() {
+    let dir = tempdir().unwrap();
+    let (bare, commit) = make_bare_repo(&dir.path().join("repo"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+    let clone_url = format!("file://{}", bare.display());
+    let plugin = make_plugin(
+        "test/plugin",
+        "example.com/test/plugin",
+        &clone_url,
+        Tracking::DefaultBranch,
+        None,
+    );
+    let cfg = make_config(vec![plugin]);
+    let mut lock = LockFile::new();
+    lock.plugins.insert("example.com/test/plugin".into(), LockEntry::branch("main", &commit));
+
+    plugin::install(&cfg, &mut lock, &paths, None, false, &NullReporter).await.unwrap();
+
+    assert!(paths.repo_cache_dir("example.com/test/plugin").exists());
+    assert_eq!(
+        lazytmux::git::head_commit_sync(&paths.plugin_dir("example.com/test/plugin")).unwrap(),
+        commit
+    );
+}
+
+#[tokio::test]
+async fn install_preserves_remote_origin_url() {
+    let dir = tempdir().unwrap();
+    let (bare, commit) = make_bare_repo(&dir.path().join("repo"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+    let clone_url = format!("file://{}", bare.display());
+    let plugin = make_plugin(
+        "test/plugin",
+        "example.com/test/plugin",
+        &clone_url,
+        Tracking::DefaultBranch,
+        None,
+    );
+    let cfg = make_config(vec![plugin]);
+    let mut lock = LockFile::new();
+    lock.plugins.insert("example.com/test/plugin".into(), LockEntry::branch("main", &commit));
+
+    plugin::install(&cfg, &mut lock, &paths, None, false, &NullReporter).await.unwrap();
+
+    let plugin_dir = paths.plugin_dir("example.com/test/plugin");
+    let origin = git(&["remote", "get-url", "origin"], &plugin_dir);
+    assert_eq!(origin, clone_url);
+}
+
+#[tokio::test]
+async fn update_reuses_repo_cache_after_remote_advance() {
+    let dir = tempdir().unwrap();
+    let (bare, commit_a) = make_bare_repo(&dir.path().join("repo"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+    let clone_url = format!("file://{}", bare.display());
+    let plugin = make_plugin(
+        "test/plugin",
+        "example.com/test/plugin",
+        &clone_url,
+        Tracking::DefaultBranch,
+        None,
+    );
+    let cfg = make_config(vec![plugin]);
+    let mut lock = LockFile::new();
+    lock.plugins.insert("example.com/test/plugin".into(), LockEntry::branch("main", &commit_a));
+
+    plugin::update(&cfg, &mut lock, &paths, None, &NullReporter).await.unwrap();
+    let cache = paths.repo_cache_dir("example.com/test/plugin");
+    assert!(cache.exists());
+
+    let commit_b = push_commit(&bare, "next");
+    plugin::update(&cfg, &mut lock, &paths, None, &NullReporter).await.unwrap();
+
+    assert_eq!(lock.plugins["example.com/test/plugin"].commit, commit_b);
+    assert_eq!(
+        lazytmux::git::head_commit_sync(&paths.plugin_dir("example.com/test/plugin")).unwrap(),
+        commit_b
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn clean_unlinks_symlinked_undeclared_plugin_without_removing_target_repo() {

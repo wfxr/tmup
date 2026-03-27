@@ -4,14 +4,13 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::lockfile::{
-    LockEntry, LockFile, TrackingRecord, config_fingerprint, remote_plugin_config_hash,
-    write_lockfile_atomic,
+    LockEntry, LockFile, config_fingerprint, remote_plugin_config_hash, write_lockfile_atomic,
 };
 use crate::model::{Config, PluginSource, Tracking};
 use crate::planner::{self, PluginStatus, collect_failed_builds};
 use crate::progress::{self, ProgressEvent, ProgressReporter, Stage};
 use crate::state::{self, FailureKey, FailureMarker, Paths, build_command_hash, timestamp_now};
-use crate::{git, short_hash};
+use crate::{git, repo, short_hash};
 
 /// Install missing remote plugins. Lock-first: uses lock entry if present.
 ///
@@ -54,7 +53,6 @@ pub async fn install(
             let _ = std::fs::remove_dir_all(&target_dir);
         }
 
-        let staging = paths.staging_dir(id);
         let name = spec.name.as_str();
 
         reporter.report(ProgressEvent::PluginStage {
@@ -67,40 +65,32 @@ pub async fn install(
         // Determine target commit — git failures are per-plugin, not fatal.
         let prep: Result<_> = async {
             if let Some(entry) = lock.plugins.get(id.as_str()) {
-                git::clone_repo(clone_url, &staging).await?;
-                reporter.report(ProgressEvent::PluginStage {
-                    id,
-                    name,
-                    stage: Stage::CheckingOut,
-                    detail: None,
-                });
-                git::checkout(&staging, &entry.commit).await?;
-                Ok((entry.commit.clone(), entry.tracking.clone()))
+                let prepared =
+                    repo::prepare_locked_staging(paths, id, clone_url, &entry.commit).await?;
+                Ok((prepared.staging_dir, entry.commit.clone(), entry.tracking.clone()))
             } else {
-                git::clone_repo(clone_url, &staging).await?;
-                let (commit, record) = resolve_tracking(&staging, &spec.tracking).await?;
+                let prepared =
+                    repo::prepare_tracking_staging(paths, id, clone_url, &spec.tracking).await?;
+                let commit = prepared.commit;
+                let record = prepared.tracking.expect("tracking metadata required");
                 reporter.report(ProgressEvent::PluginStage {
                     id,
                     name,
                     stage: Stage::Resolving,
-                    detail: Some(describe_tracking_resolution(&spec.tracking, &record, &commit)),
+                    detail: Some(repo::describe_tracking_resolution(
+                        &spec.tracking,
+                        &record,
+                        &commit,
+                    )),
                 });
-                reporter.report(ProgressEvent::PluginStage {
-                    id,
-                    name,
-                    stage: Stage::CheckingOut,
-                    detail: None,
-                });
-                git::checkout(&staging, &commit).await?;
-                Ok((commit, record))
+                Ok((prepared.staging_dir, commit, record))
             }
         }
         .await;
 
-        let (commit, tracking_record) = match prep {
+        let (staging, commit, tracking_record) = match prep {
             Ok(v) => v,
             Err(e) => {
-                let _ = std::fs::remove_dir_all(&staging);
                 let (summary, detail) = progress::summarize_error(&e);
                 reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
                 failures.push(format!("{id}: {e}"));
@@ -209,7 +199,6 @@ pub async fn update(
         }
 
         let target_dir = paths.plugin_dir(id);
-        let staging = paths.staging_dir(id);
         let config_hash = remote_plugin_config_hash(spec);
 
         reporter.report(ProgressEvent::PluginStage {
@@ -221,36 +210,27 @@ pub async fn update(
 
         // Git preparation — failures are per-plugin, not fatal.
         let prep = async {
-            git::clone_repo(clone_url, &staging).await?;
-            reporter.report(ProgressEvent::PluginStage {
-                id,
-                name,
-                stage: Stage::Fetching,
-                detail: None,
-            });
-            git::fetch(&staging).await?;
-            let (new_commit, record) = resolve_tracking(&staging, &spec.tracking).await?;
+            let prepared =
+                repo::prepare_tracking_staging(paths, id, clone_url, &spec.tracking).await?;
+            let new_commit = prepared.commit;
+            let record = prepared.tracking.expect("tracking metadata required");
             reporter.report(ProgressEvent::PluginStage {
                 id,
                 name,
                 stage: Stage::Resolving,
-                detail: Some(describe_tracking_resolution(&spec.tracking, &record, &new_commit)),
+                detail: Some(repo::describe_tracking_resolution(
+                    &spec.tracking,
+                    &record,
+                    &new_commit,
+                )),
             });
-            reporter.report(ProgressEvent::PluginStage {
-                id,
-                name,
-                stage: Stage::CheckingOut,
-                detail: None,
-            });
-            git::checkout(&staging, &new_commit).await?;
-            Ok::<_, anyhow::Error>((new_commit, record))
+            Ok::<_, anyhow::Error>((prepared.staging_dir, new_commit, record))
         }
         .await;
 
-        let (new_commit, tracking_record) = match prep {
+        let (staging, new_commit, tracking_record) = match prep {
             Ok(v) => v,
             Err(e) => {
-                let _ = std::fs::remove_dir_all(&staging);
                 let (summary, detail) = progress::summarize_error(&e);
                 reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
                 failures.push(format!("{id}: {e}"));
@@ -383,8 +363,6 @@ pub async fn restore(
             continue;
         }
 
-        let staging = paths.staging_dir(id);
-
         reporter.report(ProgressEvent::PluginStage {
             id,
             name,
@@ -393,26 +371,16 @@ pub async fn restore(
         });
 
         // Clone into staging and checkout lock commit — per-plugin failure.
-        let prep: Result<()> = async {
-            git::clone_repo(clone_url, &staging).await?;
-            reporter.report(ProgressEvent::PluginStage {
-                id,
-                name,
-                stage: Stage::CheckingOut,
-                detail: None,
-            });
-            git::checkout(&staging, &entry.commit).await?;
-            Ok(())
-        }
-        .await;
-
-        if let Err(e) = prep {
-            let _ = std::fs::remove_dir_all(&staging);
-            let (summary, detail) = progress::summarize_error(&e);
-            reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
-            failures.push(format!("{id}: {e}"));
-            continue;
-        }
+        let staging = match repo::prepare_locked_staging(paths, id, clone_url, &entry.commit).await
+        {
+            Ok(prepared) => prepared.staging_dir,
+            Err(e) => {
+                let (summary, detail) = progress::summarize_error(&e);
+                reporter.report(ProgressEvent::PluginFailed { id, name, summary, detail });
+                failures.push(format!("{id}: {e}"));
+                continue;
+            }
+        };
 
         reporter.report(ProgressEvent::PluginStage {
             id,
@@ -492,48 +460,6 @@ pub fn is_known_failure(
     let bh = build_command_hash(build_cmd);
     let key = FailureKey::new(plugin_id, commit, &bh);
     state::has_failure_marker(&paths.failures_root, &key)
-}
-
-/// Resolve a tracking spec against a cloned repo and return the commit hash and record.
-pub(crate) async fn resolve_tracking(
-    repo: &std::path::Path,
-    tracking: &Tracking,
-) -> Result<(String, TrackingRecord)> {
-    match tracking {
-        Tracking::Branch(branch) => {
-            let commit = git::resolve_remote_branch(repo, branch).await?;
-            Ok((commit, TrackingRecord { kind: "branch".into(), value: branch.clone() }))
-        }
-        Tracking::Tag(tag) => {
-            let commit = git::resolve_tag(repo, tag).await?;
-            Ok((commit, TrackingRecord { kind: "tag".into(), value: tag.clone() }))
-        }
-        Tracking::Commit(c) => {
-            Ok((c.clone(), TrackingRecord { kind: "commit".into(), value: c.clone() }))
-        }
-        Tracking::DefaultBranch => {
-            let branch = git::default_branch(repo).await?;
-            let commit = git::resolve_remote_branch(repo, &branch).await?;
-            Ok((commit, TrackingRecord { kind: "default-branch".into(), value: branch }))
-        }
-    }
-}
-
-/// Format a human-readable description of how a tracking spec resolved to a commit.
-pub(crate) fn describe_tracking_resolution(
-    tracking: &Tracking,
-    record: &TrackingRecord,
-    commit: &str,
-) -> String {
-    let commit = short_hash(commit);
-    match tracking {
-        Tracking::Tag(tag) => format!("tag@{tag} -> commit@{commit}"),
-        Tracking::Branch(branch) => format!("branch@{branch} -> commit@{commit}"),
-        Tracking::DefaultBranch => {
-            format!("default-branch -> branch@{} -> commit@{commit}", record.value)
-        }
-        Tracking::Commit(commit) => format!("commit@{}", short_hash(commit)),
-    }
 }
 
 /// Publish a plugin from staging to its target directory, tracking success/failure.

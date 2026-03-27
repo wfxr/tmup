@@ -18,6 +18,8 @@ pub mod planner;
 pub mod plugin;
 /// Progress event types, reporter trait, and stream renderer.
 pub mod progress;
+/// Persistent repo cache management and staging preparation.
+pub mod repo;
 /// Filesystem paths, operation locking, and build-failure marker I/O.
 pub mod state;
 /// Reconcile the on-disk plugin tree against config and lock.
