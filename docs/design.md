@@ -57,7 +57,7 @@ script-friendly behavior with reliable exit codes.
 | Principle | Description |
 |-----------|-------------|
 | Config-driven sync | `lazy.kdl` is the desired state for remote plugins; `lazylock.json` is the resolved snapshot that mutating commands sync first. |
-| Install concurrent, load serial | Git operations may run concurrently. Tmux option setting and plugin loading execute serially in declaration order. |
+| Prepare concurrent, apply serial | Prepare-phase git operations (clone, fetch, resolve, stage) run in parallel with bounded concurrency. Publish, build, lock mutation, and tmux loading execute serially in declaration order. |
 | URL-derived identity | Remote plugin IDs are derived from canonical source URLs, avoiding conflicts and manual naming. |
 | Zero magic options | `opt-prefix` defaults to empty. No automatic prefix inference or separator insertion. |
 | Compatibility by contract | Explicitly declare which TPM behaviors are supported and which are not. |
@@ -490,7 +490,30 @@ through scanning, mutation, and plugin loading. This eliminates TOCTOU races
 and prevents another writer from modifying plugin directories while init is
 loading them.
 
-### 7.2 Staging
+### 7.2 Bounded Prepare-Phase Concurrency
+
+All mutating operations that involve remote plugins split work into three phases:
+
+1. **Candidate selection** (serial) — filter plugins by target, policy, and
+   eligibility rules (pinned selectors, health, lock state).
+2. **Parallel prepare** — clone cache repos, fetch refs, resolve tracking
+   selectors, and materialize staging checkouts. At most
+   `options.concurrency` (default 16) jobs run concurrently via
+   `futures::stream::buffer_unordered`.
+3. **Serial apply** — publish staged checkouts, run build commands, update
+   failure markers, and mutate the in-memory lock — all in declaration order.
+
+Progress events may arrive out-of-order during the prepare phase. Terminal
+output and the detail log handle this correctly. Failure logs include the
+canonical plugin id and processing stage for filtering:
+
+```text
+== plugin id=github.com/owner/repo name=repo stage=fetching ==
+summary: git fetch origin failed
+clone_url: https://github.com/owner/repo.git
+```
+
+### 7.3 Staging
 
 All remote plugin revision switches are prepared in a staging directory first.
 To ensure the publish protocol can rely on same-filesystem `rename`, `plugins/`
@@ -501,7 +524,7 @@ and `.staging/` are under the same XDG data root:
 {data_dir}/.staging/
 ```
 
-### 7.3 Publish Protocol
+### 7.4 Publish Protocol
 
 #### Fresh Install
 
@@ -737,7 +760,7 @@ lazytmux/
 ### Phase 3: Polish
 
 - [ ] `migrate` command
-- [ ] Concurrent git operations (currently serial)
+- [x] Concurrent git operations (bounded prepare-phase concurrency, default 16)
 - [ ] `list --json` structured output
 - [ ] Crash recovery: stale staging cleanup on startup
 
