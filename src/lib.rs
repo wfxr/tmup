@@ -16,6 +16,8 @@ pub mod model;
 pub mod planner;
 /// High-level install, update, restore, clean, and list operations.
 pub mod plugin;
+/// Bounded concurrent prepare executor for remote plugin operations.
+pub mod prepare;
 /// Progress event types, reporter trait, and stream renderer.
 pub mod progress;
 /// Persistent repo cache management and staging preparation.
