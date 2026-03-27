@@ -40,6 +40,12 @@ fn parse_options(doc: &KdlDocument) -> Result<Options> {
         opts.auto_install = v.as_bool().context("auto-install must be a bool")?;
     }
 
+    if let Some(v) = children.get_arg("concurrency") {
+        let value = v.as_integer().context("concurrency must be an integer")?;
+        ensure!(value >= 1, "concurrency must be at least 1");
+        opts.concurrency = value as usize;
+    }
+
     Ok(opts)
 }
 

@@ -12,11 +12,13 @@ pub struct Config {
 pub struct Options {
     /// Automatically install missing plugins on tmux startup when true.
     pub auto_install: bool,
+    /// Maximum number of concurrent remote prepare jobs.
+    pub concurrency: usize,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { auto_install: true }
+        Self { auto_install: true, concurrency: 16 }
     }
 }
 

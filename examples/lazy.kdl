@@ -3,6 +3,7 @@
 
 options {
     auto-install #true
+    concurrency 16
 }
 
 // Simplest form: GitHub shorthand, track default branch
