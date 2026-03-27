@@ -159,3 +159,21 @@ fn rejects_relative_local_paths_after_expansion() {
     let err = parse_config(r#"plugin "./local-plugin" local=#true"#).unwrap_err();
     assert!(err.to_string().contains("must expand to an absolute path"), "{err}");
 }
+
+#[test]
+fn parses_concurrency_option() {
+    let cfg = parse_config("options { concurrency 8 }").unwrap();
+    assert_eq!(cfg.options.concurrency, 8);
+}
+
+#[test]
+fn defaults_concurrency_to_sixteen() {
+    let cfg = parse_config(r#"plugin "user/repo""#).unwrap();
+    assert_eq!(cfg.options.concurrency, 16);
+}
+
+#[test]
+fn rejects_zero_concurrency() {
+    let err = parse_config("options { concurrency 0 }").unwrap_err();
+    assert!(err.to_string().contains("concurrency must be at least 1"));
+}
