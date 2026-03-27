@@ -75,9 +75,9 @@ async fn restore_same_commit_preserves_build_artifacts() {
 }
 
 #[tokio::test]
-async fn restore_uses_cached_commit_without_recloning_remote() {
+async fn restore_errors_when_locked_commit_is_missing_from_cache_and_remote_disappears() {
     let dir = tempdir().unwrap();
-    let (bare, commit) = make_bare_repo(&dir.path().join("repo"));
+    let (bare, commit_a) = make_bare_repo(&dir.path().join("repo"));
     let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
     paths.ensure_dirs().unwrap();
 
@@ -89,27 +89,40 @@ async fn restore_uses_cached_commit_without_recloning_remote() {
         "example.com/test/plugin".into(),
         LockEntry {
             tracking: TrackingRecord { kind: "branch".into(), value: "main".into() },
-            commit: commit.clone(),
+            commit: commit_a.clone(),
             config_hash: None,
         },
     );
 
+    // Seed the cache and installation with commit_a.
     plugin::restore(&cfg, &lock, &paths, None, &NullReporter).await.unwrap();
     let target = paths.plugin_dir("example.com/test/plugin");
     assert!(paths.repo_cache_dir("example.com/test/plugin").exists());
 
-    // Remove both the installed checkout and the remote so the second restore
-    // must reconstruct the target from the persistent cache alone.
+    // Advance the remote after the cache has already been populated so the new
+    // commit is not present locally yet.
+    let commit_b = push_commit(&bare, "second");
+
+    // Advance the desired restore target to a commit that has never been fetched
+    // into cache, then remove both the installed checkout and the remote so the
+    // second restore cannot recover it.
+    lock.plugins.get_mut("example.com/test/plugin").unwrap().commit = commit_b;
     std::fs::remove_dir_all(&target).unwrap();
     std::fs::remove_dir_all(&bare).unwrap();
 
-    plugin::restore(&cfg, &lock, &paths, None, &NullReporter).await.unwrap();
-
-    assert!(paths.repo_cache_dir("example.com/test/plugin").exists());
-    assert_eq!(
-        lazytmux::git::head_commit_sync(&paths.plugin_dir("example.com/test/plugin")).unwrap(),
-        commit
+    let result = plugin::restore(&cfg, &lock, &paths, None, &NullReporter).await;
+    assert!(
+        result.is_err(),
+        "restore should error when the locked commit is not cached and fetch fails"
     );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("git fetch origin failed")
+            || err_msg.contains("No such file or directory"),
+        "error should mention fetch failure when remote disappears: {err_msg}"
+    );
+    let target = paths.plugin_dir("example.com/test/plugin");
+    assert!(!target.exists(), "failed restore must not leave a partial plugin directory");
 }
 
 // ---------------------------------------------------------------------------
@@ -149,6 +162,29 @@ async fn restore_build_failure_returns_error() {
     let markers = lazytmux::state::read_failure_markers(&paths.failures_root).unwrap();
     assert_eq!(markers.len(), 1);
     assert_eq!(markers[0].plugin_id, "example.com/test/plugin");
+}
+
+#[tokio::test]
+async fn install_build_failure_leaves_no_target_or_lock_entry() {
+    let dir = tempdir().unwrap();
+    let (bare, _commit) = make_bare_repo(&dir.path().join("repo"));
+
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let cfg = make_config(&clone_url, Some("exit 1"));
+    let mut lock = LockFile::new();
+
+    let result = plugin::install(&cfg, &mut lock, &paths, None, false, &NullReporter).await;
+    assert!(result.is_err(), "install must propagate build failure as Err");
+
+    let target = paths.plugin_dir("example.com/test/plugin");
+    assert!(!target.exists(), "fresh install failure should not leave a target directory");
+    assert!(
+        !lock.plugins.contains_key("example.com/test/plugin"),
+        "failed install must not write a lock entry for the plugin"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -218,6 +254,8 @@ async fn update_same_commit_noop_clears_failure_markers() {
     plugin::install(&cfg_ok, &mut lock, &paths, None, false, &NullReporter).await.unwrap();
     let target = paths.plugin_dir("example.com/test/plugin");
     assert!(target.exists());
+    assert_eq!(git(&["rev-parse", "HEAD"], &target), commit_a);
+    assert!(target.join("built.marker").exists(), "successful install should leave marker");
 
     // Step 2: push a new commit (commit_b) and attempt update with failing build.
     let commit_b = push_commit(&bare, "second");
@@ -225,6 +263,19 @@ async fn update_same_commit_noop_clears_failure_markers() {
 
     let result = plugin::update(&cfg_fail, &mut lock, &paths, None, &NullReporter).await;
     assert!(result.is_err(), "update with failing build should error");
+    assert_eq!(
+        git(&["rev-parse", "HEAD"], &target),
+        commit_a,
+        "failed staged build must leave the previously installed commit untouched"
+    );
+    assert!(
+        target.join("built.marker").exists(),
+        "failed staged build must not replace the existing target directory"
+    );
+    assert_eq!(
+        lock.plugins["example.com/test/plugin"].commit, commit_a,
+        "failed update must not advance the in-memory lock entry"
+    );
 
     // Failure marker should exist.
     let markers = lazytmux::state::read_failure_markers(&paths.failures_root).unwrap();
@@ -398,4 +449,25 @@ async fn install_repairs_healthy_repo_when_pinned_tag_differs() {
     assert_eq!(entry.tracking.kind, "tag");
     assert_eq!(entry.tracking.value, "v1.0.0");
     assert_eq!(git(&["rev-parse", "HEAD"], &target), entry.commit);
+}
+
+#[tokio::test]
+async fn install_build_runs_in_staging_before_swap() {
+    let dir = tempdir().unwrap();
+    let (bare, _commit) = make_bare_repo(&dir.path().join("repo"));
+
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let cfg = make_config(&clone_url, Some("pwd > .build-cwd"));
+    let mut lock = LockFile::new();
+
+    plugin::install(&cfg, &mut lock, &paths, None, false, &NullReporter).await.unwrap();
+
+    let target = paths.plugin_dir("example.com/test/plugin");
+    let cwd = std::fs::read_to_string(target.join(".build-cwd")).unwrap();
+
+    assert!(cwd.contains(".staging"), "Build should run inside staging: {cwd}");
+    assert!(!cwd.contains("/plugins/"), "Staging path should be distinct from plugin root: {cwd}");
 }

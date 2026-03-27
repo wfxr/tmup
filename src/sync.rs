@@ -441,6 +441,7 @@ async fn reconcile_plugin(
             Ok(())
         }
         Err(err) => {
+            let _ = std::fs::remove_dir_all(&staging_dir);
             record_failure_marker(paths, &id, &entry.commit, spec, &err)?;
             Err(err)
         }

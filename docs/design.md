@@ -8,10 +8,10 @@ install/update, no lock file, and no reproducible state management.
 
 lazy.tmux is a Rust-based tmux plugin manager inspired by lazy.nvim's design
 philosophy: concise configuration, concurrent operations, reproducible
-environments, and safe publish/rollback semantics.
+environments, and safe staged publish semantics.
 
 The project focuses exclusively on CLI-driven workflows. The core value is
-config-driven sync, safe publish and rollback, lock-through-load init, and
+config-driven sync, safe staged publish, lock-through-load init, and
 script-friendly behavior with reliable exit codes.
 
 ---
@@ -61,7 +61,7 @@ script-friendly behavior with reliable exit codes.
 | URL-derived identity | Remote plugin IDs are derived from canonical source URLs, avoiding conflicts and manual naming. |
 | Zero magic options | `opt-prefix` defaults to empty. No automatic prefix inference or separator insertion. |
 | Compatibility by contract | Explicitly declare which TPM behaviors are supported and which are not. |
-| Safe publish | New revisions are prepared in a staging directory, then atomically published with rollback capability. |
+| Safe publish | New revisions are prepared in a staging directory, built there, and only then swapped into place. |
 | Lock-through-load | `init` holds the global lock from entry through loading, so no concurrent writer can modify state mid-init. |
 | Partial failure is an error | Commands that encounter per-plugin failures still publish successful results but return a non-zero exit code. |
 
@@ -201,7 +201,7 @@ Rules:
 | `tag` | string | -- | Pinned release selector; `update` skips by default |
 | `commit` | string | -- | Fixed commit; `update` skips |
 | `local` | bool | `false` | Local path plugin, loaded in-place |
-| `build` | string | -- | Executed in the final plugin directory after publish |
+| `build` | string | -- | Executed in the staged plugin directory before publish |
 | `opt` | child node | -- | Becomes `set -g @{opt-prefix}{key} "{value}"` |
 
 ### 4.3 Global Options
@@ -326,9 +326,11 @@ ones and writing the lock snapshot.
 - Requires a lock entry; plugins without one are skipped.
 - Missing plugins are re-installed from the lock.
 - If the revision actually changes and the plugin declares a `build`, the
-  build runs after restore.
+  build runs in staging before publish.
 - Build failures during restore write failure markers, matching the semantics
   of install and update.
+- Restore reuses cached objects when possible, but no longer promises offline
+  recovery if the desired revision is not already available locally.
 
 ### 5.7 `clean`
 
@@ -385,7 +387,7 @@ Last-result semantics:
 
 Examples:
 
-- Update build failure with rollback: `state=installed`, `last-result=build-failed`
+- Update build failure: `state=installed`, `last-result=build-failed`
 - Fresh install build failure: `state=missing`, `last-result=build-failed`
 
 `list` is read-only. If the lock snapshot is stale relative to `lazy.kdl`,
@@ -440,6 +442,8 @@ it prints a warning before the table and does not mutate `lazylock.json`.
   not delete their on-disk repositories.
 - On partial failure: successfully published plugins update the lock; failed
   ones retain their previous entries.
+- Cache accelerates future sync/install/update/restore operations, but does not
+  guarantee offline reconstruction of arbitrary historical revisions.
 
 ### 6.3 Write Strategy
 
@@ -489,13 +493,12 @@ loading them.
 ### 7.2 Staging
 
 All remote plugin revision switches are prepared in a staging directory first.
-To ensure the publish protocol can rely on same-filesystem `rename`, `plugins/`,
-`.staging/`, and `.backup/` are under the same XDG data root:
+To ensure the publish protocol can rely on same-filesystem `rename`, `plugins/`
+and `.staging/` are under the same XDG data root:
 
 ```text
 {data_dir}/plugins/
 {data_dir}/.staging/
-{data_dir}/.backup/
 ```
 
 ### 7.3 Publish Protocol
@@ -504,19 +507,20 @@ To ensure the publish protocol can rely on same-filesystem `rename`, `plugins/`,
 
 When the target directory does not exist:
 
-1. `rename(staging, target)`
-2. Execute `build` in the target directory (if declared and revision changed)
-3. On build failure: remove the failed target directory
+1. Execute `build` in `staging` (if declared).
+2. `rename(staging, target)`.
+3. On build failure: discard staging and leave the target missing.
 
 #### Replace Existing Plugin
 
 When the target directory already exists:
 
-1. `rename(target, backup)`
-2. `rename(staging, target)`
-3. Execute `build` in the target directory (if declared and revision changed)
-4. On success: remove backup
-5. On failure: remove failed target, `rename(backup, target)` (rollback)
+1. Execute `build` in `staging` (if declared).
+2. Remove the existing target directory.
+3. `rename(staging, target)`.
+4. On build failure: discard staging and leave the existing target untouched.
+5. If the final filesystem swap itself fails, automatic rollback is not
+   guaranteed.
 
 This is not a lock-free atomic operation, but under the global operation lock
 it is safe for lazy.tmux's own reads and writes.
@@ -531,7 +535,7 @@ it is safe for lazy.tmux's own reads and writes.
 
 ### 7.5 Build Failure Markers
 
-When a `build` command fails in the final directory, lazy.tmux records a
+When a `build` command fails in staging, lazy.tmux records a
 failure marker containing:
 
 - Plugin ID
@@ -632,7 +636,7 @@ setup, option application, and plugin loading within the `init` command.
   |   +-- github.com/catppuccin/tmux/
   |   +-- gitlab.com/user/plugin/
   +-- .staging/                         # staging area (same filesystem as plugins)
-  +-- .backup/                          # publish rollback area (same filesystem)
+  +-- .repos/                           # persistent remote cache
 
 ~/.local/state/lazytmux/
   +-- operations.lock                   # global operation lock
@@ -696,7 +700,7 @@ lazytmux/
 |   +-- sync.rs              # Incremental sync behavior
 |   +-- sync_fingerprint.rs  # Lock-affecting config fingerprinting
 |   +-- loader.rs            # Load plan generation and ordering
-|   +-- publish.rs           # Publish protocol: fresh install, replace, rollback
+|   +-- publish.rs           # Publish protocol: fresh install and replace
 |   +-- state.rs             # Failure markers, operation lock, paths
 |   +-- cli_help.rs          # CLI help output
 |   +-- cli_list.rs          # CLI list output formatting
@@ -715,7 +719,7 @@ lazytmux/
 - [x] URL -> ID path derivation
 - [x] Planner: config + lock + installed state -> target state
 - [x] Init planner: config + lock + disk -> write plan
-- [x] Staging + publish protocol with rollback
+- [x] Staging + build-before-swap publish protocol
 - [x] Lock file generation, reading, and atomic update
 - [x] Global operation lock
 - [x] Build failure marker mechanism

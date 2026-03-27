@@ -5,13 +5,42 @@ use std::process::Stdio;
 use anyhow::{Context, Result, bail};
 use tokio::process::Command;
 
+/// Object filter applied to clone/fetch operations when the remote supports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectFilter {
+    /// Delay blob transfer until content is needed.
+    BlobNone,
+}
+
+impl ObjectFilter {
+    fn as_filter_spec(self) -> &'static str {
+        match self {
+            Self::BlobNone => "blob:none",
+        }
+    }
+}
+
 /// Clone a bare git repository into the cache directory.
 pub async fn clone_bare_repo(url: &str, dest: &Path) -> Result<()> {
+    clone_bare_repo_filtered(url, dest, None).await
+}
+
+/// Clone a bare git repository into the cache directory with an optional filter.
+pub async fn clone_bare_repo_filtered(
+    url: &str,
+    dest: &Path,
+    filter: Option<ObjectFilter>,
+) -> Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
-    let output = Command::new("git")
-        .args(["clone", "--bare", url])
+    let mut command = Command::new("git");
+    command.args(["clone", "--bare"]);
+    if let Some(filter) = filter {
+        command.arg(format!("--filter={}", filter.as_filter_spec()));
+    }
+    let output = command
+        .arg(url)
         .arg(dest)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -48,8 +77,20 @@ pub async fn clone_local_repo(source: &Path, dest: &Path) -> Result<()> {
 
 /// Fetch updates from origin with the provided refspecs.
 pub async fn fetch_origin(repo: &Path, refspecs: &[String]) -> Result<()> {
+    fetch_origin_filtered(repo, refspecs, None).await
+}
+
+/// Fetch updates from origin with the provided refspecs and optional object filter.
+pub async fn fetch_origin_filtered(
+    repo: &Path,
+    refspecs: &[String],
+    filter: Option<ObjectFilter>,
+) -> Result<()> {
     let mut command = Command::new("git");
     command.args(["fetch", "origin", "--prune", "--force"]);
+    if let Some(filter) = filter {
+        command.arg(format!("--filter={}", filter.as_filter_spec()));
+    }
     command.args(refspecs);
     let output = command
         .current_dir(repo)
@@ -239,78 +280,49 @@ pub fn run_build(dir: &Path, command: &str) -> Result<std::process::Output> {
     Ok(output)
 }
 
-/// Publish protocol: fresh install (no existing target).
-///
-/// 1. rename(staging, target)
-/// 2. run build in target (if provided)
-/// 3. on build failure: remove target
-pub fn publish_fresh_install(staging: &Path, target: &Path, build: Option<&str>) -> Result<()> {
-    // Ensure parent directories exist
+/// Publish protocol: fresh install.
+fn finalize_publish(staging: &Path, target: &Path) -> Result<()> {
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)?;
     }
-
     fs::rename(staging, target).with_context(|| {
         format!("failed to rename staging -> target: {} -> {}", staging.display(), target.display())
     })?;
+    Ok(())
+}
 
+/// Publish protocol: fresh install (build runs in staging before swap).
+pub fn publish_fresh_install(staging: &Path, target: &Path, build: Option<&str>) -> Result<()> {
     if let Some(cmd) = build {
-        let output = run_build(target, cmd)?;
+        let output = run_build(staging, cmd)?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            // Clean up failed target
-            let _ = fs::remove_dir_all(target);
-            bail!("build failed in {}: {stderr}", target.display());
+            bail!("build failed in {}: {stderr}", staging.display());
         }
     }
-
-    Ok(())
+    finalize_publish(staging, target)
 }
 
 /// Publish protocol: replace existing plugin.
 ///
-/// 1. rename(target, backup)
-/// 2. rename(staging, target)
-/// 3. run build in target (if provided)
-/// 4. success: remove backup
-/// 5. failure: remove failed target, rename(backup, target)
+/// Build runs in staging before touching the live target.
 pub fn publish_replace(
     staging: &Path,
     target: &Path,
-    backup: &Path,
+    _backup: &Path,
     build: Option<&str>,
 ) -> Result<()> {
-    // Ensure backup parent exists
-    if let Some(parent) = backup.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    // Step 1: target -> backup
-    fs::rename(target, backup).with_context(|| {
-        format!("failed to backup: {} -> {}", target.display(), backup.display())
-    })?;
-
-    // Step 2: staging -> target
-    if let Err(e) = fs::rename(staging, target) {
-        // Rollback: restore backup
-        let _ = fs::rename(backup, target);
-        return Err(e).context("failed to publish staging to target");
-    }
-
-    // Step 3: run build
     if let Some(cmd) = build {
-        let output = run_build(target, cmd)?;
+        let output = run_build(staging, cmd)?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            // Rollback: remove failed target, restore backup
-            let _ = fs::remove_dir_all(target);
-            let _ = fs::rename(backup, target);
-            bail!("build failed, rolled back: {stderr}");
+            bail!("build failed in {}: {stderr}", staging.display());
         }
     }
 
-    // Success: remove backup
-    let _ = fs::remove_dir_all(backup);
-
-    Ok(())
+    if target.exists() {
+        fs::remove_dir_all(target)
+            .with_context(|| format!("failed to remove existing target: {}", target.display()))?;
+    }
+    finalize_publish(staging, target)
 }

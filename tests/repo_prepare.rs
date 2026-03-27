@@ -139,3 +139,64 @@ async fn prepare_tracking_ignores_remote_head_update_failures() {
 
     assert_eq!(git::head_commit(&prepared.staging_dir).await.unwrap(), commit);
 }
+
+#[tokio::test]
+async fn resolve_tracking_revision_exposes_commit_without_staging() {
+    let dir = tempdir().unwrap();
+    let (bare, commit) = make_bare_repo(&dir.path().join("repo"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+    let clone_url = format!("file://{}", bare.display());
+
+    let revision = repo::resolve_tracking_revision(
+        &paths,
+        "example.com/test/plugin",
+        &clone_url,
+        &Tracking::DefaultBranch,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(revision.commit, commit);
+    assert_eq!(revision.tracking.as_ref().unwrap().kind, "default-branch");
+}
+
+#[tokio::test]
+async fn materialize_staging_at_revision_reuses_staging_and_cleans_old() {
+    let dir = tempdir().unwrap();
+    let (bare, commit) = make_bare_repo(&dir.path().join("repo"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+    let clone_url = format!("file://{}", bare.display());
+
+    let revision = repo::resolve_tracking_revision(
+        &paths,
+        "example.com/test/plugin",
+        &clone_url,
+        &Tracking::DefaultBranch,
+    )
+    .await
+    .unwrap();
+
+    let first = repo::materialize_staging_at_revision(
+        &paths,
+        "example.com/test/plugin",
+        &clone_url,
+        &revision,
+    )
+    .await
+    .unwrap();
+    std::fs::write(first.staging_dir.join("marker"), "stale").unwrap();
+
+    let second = repo::materialize_staging_at_revision(
+        &paths,
+        "example.com/test/plugin",
+        &clone_url,
+        &revision,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(git::head_commit(&second.staging_dir).await.unwrap(), commit);
+    assert!(!second.staging_dir.join("marker").exists(), "stale staging content should be cleared");
+}

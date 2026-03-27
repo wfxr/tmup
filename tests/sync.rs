@@ -1,5 +1,7 @@
 mod utils;
-use lazytmux::lockfile::{LockEntry, LockFile, config_fingerprint, remote_plugin_config_hash};
+use lazytmux::lockfile::{
+    LockEntry, LockFile, config_fingerprint, read_lockfile, remote_plugin_config_hash,
+};
 use lazytmux::model::{Config, Options, PluginSource, PluginSpec, Tracking};
 use lazytmux::progress::NullReporter;
 use lazytmux::state::{FailureMarker, Paths, build_command_hash};
@@ -240,6 +242,95 @@ async fn sync_creates_repo_cache_for_remote_plugin() {
 
     assert!(paths.repo_cache_dir("example.com/test/plugin").exists());
     assert_eq!(plugin_head(&paths, "example.com/test/plugin"), commit);
+}
+
+#[tokio::test]
+async fn sync_failed_rebuild_preserves_existing_target_and_lock_snapshot() {
+    let dir = tempdir().unwrap();
+    let (bare, commit) = make_bare_repo(&dir.path().join("repo"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let plugin_id = "example.com/test/plugin";
+    let old_plugin = make_plugin(
+        "test/plugin",
+        plugin_id,
+        &clone_url,
+        Tracking::DefaultBranch,
+        Some("touch built-v1"),
+    );
+    let new_plugin = make_plugin(
+        "test/plugin",
+        plugin_id,
+        &clone_url,
+        Tracking::DefaultBranch,
+        Some(": > staged-only.marker; exit 1"),
+    );
+
+    let cfg_old = make_config(vec![old_plugin.clone()]);
+    let cfg_new = make_config(vec![new_plugin]);
+    let mut lock = LockFile::new();
+
+    sync::run_and_write(
+        &cfg_old,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::SYNC,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
+
+    let target = paths.plugin_dir(plugin_id);
+    let previous_hash = lock.plugins[plugin_id].config_hash.clone();
+    assert_eq!(plugin_head(&paths, plugin_id), commit);
+    assert!(target.join("built-v1").exists(), "initial sync should publish built artifacts");
+
+    let outcome = sync::run_and_write(
+        &cfg_new,
+        &mut lock,
+        &paths,
+        None,
+        SyncPolicy::SYNC,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        outcome.plugin_failures.len(),
+        1,
+        "rebuild failure should surface as plugin failure"
+    );
+    assert_eq!(
+        plugin_head(&paths, plugin_id),
+        commit,
+        "failed staged build must leave the previously installed commit untouched"
+    );
+    assert!(
+        target.join("built-v1").exists(),
+        "failed staged build must not replace the existing target directory"
+    );
+    assert!(
+        !target.join("staged-only.marker").exists(),
+        "staging-only build outputs must not leak into the installed target"
+    );
+    assert_eq!(
+        lock.plugins[plugin_id].config_hash, previous_hash,
+        "failed rebuild must not advance the in-memory lock entry"
+    );
+    assert!(
+        !paths.staging_dir(plugin_id).exists(),
+        "failed sync should clean up the temporary staging checkout"
+    );
+
+    let persisted = read_lockfile(&paths.lockfile_path).unwrap();
+    assert_eq!(persisted.plugins[plugin_id].commit, commit);
+    assert_eq!(persisted.plugins[plugin_id].config_hash, previous_hash);
 }
 
 #[tokio::test]

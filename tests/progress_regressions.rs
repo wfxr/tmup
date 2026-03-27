@@ -374,6 +374,58 @@ fn init_ui_child_stops_after_sync_failure() {
 }
 
 #[test]
+fn init_ui_child_stops_when_remote_is_missing_during_fetch() {
+    let dir = tempdir().unwrap();
+    let bare = make_remote_repo(dir.path());
+    let gitconfig = write_git_rewrite_config(dir.path());
+    // Remove the bare repo to simulate remote disappearing after cache population.
+    std::fs::remove_dir_all(&bare).unwrap();
+
+    let config_dir = dir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let config_path = config_dir.join("lazy.kdl");
+    std::fs::write(&config_path, r#"plugin "https://example.com/test/plugin.git""#).unwrap();
+
+    let output = Command::cargo_bin("lazytmux")
+        .unwrap()
+        .args([
+            "init",
+            "--ui-child",
+            "--wait-channel",
+            "test-channel",
+            "--config-path",
+            config_path.to_str().unwrap(),
+            "--data-root",
+            dir.path().join("data").to_str().unwrap(),
+            "--state-root",
+            dir.path().join("state").to_str().unwrap(),
+        ])
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", gitconfig)
+        .env("HOME", dir.path())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "init should fail when fetch cannot reach remote");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Fetching"),
+        "stderr should show sync started even when remote is missing, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Failed operation")
+            || stderr.contains("git clone --bare failed")
+            || stderr.contains("failed to run git fetch origin")
+            || stderr.contains("No such file or directory"),
+        "stderr should expose the clone/fetch failure, got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("Loading tmux applying load plan"),
+        "init should skip tmux loading when sync cannot fetch the remote, got:\n{stderr}"
+    );
+}
+
+#[test]
 fn init_parent_schedules_bootstrap_in_background() {
     let dir = tempdir().unwrap();
     let config_dir = dir.path().join("config/tmux");

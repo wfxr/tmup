@@ -7,6 +7,8 @@ use crate::model::Tracking;
 use crate::state::Paths;
 use crate::{git, short_hash};
 
+const CACHE_FILTER: Option<git::ObjectFilter> = Some(git::ObjectFilter::BlobNone);
+
 /// A prepared working repository cloned from the persistent cache.
 pub struct PreparedRepo {
     /// Staging checkout ready for further operations.
@@ -14,6 +16,15 @@ pub struct PreparedRepo {
     /// Resolved commit checked out in staging.
     pub commit: String,
     /// Tracking metadata resolved for floating selectors.
+    pub tracking: Option<TrackingRecord>,
+}
+
+/// A revision that has been resolved in the persistent cache.
+#[derive(Debug, Clone)]
+pub struct ResolvedRevision {
+    /// Resolved commit to materialize.
+    pub commit: String,
+    /// Tracking metadata for floating selectors.
     pub tracking: Option<TrackingRecord>,
 }
 
@@ -27,7 +38,7 @@ pub async fn ensure_cache_repo(paths: &Paths, plugin_id: &str, clone_url: &str) 
     if cache_dir.exists() {
         std::fs::remove_dir_all(&cache_dir)?;
     }
-    git::clone_bare_repo(clone_url, &cache_dir).await?;
+    git::clone_bare_repo_filtered(clone_url, &cache_dir, CACHE_FILTER).await?;
     Ok(true)
 }
 
@@ -44,7 +55,7 @@ pub async fn fetch_for_tracking(repo: &Path, tracking: &Tracking) -> Result<()> 
         ],
         Tracking::DefaultBranch => vec!["refs/heads/*:refs/remotes/origin/*".to_string()],
     };
-    git::fetch_origin(repo, &refspecs).await?;
+    git::fetch_origin_filtered(repo, &refspecs, CACHE_FILTER).await?;
     if matches!(tracking, Tracking::DefaultBranch) {
         git::set_remote_head(repo, "origin").await?;
     }
@@ -104,6 +115,63 @@ pub fn describe_tracking_resolution(
     }
 }
 
+/// Resolve a tracking spec against the persistent cache without materializing staging.
+pub async fn resolve_tracking_revision(
+    paths: &Paths,
+    plugin_id: &str,
+    clone_url: &str,
+    tracking: &Tracking,
+) -> Result<ResolvedRevision> {
+    ensure_cache_repo(paths, plugin_id, clone_url).await?;
+    let cache_dir = paths.repo_cache_dir(plugin_id);
+    fetch_for_tracking(&cache_dir, tracking).await?;
+    let (commit, tracking_record) = resolve_tracking(&cache_dir, tracking).await?;
+    Ok(ResolvedRevision { commit, tracking: Some(tracking_record) })
+}
+
+/// Ensure a locked commit is available in the persistent cache without staging.
+pub async fn ensure_locked_revision(
+    paths: &Paths,
+    plugin_id: &str,
+    clone_url: &str,
+    commit: &str,
+) -> Result<ResolvedRevision> {
+    ensure_cache_repo(paths, plugin_id, clone_url).await?;
+    let cache_dir = paths.repo_cache_dir(plugin_id);
+    if !git::has_commit(&cache_dir, commit).await? {
+        git::fetch_origin_filtered(
+            &cache_dir,
+            &[
+                "refs/heads/*:refs/remotes/origin/*".to_string(),
+                "refs/tags/*:refs/tags/*".to_string(),
+            ],
+            CACHE_FILTER,
+        )
+        .await?;
+    }
+    Ok(ResolvedRevision { commit: commit.to_string(), tracking: None })
+}
+
+/// Materialize a staging checkout for a resolved revision.
+pub async fn materialize_staging_at_revision(
+    paths: &Paths,
+    plugin_id: &str,
+    clone_url: &str,
+    revision: &ResolvedRevision,
+) -> Result<PreparedRepo> {
+    let staging_dir = materialize_staging(paths, plugin_id).await?;
+    git::set_remote_url(&staging_dir, "origin", clone_url).await?;
+    if let Err(err) = git::checkout(&staging_dir, &revision.commit).await {
+        let _ = std::fs::remove_dir_all(&staging_dir);
+        return Err(err);
+    }
+    Ok(PreparedRepo {
+        staging_dir,
+        commit: revision.commit.clone(),
+        tracking: revision.tracking.clone(),
+    })
+}
+
 /// Prepare a staging repo by resolving the floating tracking selector from cache.
 pub async fn prepare_tracking_staging(
     paths: &Paths,
@@ -111,17 +179,8 @@ pub async fn prepare_tracking_staging(
     clone_url: &str,
     tracking: &Tracking,
 ) -> Result<PreparedRepo> {
-    ensure_cache_repo(paths, plugin_id, clone_url).await?;
-    let cache_dir = paths.repo_cache_dir(plugin_id);
-    fetch_for_tracking(&cache_dir, tracking).await?;
-    let (commit, tracking_record) = resolve_tracking(&cache_dir, tracking).await?;
-    let staging_dir = materialize_staging(paths, plugin_id).await?;
-    git::set_remote_url(&staging_dir, "origin", clone_url).await?;
-    if let Err(err) = git::checkout(&staging_dir, &commit).await {
-        let _ = std::fs::remove_dir_all(&staging_dir);
-        return Err(err);
-    }
-    Ok(PreparedRepo { staging_dir, commit, tracking: Some(tracking_record) })
+    let revision = resolve_tracking_revision(paths, plugin_id, clone_url, tracking).await?;
+    materialize_staging_at_revision(paths, plugin_id, clone_url, &revision).await
 }
 
 /// Prepare a staging repo for a specific locked commit.
@@ -131,23 +190,6 @@ pub async fn prepare_locked_staging(
     clone_url: &str,
     commit: &str,
 ) -> Result<PreparedRepo> {
-    ensure_cache_repo(paths, plugin_id, clone_url).await?;
-    let cache_dir = paths.repo_cache_dir(plugin_id);
-    if !git::has_commit(&cache_dir, commit).await? {
-        git::fetch_origin(
-            &cache_dir,
-            &[
-                "refs/heads/*:refs/remotes/origin/*".to_string(),
-                "refs/tags/*:refs/tags/*".to_string(),
-            ],
-        )
-        .await?;
-    }
-    let staging_dir = materialize_staging(paths, plugin_id).await?;
-    git::set_remote_url(&staging_dir, "origin", clone_url).await?;
-    if let Err(err) = git::checkout(&staging_dir, commit).await {
-        let _ = std::fs::remove_dir_all(&staging_dir);
-        return Err(err);
-    }
-    Ok(PreparedRepo { staging_dir, commit: commit.to_string(), tracking: None })
+    let revision = ensure_locked_revision(paths, plugin_id, clone_url, commit).await?;
+    materialize_staging_at_revision(paths, plugin_id, clone_url, &revision).await
 }

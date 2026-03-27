@@ -45,7 +45,7 @@ fn fresh_install_removes_target_on_build_failure() {
 }
 
 #[test]
-fn replace_moves_old_to_backup_and_staging_to_target() {
+fn replace_swaps_staging_into_target() {
     let dir = tempdir().unwrap();
     let staging = dir.path().join("staging/plugin");
     let target = dir.path().join("plugins/github.com/user/repo");
@@ -62,13 +62,13 @@ fn replace_moves_old_to_backup_and_staging_to_target() {
     publish_replace(&staging, &target, &backup, None).unwrap();
 
     assert!(!staging.exists(), "staging should be removed");
-    assert!(!backup.exists(), "backup should be cleaned up after success");
+    assert!(!backup.exists(), "backup should remain unused");
     assert!(target.join("new.txt").exists(), "new content should be in target");
     assert!(!target.join("old.txt").exists(), "old content should be gone");
 }
 
 #[test]
-fn replace_rolls_back_when_build_fails() {
+fn replace_build_failure_leaves_existing_target_untouched() {
     let dir = tempdir().unwrap();
     let staging = dir.path().join("staging/plugin");
     let target = dir.path().join("plugins/github.com/user/repo");
@@ -85,10 +85,10 @@ fn replace_rolls_back_when_build_fails() {
     let result = publish_replace(&staging, &target, &backup, Some("exit 1"));
     assert!(result.is_err());
 
-    // Old content should be restored
-    assert!(target.join("old.txt").exists(), "old content should be restored");
+    // Old content should remain because build fails before publish touches target.
+    assert!(target.join("old.txt").exists(), "old content should remain installed");
     assert!(!target.join("new.txt").exists(), "new content should not remain");
-    assert!(!backup.exists(), "backup should be cleaned up after rollback");
+    assert!(!backup.exists(), "backup should remain unused");
 }
 
 #[test]
