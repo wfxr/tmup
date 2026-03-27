@@ -8,7 +8,7 @@ use crate::lockfile::{
     write_lockfile_atomic,
 };
 use crate::model::{Config, PluginSource, PluginSpec, Tracking};
-use crate::progress::{self, ProgressEvent, ProgressReporter, Stage};
+use crate::progress::{ProgressEvent, ProgressReporter, Stage};
 use crate::state::{self, FailureMarker, Paths, build_command_hash, timestamp_now};
 use crate::{git, planner, plugin, prepare, repo, short_hash};
 
@@ -173,34 +173,30 @@ pub async fn run(
                 if let Err(err) =
                     reconcile_plugin(spec, lock, paths, mode, resolved, reporter).await
                 {
-                    let (summary, detail) = progress::summarize_error(&err);
-                    reporter.report(ProgressEvent::PluginFailed {
+                    outcome.plugin_failures.push(plugin::report_plugin_failure(
+                        reporter,
                         id,
                         name,
-                        stage: Some(Stage::Applying),
-                        summary,
-                        detail,
-                        context: vec![
+                        Stage::Applying,
+                        &err,
+                        vec![
                             ("clone_url", clone_url.clone()),
                             ("tracking", tracking.clone()),
                             ("resolved_commit", resolved_commit),
                             ("target_dir", paths.plugin_dir(id).display().to_string()),
                         ],
-                    });
-                    outcome.plugin_failures.push(format!("{id}: {err}"));
+                    ));
                 }
             }
             Err(err) => {
-                let (summary, detail) = progress::summarize_error(&err);
-                reporter.report(ProgressEvent::PluginFailed {
+                outcome.plugin_failures.push(plugin::report_plugin_failure(
+                    reporter,
                     id,
                     name,
-                    stage: Some(Stage::Fetching),
-                    summary,
-                    detail,
-                    context: vec![("clone_url", clone_url.clone()), ("tracking", tracking.clone())],
-                });
-                outcome.plugin_failures.push(format!("{id}: {err}"));
+                    Stage::Fetching,
+                    &err,
+                    vec![("clone_url", clone_url.clone()), ("tracking", tracking.clone())],
+                ));
             }
         }
     }

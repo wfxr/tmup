@@ -167,6 +167,12 @@ fn parses_concurrency_option() {
 }
 
 #[test]
+fn accepts_concurrency_one() {
+    let cfg = parse_config("options { concurrency 1 }").unwrap();
+    assert_eq!(cfg.options.concurrency, 1);
+}
+
+#[test]
 fn defaults_concurrency_to_sixteen() {
     let cfg = parse_config(r#"plugin "user/repo""#).unwrap();
     assert_eq!(cfg.options.concurrency, 16);
@@ -184,4 +190,16 @@ fn rejects_too_large_concurrency() {
     let input = format!("options {{ concurrency {too_large} }}");
     let err = parse_config(&input).unwrap_err();
     assert!(err.to_string().contains("concurrency is too large for this platform"), "{err}");
+}
+
+#[test]
+fn rejects_non_integer_concurrency_string() {
+    let err = parse_config(r#"options { concurrency "abc" }"#).unwrap_err();
+    assert!(err.to_string().contains("concurrency must be an integer"), "{err}");
+}
+
+#[test]
+fn rejects_non_integer_concurrency_float() {
+    let err = parse_config("options { concurrency 3.14 }").unwrap_err();
+    assert!(err.to_string().contains("concurrency must be an integer"), "{err}");
 }

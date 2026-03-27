@@ -1025,3 +1025,106 @@ async fn concurrent_sync_partial_failure_preserves_successes() {
     assert_eq!(lock.plugins["example.com/test/a"].commit, commit_a);
     assert!(!lock.plugins.contains_key("example.com/test/bad"));
 }
+
+#[tokio::test]
+async fn sync_lockfile_is_identical_for_serial_and_parallel_prepare() {
+    let dir = tempdir().unwrap();
+    let (bare_a, _commit_a) = make_bare_repo(&dir.path().join("repo-a"));
+    let (bare_b, _commit_b) = make_bare_repo(&dir.path().join("repo-b"));
+
+    let url_a = format!("file://{}", bare_a.display());
+    let url_b = format!("file://{}", bare_b.display());
+    let base_cfg = make_config(vec![
+        make_plugin("test/a", "example.com/test/a", &url_a, Tracking::DefaultBranch, None),
+        make_plugin("test/b", "example.com/test/b", &url_b, Tracking::DefaultBranch, None),
+    ]);
+
+    let serial_paths =
+        Paths::for_test(dir.path().join("data-serial"), dir.path().join("state-serial"));
+    serial_paths.ensure_dirs().unwrap();
+    let mut serial_cfg = base_cfg.clone();
+    serial_cfg.options.concurrency = 1;
+    let mut serial_lock_state = LockFile::new();
+    let serial_outcome = sync::run_and_write(
+        &serial_cfg,
+        &mut serial_lock_state,
+        &serial_paths,
+        None,
+        SyncPolicy::SYNC,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
+    assert!(
+        serial_outcome.is_clean(),
+        "unexpected serial sync failures: {:?}",
+        serial_outcome.plugin_failures
+    );
+    let serial_lock = read_lockfile(&serial_paths.lockfile_path).unwrap();
+
+    let parallel_paths =
+        Paths::for_test(dir.path().join("data-parallel"), dir.path().join("state-parallel"));
+    parallel_paths.ensure_dirs().unwrap();
+    let mut parallel_cfg = base_cfg.clone();
+    parallel_cfg.options.concurrency = 2;
+    let mut parallel_lock_state = LockFile::new();
+    let parallel_outcome = sync::run_and_write(
+        &parallel_cfg,
+        &mut parallel_lock_state,
+        &parallel_paths,
+        None,
+        SyncPolicy::SYNC,
+        SyncMode::Normal,
+        &NullReporter,
+    )
+    .await
+    .unwrap();
+    assert!(
+        parallel_outcome.is_clean(),
+        "unexpected parallel sync failures: {:?}",
+        parallel_outcome.plugin_failures
+    );
+    let parallel_lock = read_lockfile(&parallel_paths.lockfile_path).unwrap();
+    assert_eq!(serial_lock, parallel_lock, "lockfile contents must be stable across concurrency");
+}
+
+#[tokio::test]
+async fn concurrent_sync_all_prepare_failures_report_all_and_write_no_entries() {
+    let dir = tempdir().unwrap();
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let mut cfg = make_config(vec![
+        make_plugin(
+            "test/missing-a",
+            "example.com/test/missing-a",
+            "file:///definitely/missing/repo-a.git",
+            Tracking::DefaultBranch,
+            None,
+        ),
+        make_plugin(
+            "test/missing-b",
+            "example.com/test/missing-b",
+            "file:///definitely/missing/repo-b.git",
+            Tracking::DefaultBranch,
+            None,
+        ),
+    ]);
+    cfg.options.concurrency = 2;
+
+    let mut lock = LockFile::new();
+    let outcome =
+        sync::run(&cfg, &mut lock, &paths, None, SyncPolicy::SYNC, SyncMode::Normal, &NullReporter)
+            .await
+            .unwrap();
+
+    assert!(!outcome.is_clean(), "expected aggregated plugin failures");
+    assert_eq!(outcome.plugin_failures.len(), 2);
+    assert!(outcome.plugin_failures.iter().any(|f| f.contains("example.com/test/missing-a")));
+    assert!(outcome.plugin_failures.iter().any(|f| f.contains("example.com/test/missing-b")));
+    assert!(
+        lock.plugins.is_empty(),
+        "sync must not write successful lock entries when every plugin prepare fails"
+    );
+}
