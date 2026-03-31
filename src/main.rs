@@ -4,18 +4,18 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use lazytmux::planner::{BuildStatus, PluginState, PluginStatus};
-use lazytmux::progress::{self, NullReporter, OperationStage, ProgressEvent, ProgressReporter};
-use lazytmux::state::{OperationLock, OperationLockGuard, Paths};
-use lazytmux::sync::{self, SyncMode, SyncPolicy};
-use lazytmux::{config, loader, lockfile, plugin, termui, tmux};
 use owo_colors::OwoColorize;
 use tabled::builder::Builder;
 use tabled::settings::object::Segment;
 use tabled::settings::{Alignment, Modify, Style};
+use tmup::planner::{BuildStatus, PluginState, PluginStatus};
+use tmup::progress::{self, NullReporter, OperationStage, ProgressEvent, ProgressReporter};
+use tmup::state::{OperationLock, OperationLockGuard, Paths};
+use tmup::sync::{self, SyncMode, SyncPolicy};
+use tmup::{config, loader, lockfile, plugin, termui, tmux};
 
 #[derive(Debug, Parser)]
-#[command(name = "lazytmux", about = "Modern tmux plugin manager")]
+#[command(name = "tmup", about = "Modern tmux plugin manager")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -100,7 +100,7 @@ async fn main() -> ExitCode {
         Err(e) => {
             // Errors already shown by the progress reporter are suppressed here.
             if !progress::is_reported_error(&e) {
-                eprintln!("lazytmux: {e:#}");
+                eprintln!("tmup: {e:#}");
             }
             ExitCode::FAILURE
         }
@@ -114,30 +114,30 @@ fn resolve_runtime_paths() -> Result<Paths> {
     Ok(paths)
 }
 
-fn load_config(paths: &Paths) -> Result<lazytmux::model::Config> {
+fn load_config(paths: &Paths) -> Result<tmup::model::Config> {
     let content = std::fs::read_to_string(&paths.config_path)
         .with_context(|| format!("failed to read config: {}", paths.config_path.display()))?;
     config::parse_config(&content)
 }
 
 fn resolve_config_path(paths: &Paths) -> Result<std::path::PathBuf> {
-    // 1. $LAZY_TMUX_CONFIG
-    if let Ok(p) = std::env::var("LAZY_TMUX_CONFIG") {
+    // 1. $TMUP_CONFIG
+    if let Ok(p) = std::env::var("TMUP_CONFIG") {
         let path = std::path::PathBuf::from(p);
-        anyhow::ensure!(path.exists(), "LAZY_TMUX_CONFIG={} does not exist", path.display());
+        anyhow::ensure!(path.exists(), "TMUP_CONFIG={} does not exist", path.display());
         return Ok(path);
     }
     // 2. Default config path
     if paths.config_path.exists() {
         return Ok(paths.config_path.clone());
     }
-    // 3. ~/.tmux/lazy.kdl
-    let home_tmux = dirs_home().join(".tmux/lazy.kdl");
+    // 3. ~/.tmux/tmup.kdl
+    let home_tmux = dirs_home().join(".tmux/tmup.kdl");
     if home_tmux.exists() {
         return Ok(home_tmux);
     }
     anyhow::bail!(
-        "config file not found. Create {} or set LAZY_TMUX_CONFIG",
+        "config file not found. Create {} or set TMUP_CONFIG",
         paths.config_path.display()
     )
 }
@@ -209,11 +209,11 @@ fn read_and_cleanup_init_result(path: &std::path::Path) -> Result<i32> {
     result
 }
 
-async fn run_init_inline_fast_path(paths: &Paths, cfg: &lazytmux::model::Config) -> Result<()> {
+async fn run_init_inline_fast_path(paths: &Paths, cfg: &tmup::model::Config) -> Result<()> {
     match OperationLock::try_acquire(&paths.lock_path)? {
         Some(guard) => run_init_inline(paths, cfg, guard).await,
         None => {
-            let _ = tmux::display_message("lazytmux: waiting for another operation...");
+            let _ = tmux::display_message("tmup: waiting for another operation...");
             let guard = OperationLock::acquire(&paths.lock_path)?;
             run_init_inline(paths, cfg, guard).await
         }
@@ -225,7 +225,7 @@ async fn run_init_with_ui_mode(
     target: &tmux::InitUiTarget,
     mode: tmux::InitUiMode,
 ) -> Result<i32> {
-    let wait_channel = format!("lazytmux-init-{}-{}", std::process::id(), epoch_millis());
+    let wait_channel = format!("tmup-init-{}-{}", std::process::id(), epoch_millis());
     let result_file = paths.init_result_path(&wait_channel);
     let _ = std::fs::remove_file(&result_file);
     let spec = build_init_ui_child_spec(paths, wait_channel)?;
@@ -280,8 +280,7 @@ async fn run_init_parent() -> Result<()> {
         return Ok(());
     }
 
-    let _ =
-        tmux::display_message("lazytmux: unable to schedule background bootstrap, running inline");
+    let _ = tmux::display_message("tmup: unable to schedule background bootstrap, running inline");
     let guard = OperationLock::acquire(&paths.lock_path)?;
     run_init_inline(&paths, &cfg, guard).await
 }
@@ -315,7 +314,7 @@ async fn run_init_bootstrap(
 
     // Falling through here is intentional: no UI target became available for
     // the chosen tmux UI mode within the probe window.
-    let _ = tmux::display_message("lazytmux: unable to create progress UI, running inline");
+    let _ = tmux::display_message("tmup: unable to create progress UI, running inline");
     let guard = OperationLock::acquire(&paths.lock_path)?;
     run_init_inline(&paths, &cfg, guard).await
 }
@@ -367,7 +366,7 @@ async fn run_init_child(
 /// work is expected or when tmux UI creation fails.
 async fn run_init_inline(
     paths: &Paths,
-    cfg: &lazytmux::model::Config,
+    cfg: &tmup::model::Config,
     _guard: OperationLockGuard,
 ) -> Result<()> {
     match run_init_core(cfg, paths, &NullReporter).await? {
@@ -383,7 +382,7 @@ async fn run_init_inline(
 }
 
 async fn run_init_core(
-    cfg: &lazytmux::model::Config,
+    cfg: &tmup::model::Config,
     paths: &Paths,
     reporter: &dyn ProgressReporter,
 ) -> Result<InitCoreResult> {
@@ -436,7 +435,7 @@ fn epoch_millis() -> u128 {
 async fn run_install(id: Option<String>) -> Result<()> {
     let paths = resolve_runtime_paths()?;
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
-        .context("another lazytmux operation is in progress")?;
+        .context("another tmup operation is in progress")?;
     let cfg = load_config(&paths)?;
     cfg.validate_target_id(id.as_deref())?;
     let mut lock = load_lockfile(&paths)?;
@@ -469,7 +468,7 @@ async fn run_install(id: Option<String>) -> Result<()> {
 async fn run_sync(id: Option<String>) -> Result<()> {
     let paths = resolve_runtime_paths()?;
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
-        .context("another lazytmux operation is in progress")?;
+        .context("another tmup operation is in progress")?;
     let cfg = load_config(&paths)?;
     cfg.validate_target_id(id.as_deref())?;
     let mut lock = load_lockfile(&paths)?;
@@ -500,7 +499,7 @@ async fn run_sync(id: Option<String>) -> Result<()> {
 async fn run_update(id: Option<String>) -> Result<()> {
     let paths = resolve_runtime_paths()?;
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
-        .context("another lazytmux operation is in progress")?;
+        .context("another tmup operation is in progress")?;
     let cfg = load_config(&paths)?;
     cfg.validate_target_id(id.as_deref())?;
     let mut lock = load_lockfile(&paths)?;
@@ -533,7 +532,7 @@ async fn run_update(id: Option<String>) -> Result<()> {
 async fn run_restore(id: Option<String>) -> Result<()> {
     let paths = resolve_runtime_paths()?;
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
-        .context("another lazytmux operation is in progress")?;
+        .context("another tmup operation is in progress")?;
     let cfg = load_config(&paths)?;
     cfg.validate_target_id(id.as_deref())?;
     let mut lock = load_lockfile(&paths)?;
@@ -570,7 +569,7 @@ async fn run_restore(id: Option<String>) -> Result<()> {
 async fn run_clean() -> Result<()> {
     let paths = resolve_runtime_paths()?;
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
-        .context("another lazytmux operation is in progress")?;
+        .context("another tmup operation is in progress")?;
     let cfg = load_config(&paths)?;
     let mut lock = load_lockfile(&paths)?;
     let sync_outcome = sync::run_and_write(
@@ -594,7 +593,7 @@ fn run_list(verbose: bool) -> Result<()> {
     let statuses = plugin::list(&cfg, &lock, &paths)?;
 
     if sync::lock_is_stale(&cfg, &lock) {
-        eprintln!("warning: lock metadata is stale relative to config; run `lazytmux sync`");
+        eprintln!("warning: lock metadata is stale relative to config; run `tmup sync`");
     }
 
     if verbose {
@@ -695,7 +694,7 @@ fn write_table(table: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn short_commit(hash: Option<&str>) -> &str {
-    hash.map(lazytmux::short_hash).unwrap_or("-")
+    hash.map(tmup::short_hash).unwrap_or("-")
 }
 
 fn ensure_sync_phase_clean(outcome: sync::SyncOutcome) -> Result<()> {

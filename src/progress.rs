@@ -549,7 +549,7 @@ impl StreamRenderer {
                 )]
             }
             ProgressEvent::OperationEnd { command: "init" } => {
-                vec![RenderedLine::new(LineKind::Success, "Finished", "lazytmux init")]
+                vec![RenderedLine::new(LineKind::Success, "Finished", "tmup init")]
             }
             ProgressEvent::OperationEnd { .. } => Vec::new(),
         }

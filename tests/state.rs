@@ -1,8 +1,8 @@
-use lazytmux::state::{
+use tempfile::tempdir;
+use tmup::state::{
     FailureKey, FailureMarker, OperationLock, Paths, build_command_hash, clear_failure_markers,
     has_failure_marker, read_failure_markers, write_failure_marker,
 };
-use tempfile::tempdir;
 
 #[test]
 fn paths_keep_plugins_and_staging_on_same_data_root() {

@@ -385,10 +385,10 @@ fn sync_surfaces_lockfile_write_failure() {
     readonly.set_mode(0o555);
     std::fs::set_permissions(&config_dir, readonly).unwrap();
 
-    let output = Command::cargo_bin("lazytmux")
+    let output = Command::cargo_bin("tmup")
         .unwrap()
         .arg("sync")
-        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("TMUP_CONFIG", &config_path)
         .env("XDG_CONFIG_HOME", dir.path().join("xdg-config"))
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -422,13 +422,13 @@ fn sync_failure_log_includes_stage_and_context_metadata() {
 
     let config_dir = dir.path().join("config");
     std::fs::create_dir_all(&config_dir).unwrap();
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(&config_path, r#"plugin "https://example.com/test/plugin.git""#).unwrap();
 
-    let output = Command::cargo_bin("lazytmux")
+    let output = Command::cargo_bin("tmup")
         .unwrap()
         .arg("sync")
-        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("TMUP_CONFIG", &config_path)
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -440,7 +440,7 @@ fn sync_failure_log_includes_stage_and_context_metadata() {
 
     assert!(!output.status.success(), "sync should fail when rewritten remote cannot be fetched");
 
-    let logs_root = dir.path().join("state/lazytmux/logs");
+    let logs_root = dir.path().join("state/tmup/logs");
     let log_path = find_sync_log(&logs_root);
     let log = std::fs::read_to_string(log_path).unwrap();
 
@@ -460,7 +460,7 @@ fn sync_command_prepare_runs_with_real_parallelism_when_enabled() {
 
     let config_dir = dir.path().join("config");
     std::fs::create_dir_all(&config_dir).unwrap();
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(
         &config_path,
         r#"
@@ -476,10 +476,10 @@ plugin "https://example.com/test/plugin-b.git"
     let path = format!("{}:{}", wrapper_dir.display(), std::env::var("PATH").unwrap_or_default());
     let real_git = resolve_real_git();
 
-    let output = Command::cargo_bin("lazytmux")
+    let output = Command::cargo_bin("tmup")
         .unwrap()
         .arg("sync")
-        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("TMUP_CONFIG", &config_path)
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -514,7 +514,7 @@ fn init_ui_child_stops_after_sync_failure() {
 
     let config_dir = dir.path().join("config");
     std::fs::create_dir_all(&config_dir).unwrap();
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(&config_path, r#"plugin "https://example.com/test/plugin.git""#).unwrap();
 
     let original_mode = std::fs::metadata(&config_dir).unwrap().permissions().mode();
@@ -522,7 +522,7 @@ fn init_ui_child_stops_after_sync_failure() {
     readonly.set_mode(0o555);
     std::fs::set_permissions(&config_dir, readonly).unwrap();
 
-    let output = Command::cargo_bin("lazytmux")
+    let output = Command::cargo_bin("tmup")
         .unwrap()
         .args([
             "init",
@@ -573,10 +573,10 @@ fn init_ui_child_stops_when_remote_is_missing_during_fetch() {
 
     let config_dir = dir.path().join("config");
     std::fs::create_dir_all(&config_dir).unwrap();
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(&config_path, r#"plugin "https://example.com/test/plugin.git""#).unwrap();
 
-    let output = Command::cargo_bin("lazytmux")
+    let output = Command::cargo_bin("tmup")
         .unwrap()
         .args([
             "init",
@@ -620,17 +620,17 @@ fn init_parent_schedules_bootstrap_in_background() {
     let dir = tempdir().unwrap();
     let config_dir = dir.path().join("config/tmux");
     std::fs::create_dir_all(&config_dir).unwrap();
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(&config_path, r#"plugin "user/repo""#).unwrap();
 
     let tmux_log = dir.path().join("tmux.log");
     let fake_tmux_dir = write_fake_tmux_with_log(dir.path(), &tmux_log);
     let path = format!("{}:{}", fake_tmux_dir.display(), std::env::var("PATH").unwrap_or_default());
 
-    let output = Command::cargo_bin("lazytmux")
+    let output = Command::cargo_bin("tmup")
         .unwrap()
         .arg("init")
-        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("TMUP_CONFIG", &config_path)
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -664,17 +664,17 @@ fn init_parent_uses_immediate_ui_when_attached_client_is_ready() {
     let dir = tempdir().unwrap();
     let config_dir = dir.path().join("config/tmux");
     std::fs::create_dir_all(&config_dir).unwrap();
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(&config_path, r#"plugin "user/repo""#).unwrap();
 
     let tmux_log = dir.path().join("tmux.log");
     let fake_tmux_dir = write_fake_tmux_bootstrap_with_log(dir.path(), &tmux_log, 0, 1);
     let path = format!("{}:{}", fake_tmux_dir.display(), std::env::var("PATH").unwrap_or_default());
 
-    let output = Command::cargo_bin("lazytmux")
+    let output = Command::cargo_bin("tmup")
         .unwrap()
         .arg("init")
-        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("TMUP_CONFIG", &config_path)
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -703,17 +703,17 @@ fn init_parent_missing_popup_result_includes_popup_context() {
     let dir = tempdir().unwrap();
     let config_dir = dir.path().join("config/tmux");
     std::fs::create_dir_all(&config_dir).unwrap();
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(&config_path, r#"plugin "user/repo""#).unwrap();
 
     let tmux_log = dir.path().join("tmux.log");
     let fake_tmux_dir = write_fake_tmux_bootstrap_with_log(dir.path(), &tmux_log, 0, 1);
     let path = format!("{}:{}", fake_tmux_dir.display(), std::env::var("PATH").unwrap_or_default());
 
-    let output = Command::cargo_bin("lazytmux")
+    let output = Command::cargo_bin("tmup")
         .unwrap()
         .arg("init")
-        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("TMUP_CONFIG", &config_path)
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -738,17 +738,17 @@ fn init_parent_tmux_3_2_popup_omits_title_flag() {
     let dir = tempdir().unwrap();
     let config_dir = dir.path().join("config/tmux");
     std::fs::create_dir_all(&config_dir).unwrap();
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(&config_path, r#"plugin "user/repo""#).unwrap();
 
     let tmux_log = dir.path().join("tmux.log");
     let fake_tmux_dir = write_fake_tmux_versioned_with_log(dir.path(), &tmux_log, "tmux 3.2", 0, 1);
     let path = format!("{}:{}", fake_tmux_dir.display(), std::env::var("PATH").unwrap_or_default());
 
-    let output = Command::cargo_bin("lazytmux")
+    let output = Command::cargo_bin("tmup")
         .unwrap()
         .arg("init")
-        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("TMUP_CONFIG", &config_path)
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -771,7 +771,7 @@ fn init_parent_tmux_3_2_popup_omits_title_flag() {
         "tmux 3.2 popup should still be used, got:\n{popup_header}"
     );
     assert!(
-        !popup_header.contains("-T lazytmux init"),
+        !popup_header.contains("-T tmup init"),
         "tmux 3.2 popup should omit the title flag, got:\n{popup_header}"
     );
 }
@@ -781,17 +781,17 @@ fn init_parent_uses_split_only_when_tmux_is_2_0() {
     let dir = tempdir().unwrap();
     let config_dir = dir.path().join("config/tmux");
     std::fs::create_dir_all(&config_dir).unwrap();
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(&config_path, r#"plugin "user/repo""#).unwrap();
 
     let tmux_log = dir.path().join("tmux.log");
     let fake_tmux_dir = write_fake_tmux_versioned_with_log(dir.path(), &tmux_log, "tmux 2.0", 1, 0);
     let path = format!("{}:{}", fake_tmux_dir.display(), std::env::var("PATH").unwrap_or_default());
 
-    let output = Command::cargo_bin("lazytmux")
+    let output = Command::cargo_bin("tmup")
         .unwrap()
         .arg("init")
-        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("TMUP_CONFIG", &config_path)
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -814,17 +814,17 @@ fn init_parent_uses_inline_when_tmux_is_1_9() {
     let dir = tempdir().unwrap();
     let config_dir = dir.path().join("config/tmux");
     std::fs::create_dir_all(&config_dir).unwrap();
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(&config_path, r#"plugin "user/repo""#).unwrap();
 
     let tmux_log = dir.path().join("tmux.log");
     let fake_tmux_dir = write_fake_tmux_versioned_with_log(dir.path(), &tmux_log, "tmux 1.9", 1, 1);
     let path = format!("{}:{}", fake_tmux_dir.display(), std::env::var("PATH").unwrap_or_default());
 
-    let _output = Command::cargo_bin("lazytmux")
+    let _output = Command::cargo_bin("tmup")
         .unwrap()
         .arg("init")
-        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("TMUP_CONFIG", &config_path)
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -848,14 +848,14 @@ fn init_bootstrap_uses_split_when_tmux_is_2_0() {
     let dir = tempdir().unwrap();
     let config_dir = dir.path().join("config/tmux");
     std::fs::create_dir_all(&config_dir).unwrap();
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(&config_path, r#"plugin "user/repo""#).unwrap();
 
     let tmux_log = dir.path().join("tmux.log");
     let fake_tmux_dir = write_fake_tmux_versioned_with_log(dir.path(), &tmux_log, "tmux 2.0", 1, 0);
     let path = format!("{}:{}", fake_tmux_dir.display(), std::env::var("PATH").unwrap_or_default());
 
-    let output = Command::cargo_bin("lazytmux")
+    let output = Command::cargo_bin("tmup")
         .unwrap()
         .args([
             "init",
@@ -867,7 +867,7 @@ fn init_bootstrap_uses_split_when_tmux_is_2_0() {
             "--state-root",
             dir.path().join("state").to_str().unwrap(),
         ])
-        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("TMUP_CONFIG", &config_path)
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -931,14 +931,14 @@ fn init_bootstrap_popup_path_targets_explicit_client_and_skips_wait_for() {
     let dir = tempdir().unwrap();
     let config_dir = dir.path().join("config/tmux");
     std::fs::create_dir_all(&config_dir).unwrap();
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(&config_path, r#"plugin "user/repo""#).unwrap();
 
     let tmux_log = dir.path().join("tmux.log");
     let fake_tmux_dir = write_fake_tmux_bootstrap_with_log(dir.path(), &tmux_log, 0, 1);
     let path = format!("{}:{}", fake_tmux_dir.display(), std::env::var("PATH").unwrap_or_default());
 
-    let output = Command::cargo_bin("lazytmux")
+    let output = Command::cargo_bin("tmup")
         .unwrap()
         .args([
             "init",
@@ -950,7 +950,7 @@ fn init_bootstrap_popup_path_targets_explicit_client_and_skips_wait_for() {
             "--state-root",
             dir.path().join("state").to_str().unwrap(),
         ])
-        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("TMUP_CONFIG", &config_path)
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -975,7 +975,7 @@ fn init_bootstrap_popup_path_targets_explicit_client_and_skips_wait_for() {
     // Wrapper is passed directly — no extra `sh -c` between `--` and the wrapper body.
     assert!(
         popup_header.contains(
-            "display-popup -E -w 80% -h 80% -c /dev/pts/99 -T  lazytmux init (press #[bold,fg=red]q#[default] to exit)  -- "
+            "display-popup -E -w 80% -h 80% -c /dev/pts/99 -T  tmup init (press #[bold,fg=red]q#[default] to exit)  -- "
         ),
         "display-popup should target the probed client explicitly with the new argument shape, got:\n{popup_header}"
     );
@@ -1020,14 +1020,14 @@ fn init_bootstrap_retries_probe_until_target_is_ready() {
     let dir = tempdir().unwrap();
     let config_dir = dir.path().join("config/tmux");
     std::fs::create_dir_all(&config_dir).unwrap();
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(&config_path, r#"plugin "user/repo""#).unwrap();
 
     let tmux_log = dir.path().join("tmux.log");
     let fake_tmux_dir = write_fake_tmux_retry_probe_with_log(dir.path(), &tmux_log);
     let path = format!("{}:{}", fake_tmux_dir.display(), std::env::var("PATH").unwrap_or_default());
 
-    let output = Command::cargo_bin("lazytmux")
+    let output = Command::cargo_bin("tmup")
         .unwrap()
         .args([
             "init",
@@ -1039,7 +1039,7 @@ fn init_bootstrap_retries_probe_until_target_is_ready() {
             "--state-root",
             dir.path().join("state").to_str().unwrap(),
         ])
-        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("TMUP_CONFIG", &config_path)
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -1069,7 +1069,7 @@ fn init_bootstrap_keeps_probing_long_enough_for_late_target() {
     let dir = tempdir().unwrap();
     let config_dir = dir.path().join("config/tmux");
     std::fs::create_dir_all(&config_dir).unwrap();
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(&config_path, r#"plugin "user/repo""#).unwrap();
 
     let tmux_log = dir.path().join("tmux.log");
@@ -1077,7 +1077,7 @@ fn init_bootstrap_keeps_probing_long_enough_for_late_target() {
         write_fake_tmux_retry_probe_after_delay_with_log(dir.path(), &tmux_log, 1000);
     let path = format!("{}:{}", fake_tmux_dir.display(), std::env::var("PATH").unwrap_or_default());
 
-    let output = Command::cargo_bin("lazytmux")
+    let output = Command::cargo_bin("tmup")
         .unwrap()
         .args([
             "init",
@@ -1089,7 +1089,7 @@ fn init_bootstrap_keeps_probing_long_enough_for_late_target() {
             "--state-root",
             dir.path().join("state").to_str().unwrap(),
         ])
-        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("TMUP_CONFIG", &config_path)
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -1117,7 +1117,7 @@ fn init_loads_tmux_after_sync_plugin_failures() {
 
     let config_dir = dir.path().join("config");
     std::fs::create_dir_all(&config_dir).unwrap();
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(
         &config_path,
         r#"
@@ -1136,7 +1136,7 @@ plugin "https://example.com/test/plugin.git" build="exit 1"
     let fake_tmux_dir = write_fake_tmux_with_log(dir.path(), &tmux_log);
     let path = format!("{}:{}", fake_tmux_dir.display(), std::env::var("PATH").unwrap_or_default());
 
-    let output = Command::cargo_bin("lazytmux")
+    let output = Command::cargo_bin("tmup")
         .unwrap()
         .args([
             "init",

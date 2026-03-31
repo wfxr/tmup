@@ -1,10 +1,10 @@
-use lazytmux::lockfile::{LockEntry, LockFile, read_lockfile, write_lockfile_atomic};
 use tempfile::tempdir;
+use tmup::lockfile::{LockEntry, LockFile, read_lockfile, write_lockfile_atomic};
 
 #[test]
 fn round_trips_lockfile_json() {
     let dir = tempdir().unwrap();
-    let path = dir.path().join("lazylock.json");
+    let path = dir.path().join("tmup.lock");
     let mut lock = LockFile::new();
     lock.plugins.insert(
         "github.com/tmux-plugins/tmux-sensible".into(),
@@ -24,7 +24,7 @@ fn round_trips_lockfile_json() {
 #[test]
 fn round_trips_multiple_plugins() {
     let dir = tempdir().unwrap();
-    let path = dir.path().join("lazylock.json");
+    let path = dir.path().join("tmup.lock");
     let mut lock = LockFile::new();
     lock.plugins.insert(
         "github.com/tmux-plugins/tmux-sensible".into(),
@@ -50,7 +50,7 @@ fn read_nonexistent_returns_error() {
 #[test]
 fn plugins_are_sorted_by_key() {
     let dir = tempdir().unwrap();
-    let path = dir.path().join("lazylock.json");
+    let path = dir.path().join("tmup.lock");
     let mut lock = LockFile::new();
     lock.plugins.insert("github.com/z/z".into(), LockEntry::branch("main", "aaa"));
     lock.plugins.insert("github.com/a/a".into(), LockEntry::branch("main", "bbb"));
@@ -65,7 +65,7 @@ fn plugins_are_sorted_by_key() {
 #[test]
 fn rejects_unsupported_lockfile_version() {
     let dir = tempdir().unwrap();
-    let path = dir.path().join("lazylock.json");
+    let path = dir.path().join("tmup.lock");
     std::fs::write(
         &path,
         r#"{
@@ -92,7 +92,7 @@ fn rejects_unsupported_lockfile_version() {
 #[test]
 fn writes_v2_lockfile_with_sync_metadata_and_default_branch_tracking() {
     let dir = tempdir().unwrap();
-    let path = dir.path().join("lazylock.json");
+    let path = dir.path().join("tmup.lock");
     let mut lock = LockFile::new();
     lock.config_fingerprint = Some("fingerprint-all".into());
 
@@ -113,8 +113,8 @@ fn writes_v2_lockfile_with_sync_metadata_and_default_branch_tracking() {
 #[test]
 fn writing_v2_lockfile_remains_deterministic() {
     let dir = tempdir().unwrap();
-    let path_a = dir.path().join("lazylock-a.json");
-    let path_b = dir.path().join("lazylock-b.json");
+    let path_a = dir.path().join("tmup-a.lock");
+    let path_b = dir.path().join("tmup-b.lock");
 
     let mut lock = LockFile::new();
     lock.config_fingerprint = Some("fingerprint-all".into());

@@ -1,5 +1,5 @@
-// ~/.config/tmux/lazy.kdl
-// lazytmux configuration — KDL v2 syntax
+// ~/.config/tmux/tmup.kdl
+// tmup configuration — KDL v2 syntax
 
 options {
     auto-install #true

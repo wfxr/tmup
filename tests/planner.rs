@@ -1,18 +1,18 @@
 mod utils;
 use std::collections::{HashMap, HashSet};
 
-use lazytmux::lockfile::{LockEntry, LockFile};
-use lazytmux::model::Config;
-use lazytmux::planner::{
+use tempfile::tempdir;
+use tmup::lockfile::{LockEntry, LockFile};
+use tmup::model::Config;
+use tmup::planner::{
     BuildStatus, PluginState, RepoHealth, collect_failed_builds, compute_statuses,
 };
-use lazytmux::state::{FailureMarker, Paths, build_command_hash};
-use lazytmux::sync;
-use tempfile::tempdir;
+use tmup::state::{FailureMarker, Paths, build_command_hash};
+use tmup::sync;
 use utils::git;
 
 fn make_config(kdl: &str) -> Config {
-    lazytmux::config::parse_config(kdl).unwrap()
+    tmup::config::parse_config(kdl).unwrap()
 }
 
 #[test]
@@ -48,7 +48,7 @@ fn preview_returns_false_when_lock_and_config_are_aligned() {
     let config = make_config(r#"plugin "user/repo""#);
     let mut lock = LockFile::new();
     let mut entry = LockEntry::branch("main", &commit);
-    entry.config_hash = lazytmux::lockfile::remote_plugin_config_hash(&config.plugins[0]);
+    entry.config_hash = tmup::lockfile::remote_plugin_config_hash(&config.plugins[0]);
     lock.plugins.insert("github.com/user/repo".into(), entry);
 
     let preview = sync::preview(&config, &lock, None, sync::SyncPolicy::init(true), &paths);
@@ -64,7 +64,7 @@ fn preview_returns_true_for_missing_plugin_dir_under_init_policy() {
     let config = make_config(r#"plugin "user/repo""#);
     let mut lock = LockFile::new();
     let mut entry = LockEntry::branch("main", "abc123");
-    entry.config_hash = lazytmux::lockfile::remote_plugin_config_hash(&config.plugins[0]);
+    entry.config_hash = tmup::lockfile::remote_plugin_config_hash(&config.plugins[0]);
     lock.plugins.insert("github.com/user/repo".into(), entry);
 
     assert!(!paths.plugin_dir("github.com/user/repo").exists());
@@ -84,12 +84,12 @@ fn preview_returns_true_for_broken_plugin_dir_under_init_policy() {
     let config = make_config(r#"plugin "user/repo""#);
     let mut lock = LockFile::new();
     let mut entry = LockEntry::branch("main", "abc123");
-    entry.config_hash = lazytmux::lockfile::remote_plugin_config_hash(&config.plugins[0]);
+    entry.config_hash = tmup::lockfile::remote_plugin_config_hash(&config.plugins[0]);
     lock.plugins.insert("github.com/user/repo".into(), entry);
 
     let plugin_dir = paths.plugin_dir("github.com/user/repo");
     std::fs::create_dir_all(&plugin_dir).unwrap();
-    assert!(matches!(lazytmux::planner::inspect_plugin_dir(&plugin_dir), RepoHealth::Broken));
+    assert!(matches!(tmup::planner::inspect_plugin_dir(&plugin_dir), RepoHealth::Broken));
 
     let preview = sync::preview(&config, &lock, None, sync::SyncPolicy::init(true), &paths);
     assert!(
@@ -106,7 +106,7 @@ fn preview_returns_true_for_same_commit_build_change_requires_republish() {
     let new_config = make_config(r#"plugin "user/repo" build="touch built-v2""#);
     let mut lock = LockFile::new();
     let mut entry = LockEntry::branch("main", "abc123");
-    entry.config_hash = lazytmux::lockfile::remote_plugin_config_hash(&old_config.plugins[0]);
+    entry.config_hash = tmup::lockfile::remote_plugin_config_hash(&old_config.plugins[0]);
     lock.plugins.insert("github.com/user/repo".into(), entry);
 
     let preview = sync::preview(&new_config, &lock, None, sync::SyncPolicy::init(true), &paths);
@@ -289,7 +289,7 @@ fn outdated_state_when_installed_commit_differs_from_lock() {
 #[test]
 fn inspect_missing_dir() {
     let dir = tempdir().unwrap();
-    let health = lazytmux::planner::inspect_plugin_dir(&dir.path().join("nonexistent"));
+    let health = tmup::planner::inspect_plugin_dir(&dir.path().join("nonexistent"));
     assert!(matches!(health, RepoHealth::Missing));
 }
 
@@ -324,7 +324,7 @@ fn inspect_healthy_git_repo() {
         .env("GIT_COMMITTER_EMAIL", "test@test")
         .output()
         .unwrap();
-    let health = lazytmux::planner::inspect_plugin_dir(&repo);
+    let health = tmup::planner::inspect_plugin_dir(&repo);
     assert!(matches!(health, RepoHealth::Healthy { .. }));
     if let RepoHealth::Healthy { commit } = health {
         assert_eq!(commit.len(), 40);
@@ -336,7 +336,7 @@ fn inspect_dir_exists_no_git() {
     let dir = tempdir().unwrap();
     let repo = dir.path().join("plugin");
     std::fs::create_dir_all(&repo).unwrap();
-    let health = lazytmux::planner::inspect_plugin_dir(&repo);
+    let health = tmup::planner::inspect_plugin_dir(&repo);
     assert!(matches!(health, RepoHealth::Broken));
 }
 
@@ -345,7 +345,7 @@ fn inspect_dir_with_empty_dotgit() {
     let dir = tempdir().unwrap();
     let repo = dir.path().join("plugin");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
-    let health = lazytmux::planner::inspect_plugin_dir(&repo);
+    let health = tmup::planner::inspect_plugin_dir(&repo);
     assert!(matches!(health, RepoHealth::Broken));
 }
 
@@ -356,7 +356,7 @@ fn scan_managed_finds_git_dirs() {
     std::fs::create_dir_all(root.join("github.com/user/repo-a/.git")).unwrap();
     std::fs::create_dir_all(root.join("github.com/user/repo-b/.git")).unwrap();
     std::fs::create_dir_all(root.join("github.com/user/not-a-repo")).unwrap();
-    let ids = lazytmux::planner::scan_managed_plugin_ids(&root);
+    let ids = tmup::planner::scan_managed_plugin_ids(&root);
     assert!(ids.contains("github.com/user/repo-a"));
     assert!(ids.contains("github.com/user/repo-b"));
     assert!(!ids.contains("github.com/user/not-a-repo"));
@@ -365,7 +365,7 @@ fn scan_managed_finds_git_dirs() {
 
 #[test]
 fn broken_state_display_string() {
-    assert_eq!(lazytmux::planner::PluginState::Broken.to_string(), "broken");
+    assert_eq!(tmup::planner::PluginState::Broken.to_string(), "broken");
 }
 
 #[test]

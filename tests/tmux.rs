@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use lazytmux::tmux::TmuxCommand;
+use tmup::tmux::TmuxCommand;
 
 #[test]
 fn run_shell_quotes_paths_with_spaces() {
@@ -24,7 +24,7 @@ fn run_shell_escapes_single_quotes() {
 
 #[test]
 fn parse_tmux_version_formats() {
-    use lazytmux::tmux::parse_tmux_version;
+    use tmup::tmux::parse_tmux_version;
 
     let cases = [
         ("tmux 3.2", Some((3, 2, None))),

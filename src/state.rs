@@ -5,7 +5,7 @@ use anyhow::{Context, Result, ensure};
 use etcetera::BaseStrategy;
 use sha2::{Digest, Sha256};
 
-/// All filesystem paths used by lazytmux.
+/// All filesystem paths used by tmup.
 #[derive(Debug, Clone)]
 pub struct Paths {
     /// Root for plugin checkouts: {data}/plugins/
@@ -33,11 +33,11 @@ impl Paths {
     pub fn resolve() -> Result<Self> {
         let base_dirs = etcetera::base_strategy::choose_base_strategy()
             .context("failed to determine XDG base directories")?;
-        let data_dir = base_dirs.data_dir().join("lazytmux");
+        let data_dir = base_dirs.data_dir().join("tmup");
         let state_dir = base_dirs
             .state_dir()
             .unwrap_or_else(|| base_dirs.home_dir().join(".local/state"))
-            .join("lazytmux");
+            .join("tmup");
         let config_dir = base_dirs.config_dir().join("tmux");
 
         Ok(Self {
@@ -47,8 +47,8 @@ impl Paths {
             failures_root: state_dir.join("failures"),
             logs_root: state_dir.join("logs"),
             init_results_root: state_dir.join("init-results"),
-            config_path: config_dir.join("lazy.kdl"),
-            lockfile_path: config_dir.join("lazylock.json"),
+            config_path: config_dir.join("tmup.kdl"),
+            lockfile_path: config_dir.join("tmup.lock"),
             repo_cache_root: data_dir.join(".repos"),
         })
     }
@@ -64,8 +64,8 @@ impl Paths {
             failures_root: state.join("failures"),
             logs_root: state.join("logs"),
             init_results_root: state.join("init-results"),
-            config_path: state.join("lazy.kdl"),
-            lockfile_path: state.join("lazylock.json"),
+            config_path: state.join("tmup.kdl"),
+            lockfile_path: state.join("tmup.lock"),
             repo_cache_root: data.join(".repos"),
         }
     }
@@ -76,10 +76,8 @@ impl Paths {
         state_root: PathBuf,
         config_path: PathBuf,
     ) -> Result<Self> {
-        let lockfile_path = config_path
-            .parent()
-            .context("config path has no parent directory")?
-            .join("lazylock.json");
+        let lockfile_path =
+            config_path.parent().context("config path has no parent directory")?.join("tmup.lock");
         Ok(Self {
             plugin_root: data_root.join("plugins"),
             staging_root: data_root.join(".staging"),
@@ -98,7 +96,7 @@ impl Paths {
         let config_dir = config_path.parent().with_context(|| {
             format!("config path has no parent directory: {}", config_path.display())
         })?;
-        self.lockfile_path = config_dir.join("lazylock.json");
+        self.lockfile_path = config_dir.join("tmup.lock");
         self.config_path = config_path;
         Ok(())
     }

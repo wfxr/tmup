@@ -1,7 +1,7 @@
 mod utils;
 
-use lazytmux::git::{self, ObjectFilter};
 use tempfile::tempdir;
+use tmup::git::{self, ObjectFilter};
 use utils::*;
 
 #[tokio::test]
@@ -64,7 +64,7 @@ async fn clone_bare_repo_filtered_accepts_blob_none_for_local_server() {
 async fn clone_bare_repo_filtered_marks_promisor_remote_for_live_github_repo() {
     let dir = tempdir().unwrap();
     let cache = dir.path().join("cache.git");
-    let clone_url = std::env::var("LAZYTMUX_LIVE_PARTIAL_CLONE_REPO")
+    let clone_url = std::env::var("TMUP_LIVE_PARTIAL_CLONE_REPO")
         .unwrap_or_else(|_| "https://github.com/wfxr/tmux-net-speed.git".to_string());
 
     git::clone_bare_repo_filtered(&clone_url, &cache, Some(ObjectFilter::BlobNone)).await.unwrap();

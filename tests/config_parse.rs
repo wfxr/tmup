@@ -1,4 +1,4 @@
-use lazytmux::config::parse_config;
+use tmup::config::parse_config;
 
 #[test]
 fn parses_remote_and_local_plugins() {
@@ -17,7 +17,7 @@ plugin "~/dev/my-plugin" local=#true name="my-plugin-dev"
     assert!(cfg.plugins[1].is_local());
     assert_eq!(cfg.plugins[1].name, "my-plugin-dev");
     match &cfg.plugins[1].source {
-        lazytmux::model::PluginSource::Local { path } => {
+        tmup::model::PluginSource::Local { path } => {
             assert_eq!(path, &format!("{home}/dev/my-plugin"));
         }
         other => panic!("expected local plugin, got {other:?}"),
@@ -58,10 +58,10 @@ fn parses_tracking_selectors() {
     let commit = parse_config(r#"plugin "user/repo" commit="abc123""#).unwrap();
     let default = parse_config(r#"plugin "user/repo""#).unwrap();
 
-    assert!(matches!(branch.plugins[0].tracking, lazytmux::model::Tracking::Branch(_)));
-    assert!(matches!(tag.plugins[0].tracking, lazytmux::model::Tracking::Tag(_)));
-    assert!(matches!(commit.plugins[0].tracking, lazytmux::model::Tracking::Commit(_)));
-    assert!(matches!(default.plugins[0].tracking, lazytmux::model::Tracking::DefaultBranch));
+    assert!(matches!(branch.plugins[0].tracking, tmup::model::Tracking::Branch(_)));
+    assert!(matches!(tag.plugins[0].tracking, tmup::model::Tracking::Tag(_)));
+    assert!(matches!(commit.plugins[0].tracking, tmup::model::Tracking::Commit(_)));
+    assert!(matches!(default.plugins[0].tracking, tmup::model::Tracking::DefaultBranch));
 }
 
 #[test]
@@ -147,7 +147,7 @@ fn expands_env_var_local_paths() {
     let home = std::env::var("HOME").unwrap();
     let cfg = parse_config(r#"plugin "$HOME/dev/my-plugin" local=#true"#).unwrap();
     match &cfg.plugins[0].source {
-        lazytmux::model::PluginSource::Local { path } => {
+        tmup::model::PluginSource::Local { path } => {
             assert_eq!(path, &format!("{home}/dev/my-plugin"));
         }
         other => panic!("expected local plugin, got {other:?}"),

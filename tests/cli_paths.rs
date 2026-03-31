@@ -36,8 +36,8 @@ fn cargo_cmd(
     config_path: &std::path::Path,
     gitconfig: &std::path::Path,
 ) -> Command {
-    let mut cmd = Command::cargo_bin("lazytmux").unwrap();
-    cmd.env("LAZY_TMUX_CONFIG", config_path)
+    let mut cmd = Command::cargo_bin("tmup").unwrap();
+    cmd.env("TMUP_CONFIG", config_path)
         .env("XDG_CONFIG_HOME", root.join("xdg-config"))
         .env("XDG_DATA_HOME", root.join("data"))
         .env("XDG_STATE_HOME", root.join("state"))
@@ -58,8 +58,8 @@ fn list_reads_lockfile_next_to_override_config() {
 
     let config_path = config_dir.join("custom.kdl");
     std::fs::write(&config_path, r#"plugin "user/repo""#).unwrap();
-    std::fs::write(config_dir.join("lazylock.json"), r#"{"version":2,"plugins":{}}"#).unwrap();
-    std::fs::write(xdg_config_dir.join("lazylock.json"), "not-json").unwrap();
+    std::fs::write(config_dir.join("tmup.lock"), r#"{"version":2,"plugins":{}}"#).unwrap();
+    std::fs::write(xdg_config_dir.join("tmup.lock"), "not-json").unwrap();
 
     cargo_cmd(dir.path(), &config_path, &gitconfig)
         .arg("list")
@@ -81,8 +81,8 @@ fn sync_writes_lockfile_next_to_override_config() {
 
     cargo_cmd(dir.path(), &config_path, &gitconfig).arg("sync").assert().success();
 
-    let sibling_lock = config_dir.join("lazylock.json");
-    let default_lock = dir.path().join("xdg-config/tmux/lazylock.json");
+    let sibling_lock = config_dir.join("tmup.lock");
+    let default_lock = dir.path().join("xdg-config/tmux/tmup.lock");
     assert!(sibling_lock.exists(), "expected sibling lockfile to be written");
     assert!(!default_lock.exists(), "expected default XDG lockfile to remain untouched");
 

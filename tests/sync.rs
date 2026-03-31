@@ -1,12 +1,12 @@
 mod utils;
-use lazytmux::lockfile::{
+use tempfile::tempdir;
+use tmup::lockfile::{
     LockEntry, LockFile, config_fingerprint, read_lockfile, remote_plugin_config_hash,
 };
-use lazytmux::model::{Config, Options, PluginSource, PluginSpec, Tracking};
-use lazytmux::progress::NullReporter;
-use lazytmux::state::{FailureMarker, Paths, build_command_hash};
-use lazytmux::sync::{self, SyncMode, SyncPolicy};
-use tempfile::tempdir;
+use tmup::model::{Config, Options, PluginSource, PluginSpec, Tracking};
+use tmup::progress::NullReporter;
+use tmup::state::{FailureMarker, Paths, build_command_hash};
+use tmup::sync::{self, SyncMode, SyncPolicy};
 use utils::*;
 
 fn make_plugin(
@@ -105,7 +105,7 @@ async fn init_mode_skips_known_failed_publish_without_retrying_build() {
         failed_at: "now".into(),
         stderr_summary: "boom".into(),
     };
-    lazytmux::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
+    tmup::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
 
     let outcome = sync::run_and_write(
         &cfg,
@@ -166,7 +166,7 @@ async fn init_mode_retries_publish_when_build_command_changes() {
         failed_at: "now".into(),
         stderr_summary: "boom".into(),
     };
-    lazytmux::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
+    tmup::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
 
     let outcome = sync::run_and_write(
         &cfg,
@@ -756,7 +756,7 @@ async fn sync_rebuilds_same_commit_when_only_build_changes_and_rewrites_markers(
     assert!(!target.join("built-v2.marker").exists());
 
     let fail_hash = build_command_hash("touch built-v2.marker; exit 1");
-    let markers = lazytmux::state::read_failure_markers(&paths.failures_root).unwrap();
+    let markers = tmup::state::read_failure_markers(&paths.failures_root).unwrap();
     assert_eq!(markers.len(), 1);
     assert_eq!(markers[0].plugin_id, plugin_id);
     assert_eq!(markers[0].commit, commit);
@@ -786,7 +786,7 @@ async fn sync_rebuilds_same_commit_when_only_build_changes_and_rewrites_markers(
     assert_eq!(plugin_head(&paths, plugin_id), commit);
     assert!(!target.join("built-v1.marker").exists());
     assert!(target.join("built-v2.marker").exists());
-    assert!(lazytmux::state::read_failure_markers(&paths.failures_root).unwrap().is_empty());
+    assert!(tmup::state::read_failure_markers(&paths.failures_root).unwrap().is_empty());
     assert_ne!(lock.plugins[plugin_id].config_hash, previous_hash);
 }
 

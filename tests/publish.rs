@@ -1,5 +1,5 @@
-use lazytmux::git::{publish_fresh_install, publish_replace};
 use tempfile::tempdir;
+use tmup::git::{publish_fresh_install, publish_replace};
 
 #[test]
 fn fresh_install_moves_staging_to_target() {

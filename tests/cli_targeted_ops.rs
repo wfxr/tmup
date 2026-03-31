@@ -22,7 +22,7 @@ fn make_remote_repo(root: &std::path::Path) -> std::path::PathBuf {
 fn write_config(root: &std::path::Path) -> std::path::PathBuf {
     let config_dir = root.join("config/tmux");
     std::fs::create_dir_all(&config_dir).unwrap();
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(
         &config_path,
         concat!(
@@ -50,8 +50,8 @@ fn cargo_cmd(
     config_path: &std::path::Path,
     gitconfig: &std::path::Path,
 ) -> Command {
-    let mut cmd = Command::cargo_bin("lazytmux").unwrap();
-    cmd.env("LAZY_TMUX_CONFIG", config_path)
+    let mut cmd = Command::cargo_bin("tmup").unwrap();
+    cmd.env("TMUP_CONFIG", config_path)
         .env("XDG_CONFIG_HOME", root.join("config"))
         .env("XDG_DATA_HOME", root.join("data"))
         .env("XDG_STATE_HOME", root.join("state"))
@@ -73,9 +73,9 @@ fn install_target_ignores_unrelated_sync_failures() {
         .assert()
         .success();
 
-    assert!(dir.path().join("data/lazytmux/plugins/example.com/test/plugin/init.tmux").exists());
+    assert!(dir.path().join("data/tmup/plugins/example.com/test/plugin/init.tmux").exists());
 
-    let lock = std::fs::read_to_string(dir.path().join("config/tmux/lazylock.json")).unwrap();
+    let lock = std::fs::read_to_string(dir.path().join("config/tmux/tmup.lock")).unwrap();
     assert!(lock.contains("example.com/test/plugin"));
     assert!(!lock.contains("example.com/bad/plugin"));
 }
@@ -97,7 +97,7 @@ fn update_target_ignores_unrelated_sync_failures() {
         .assert()
         .success();
 
-    let lock = std::fs::read_to_string(dir.path().join("config/tmux/lazylock.json")).unwrap();
+    let lock = std::fs::read_to_string(dir.path().join("config/tmux/tmup.lock")).unwrap();
     assert!(lock.contains("example.com/test/plugin"));
     assert!(!lock.contains("example.com/bad/plugin"));
 }
@@ -119,7 +119,7 @@ fn restore_target_ignores_unrelated_sync_failures() {
         .assert()
         .success();
 
-    let lock = std::fs::read_to_string(dir.path().join("config/tmux/lazylock.json")).unwrap();
+    let lock = std::fs::read_to_string(dir.path().join("config/tmux/tmup.lock")).unwrap();
     assert!(lock.contains("example.com/test/plugin"));
     assert!(!lock.contains("example.com/bad/plugin"));
 }

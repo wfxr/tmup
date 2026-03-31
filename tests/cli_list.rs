@@ -11,20 +11,20 @@ fn list_prints_state_and_build_status_columns() {
     std::fs::create_dir_all(data_dir.join("plugins/github.com/user/repo/.git")).unwrap();
 
     // Write config
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(&config_path, r#"plugin "user/repo""#).unwrap();
 
     // Write lockfile
-    let lock_path = config_dir.join("lazylock.json");
+    let lock_path = config_dir.join("tmup.lock");
     std::fs::write(
         &lock_path,
         r#"{"version":2,"plugins":{"github.com/user/repo":{"source":"user/repo","tracking":{"type":"branch","value":"main"},"commit":"abc1234"}}}"#,
     ).unwrap();
 
-    Command::cargo_bin("lazytmux")
+    Command::cargo_bin("tmup")
         .unwrap()
         .arg("list")
-        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("TMUP_CONFIG", &config_path)
         .env("XDG_DATA_HOME", dir.path().join("data").parent().unwrap())
         .assert()
         .success()
@@ -38,13 +38,13 @@ fn list_uses_human_readable_default_columns() {
     let config_dir = dir.path().join("config");
     std::fs::create_dir_all(&config_dir).unwrap();
 
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(&config_path, r#"plugin "user/repo""#).unwrap();
 
-    Command::cargo_bin("lazytmux")
+    Command::cargo_bin("tmup")
         .unwrap()
         .arg("list")
-        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("TMUP_CONFIG", &config_path)
         .assert()
         .success()
         .stdout(predicate::str::contains("Plugin"))
@@ -66,13 +66,13 @@ fn list_verbose_shows_diagnostic_columns() {
     let config_dir = dir.path().join("config");
     std::fs::create_dir_all(&config_dir).unwrap();
 
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(&config_path, r#"plugin "user/repo" name="repo-name""#).unwrap();
 
-    Command::cargo_bin("lazytmux")
+    Command::cargo_bin("tmup")
         .unwrap()
         .args(["list", "-v"])
-        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("TMUP_CONFIG", &config_path)
         .assert()
         .success()
         .stdout(predicate::str::contains("Id"))
@@ -91,7 +91,7 @@ fn list_shows_plugin_entries() {
     let config_dir = dir.path().join("config");
     std::fs::create_dir_all(&config_dir).unwrap();
 
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(
         &config_path,
         r#"
@@ -102,13 +102,13 @@ plugin "catppuccin/tmux"
     .unwrap();
 
     // Write empty lockfile
-    let lock_path = config_dir.join("lazylock.json");
+    let lock_path = config_dir.join("tmup.lock");
     std::fs::write(&lock_path, r#"{"version":2,"plugins":{}}"#).unwrap();
 
-    Command::cargo_bin("lazytmux")
+    Command::cargo_bin("tmup")
         .unwrap()
         .arg("list")
-        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("TMUP_CONFIG", &config_path)
         .assert()
         .success()
         .stdout(predicate::str::contains("tmux-sensible"))
@@ -124,24 +124,24 @@ fn list_warns_before_table_when_lock_metadata_is_stale() {
     let state_home = dir.path().join("state");
     std::fs::create_dir_all(&config_dir).unwrap();
 
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(&config_path, r#"plugin "user/repo" build="make install""#).unwrap();
 
-    let lock_path = config_dir.join("lazylock.json");
+    let lock_path = config_dir.join("tmup.lock");
     let stale_lock = r#"{"version":2,"plugins":{"github.com/user/repo":{"source":"user/repo","tracking":{"type":"branch","value":"main"},"commit":"abc1234"}}}"#;
     std::fs::write(&lock_path, stale_lock).unwrap();
 
-    Command::cargo_bin("lazytmux")
+    Command::cargo_bin("tmup")
         .unwrap()
         .arg("list")
-        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("TMUP_CONFIG", &config_path)
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", &data_home)
         .env("XDG_STATE_HOME", &state_home)
         .assert()
         .success()
         .stderr(predicate::str::contains(
-            "warning: lock metadata is stale relative to config; run `lazytmux sync`",
+            "warning: lock metadata is stale relative to config; run `tmup sync`",
         ))
         .stdout(predicate::str::contains("Plugin"))
         .stdout(predicate::str::contains("State"))
@@ -155,17 +155,17 @@ fn list_does_not_mutate_stale_lockfile() {
     let config_dir = config_home.join("tmux");
     std::fs::create_dir_all(&config_dir).unwrap();
 
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(&config_path, r#"plugin "user/repo""#).unwrap();
 
-    let lock_path = config_dir.join("lazylock.json");
+    let lock_path = config_dir.join("tmup.lock");
     let original = r#"{"version":2,"plugins":{"github.com/user/repo":{"source":"user/repo","tracking":{"type":"branch","value":"main"},"commit":"abc1234"}}}"#;
     std::fs::write(&lock_path, original).unwrap();
 
-    Command::cargo_bin("lazytmux")
+    Command::cargo_bin("tmup")
         .unwrap()
         .arg("list")
-        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("TMUP_CONFIG", &config_path)
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -185,14 +185,14 @@ fn list_marks_missing_local_plugin_as_missing() {
     std::fs::create_dir_all(&config_dir).unwrap();
 
     let missing_local = dir.path().join("missing-plugin");
-    let config_path = config_dir.join("lazy.kdl");
+    let config_path = config_dir.join("tmup.kdl");
     std::fs::write(&config_path, format!(r#"plugin "{}" local=#true"#, missing_local.display()))
         .unwrap();
 
-    Command::cargo_bin("lazytmux")
+    Command::cargo_bin("tmup")
         .unwrap()
         .arg("list")
-        .env("LAZY_TMUX_CONFIG", &config_path)
+        .env("TMUP_CONFIG", &config_path)
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", &data_home)
         .env("XDG_STATE_HOME", &state_home)

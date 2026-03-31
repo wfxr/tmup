@@ -1,14 +1,14 @@
 mod utils;
 
-use lazytmux::config::parse_config;
-use lazytmux::lockfile::{
+use tempfile::tempdir;
+use tmup::config::parse_config;
+use tmup::lockfile::{
     LockEntry, LockFile, config_fingerprint, read_lockfile, remote_plugin_config_hash,
 };
-use lazytmux::model::{Config, Options, PluginSource, PluginSpec, Tracking};
-use lazytmux::progress::NullReporter;
-use lazytmux::state::{OperationLock, Paths, build_command_hash};
-use lazytmux::sync;
-use tempfile::tempdir;
+use tmup::model::{Config, Options, PluginSource, PluginSpec, Tracking};
+use tmup::progress::NullReporter;
+use tmup::state::{OperationLock, Paths, build_command_hash};
+use tmup::sync;
 use utils::*;
 
 fn make_plugin(clone_url: &str, tracking: Tracking, build: Option<&str>) -> PluginSpec {
@@ -138,7 +138,7 @@ async fn init_does_not_retry_same_failed_build_tuple() {
     lock.plugins.insert("example.com/test/plugin".into(), entry);
 
     let bh = build_command_hash(&build_cmd);
-    let marker = lazytmux::state::FailureMarker {
+    let marker = tmup::state::FailureMarker {
         plugin_id: "example.com/test/plugin".into(),
         commit: commit.clone(),
         build_hash: bh.clone(),
@@ -146,7 +146,7 @@ async fn init_does_not_retry_same_failed_build_tuple() {
         failed_at: "now".into(),
         stderr_summary: "error".into(),
     };
-    lazytmux::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
+    tmup::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
 
     let outcome = sync::run_and_write(
         &cfg,
@@ -190,7 +190,7 @@ async fn init_retries_when_build_command_changes() {
     entry.config_hash = remote_plugin_config_hash(&old_plugin);
     lock.plugins.insert("example.com/test/plugin".into(), entry);
 
-    let marker = lazytmux::state::FailureMarker {
+    let marker = tmup::state::FailureMarker {
         plugin_id: "example.com/test/plugin".into(),
         commit: commit.clone(),
         build_hash: build_command_hash(previous_build),
@@ -198,7 +198,7 @@ async fn init_retries_when_build_command_changes() {
         failed_at: "now".into(),
         stderr_summary: "error".into(),
     };
-    lazytmux::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
+    tmup::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
 
     let outcome = sync::run_and_write(
         &cfg,

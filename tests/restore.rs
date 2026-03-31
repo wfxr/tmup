@@ -1,12 +1,12 @@
 mod utils;
 use std::sync::Mutex;
 
-use lazytmux::lockfile::{LockEntry, LockFile, TrackingRecord};
-use lazytmux::model::{Config, Options, PluginSource, PluginSpec, Tracking};
-use lazytmux::plugin;
-use lazytmux::progress::{NullReporter, ProgressEvent, ProgressReporter, Stage};
-use lazytmux::state::Paths;
 use tempfile::tempdir;
+use tmup::lockfile::{LockEntry, LockFile, TrackingRecord};
+use tmup::model::{Config, Options, PluginSource, PluginSpec, Tracking};
+use tmup::plugin;
+use tmup::progress::{NullReporter, ProgressEvent, ProgressReporter, Stage};
+use tmup::state::Paths;
 use utils::*;
 
 /// Reset the bare repo's main branch to a given commit.
@@ -189,7 +189,7 @@ async fn restore_build_failure_returns_error() {
     assert!(!target.exists(), "failed fresh-install target should be cleaned up");
 
     // A failure marker should have been written.
-    let markers = lazytmux::state::read_failure_markers(&paths.failures_root).unwrap();
+    let markers = tmup::state::read_failure_markers(&paths.failures_root).unwrap();
     assert_eq!(markers.len(), 1);
     assert_eq!(markers[0].plugin_id, "example.com/test/plugin");
 }
@@ -323,7 +323,7 @@ async fn restore_same_commit_noop_clears_failure_markers() {
     assert!(target.exists());
 
     // Step 2: write a failure marker manually (simulating a prior failed operation).
-    let marker = lazytmux::state::FailureMarker {
+    let marker = tmup::state::FailureMarker {
         plugin_id: "example.com/test/plugin".into(),
         commit: commit.clone(),
         build_hash: "fakehash".into(),
@@ -331,15 +331,15 @@ async fn restore_same_commit_noop_clears_failure_markers() {
         failed_at: "2024-01-01T00:00:00Z".into(),
         stderr_summary: String::new(),
     };
-    lazytmux::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
-    let markers = lazytmux::state::read_failure_markers(&paths.failures_root).unwrap();
+    tmup::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
+    let markers = tmup::state::read_failure_markers(&paths.failures_root).unwrap();
     assert_eq!(markers.len(), 1, "failure marker should be present");
 
     // Step 3: restore — disk HEAD already equals lock commit, so this is a no-op.
     // It should still clear the stale failure marker.
     plugin::restore(&cfg_ok, &lock, &paths, None, &NullReporter).await.unwrap();
 
-    let markers = lazytmux::state::read_failure_markers(&paths.failures_root).unwrap();
+    let markers = tmup::state::read_failure_markers(&paths.failures_root).unwrap();
     assert!(
         markers.is_empty(),
         "failure markers should be cleared after same-commit restore no-op"
@@ -360,7 +360,7 @@ async fn restore_same_commit_noop_propagates_marker_cleanup_failures() {
     let mut lock = LockFile::new();
     plugin::install(&cfg_ok, &mut lock, &paths, None, false, &NullReporter).await.unwrap();
 
-    let marker = lazytmux::state::FailureMarker {
+    let marker = tmup::state::FailureMarker {
         plugin_id: "example.com/test/plugin".into(),
         commit,
         build_hash: "fakehash".into(),
@@ -368,7 +368,7 @@ async fn restore_same_commit_noop_propagates_marker_cleanup_failures() {
         failed_at: "2024-01-01T00:00:00Z".into(),
         stderr_summary: String::new(),
     };
-    lazytmux::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
+    tmup::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
 
     #[cfg(unix)]
     let original_mode = {
@@ -394,7 +394,7 @@ async fn restore_same_commit_noop_propagates_marker_cleanup_failures() {
     }
 
     assert!(result.is_err(), "restore should surface marker cleanup failures");
-    let markers = lazytmux::state::read_failure_markers(&paths.failures_root).unwrap();
+    let markers = tmup::state::read_failure_markers(&paths.failures_root).unwrap();
     assert_eq!(markers.len(), 1, "failed cleanup should leave the marker in place");
 }
 
@@ -444,7 +444,7 @@ async fn update_same_commit_noop_clears_failure_markers() {
     );
 
     // Failure marker should exist.
-    let markers = lazytmux::state::read_failure_markers(&paths.failures_root).unwrap();
+    let markers = tmup::state::read_failure_markers(&paths.failures_root).unwrap();
     assert!(!markers.is_empty(), "failure marker should be recorded");
 
     // Step 3: remote resets main back to commit_a (simulating upstream rollback).
@@ -457,7 +457,7 @@ async fn update_same_commit_noop_clears_failure_markers() {
     assert!(result.is_ok(), "same-commit update should succeed");
 
     // Failure markers should now be cleared.
-    let markers = lazytmux::state::read_failure_markers(&paths.failures_root).unwrap();
+    let markers = tmup::state::read_failure_markers(&paths.failures_root).unwrap();
     assert!(
         markers.is_empty(),
         "failure markers should be cleared after successful same-commit update"

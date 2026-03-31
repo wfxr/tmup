@@ -1,4 +1,4 @@
-use lazytmux::config::parse_config;
+use tmup::config::parse_config;
 
 #[test]
 fn normalizes_github_shorthand_to_full_id() {

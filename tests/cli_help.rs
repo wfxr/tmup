@@ -3,7 +3,7 @@ use predicates::prelude::*;
 
 #[test]
 fn help_lists_core_commands() {
-    Command::cargo_bin("lazytmux")
+    Command::cargo_bin("tmup")
         .unwrap()
         .arg("--help")
         .assert()

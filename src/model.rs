@@ -7,7 +7,7 @@ pub struct Config {
     pub plugins: Vec<PluginSpec>,
 }
 
-/// Global options that control lazytmux behaviour.
+/// Global options that control tmup behaviour.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
     /// Automatically install missing plugins on tmux startup when true.

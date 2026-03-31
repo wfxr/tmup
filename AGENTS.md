@@ -2,8 +2,8 @@
 
 ## Project Overview
 
-`lazytmux` is a Rust CLI tmux plugin manager inspired by `lazy.nvim`.
-It is built around config-driven sync from `lazy.kdl`, lockfile-backed reproducibility with `lazylock.json`, safe publish and rollback semantics, and a persistent bare repo cache for remote plugins.
+`tmup` is a Rust CLI tmux plugin manager inspired by `lazy.nvim`.
+It is built around config-driven sync from `tmup.kdl`, lockfile-backed reproducibility with `tmup.lock`, safe publish and rollback semantics, and a persistent bare repo cache for remote plugins.
 
 Keep these behavioral invariants intact when making changes:
 

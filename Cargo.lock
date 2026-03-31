@@ -443,9 +443,9 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hybrid-array"
-version = "0.4.8"
+version = "0.4.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8655f91cd07f2b9d0c24137bd650fe69617773435ee5ec83022377777ce65ef1"
+checksum = "1a79f2aff40c18ab8615ddc5caa9eb5b96314aef18fe5823090f204ad988e813"
 dependencies = [
  "typenum",
 ]
@@ -489,30 +489,6 @@ dependencies = [
  "miette",
  "num",
  "winnow",
-]
-
-[[package]]
-name = "lazytmux"
-version = "0.1.0"
-dependencies = [
- "anstream",
- "anyhow",
- "assert_cmd",
- "base16ct",
- "clap",
- "etcetera",
- "fd-lock",
- "futures",
- "kdl",
- "owo-colors",
- "predicates",
- "serde",
- "serde_json",
- "sha2",
- "shellexpand",
- "tabled",
- "tempfile",
- "tokio",
 ]
 
 [[package]]
@@ -572,9 +548,9 @@ checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
 name = "mio"
-version = "1.1.1"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a69bcab0ad47271a0234d9422b131806bf3968021e5dc9328caf2d4cd58557fc"
+checksum = "50b7e5b27aa02a74bac8c3f23f448f8d87ff11f92d3aac1a6ed369ee08cc56c1"
 dependencies = [
  "libc",
  "wasi",
@@ -991,6 +967,30 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "tmup"
+version = "0.1.0"
+dependencies = [
+ "anstream",
+ "anyhow",
+ "assert_cmd",
+ "base16ct",
+ "clap",
+ "etcetera",
+ "fd-lock",
+ "futures",
+ "kdl",
+ "owo-colors",
+ "predicates",
+ "serde",
+ "serde_json",
+ "sha2",
+ "shellexpand",
+ "tabled",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

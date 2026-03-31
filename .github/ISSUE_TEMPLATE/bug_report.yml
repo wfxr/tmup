@@ -16,8 +16,8 @@ body:
       label: Steps to Reproduce
       description: Steps to reproduce the behavior.
       placeholder: |
-        1. Create a `lazy.kdl` with ...
-        2. Run `lazytmux sync`
+        1. Create a `tmup.kdl` with ...
+        2. Run `tmup sync`
         3. See error ...
     validations:
       required: true
@@ -34,7 +34,7 @@ body:
     id: config
     attributes:
       label: Configuration
-      description: Your `lazy.kdl` (relevant parts).
+      description: Your `tmup.kdl` (relevant parts).
       render: kdl
 
   - type: textarea
@@ -46,7 +46,7 @@ body:
       value: |
         - OS:
         - tmux version:
-        - lazytmux version:
+        - tmup version:
         - Shell:
     validations:
       required: true

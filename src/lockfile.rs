@@ -155,7 +155,7 @@ pub fn read_lockfile(path: &Path) -> Result<LockFile> {
 
 /// Atomic write: write to .tmp, fsync, then rename.
 pub fn write_lockfile_atomic(path: &Path, lock: &LockFile) -> Result<()> {
-    let tmp_path = path.with_extension("json.tmp");
+    let tmp_path = path.with_extension("lock.tmp");
     let mut normalized = lock.clone();
     normalized.version = LOCKFILE_VERSION;
     let json = serde_json::to_string_pretty(&normalized).context("failed to serialize lockfile")?;

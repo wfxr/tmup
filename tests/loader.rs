@@ -1,7 +1,7 @@
-use lazytmux::config::parse_config;
-use lazytmux::loader::build_load_plan;
-use lazytmux::tmux::TmuxCommand;
 use tempfile::tempdir;
+use tmup::config::parse_config;
+use tmup::loader::build_load_plan;
+use tmup::tmux::TmuxCommand;
 
 #[test]
 fn loader_sets_env_then_opts_then_runs_tmux_files_in_order() {

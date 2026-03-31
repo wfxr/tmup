@@ -6,14 +6,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use lazytmux::config::parse_config;
-use lazytmux::lockfile::{LockEntry, LockFile, read_lockfile};
-use lazytmux::model::{Config, Options, PluginSource, PluginSpec, Tracking};
-use lazytmux::progress::NullReporter;
-use lazytmux::state::{Paths, build_command_hash};
-use lazytmux::sync::{self, SyncMode, SyncPolicy};
-use lazytmux::{planner, plugin, prepare};
 use tempfile::tempdir;
+use tmup::config::parse_config;
+use tmup::lockfile::{LockEntry, LockFile, read_lockfile};
+use tmup::model::{Config, Options, PluginSource, PluginSpec, Tracking};
+use tmup::progress::NullReporter;
+use tmup::state::{Paths, build_command_hash};
+use tmup::sync::{self, SyncMode, SyncPolicy};
+use tmup::{planner, plugin, prepare};
 use utils::*;
 
 /// Create a minimal but real git repo at `path` with one commit, returning
@@ -174,7 +174,7 @@ async fn install_creates_repo_cache_and_uses_locked_commit() {
 
     assert!(paths.repo_cache_dir("example.com/test/plugin").exists());
     assert_eq!(
-        lazytmux::git::head_commit_sync(&paths.plugin_dir("example.com/test/plugin")).unwrap(),
+        tmup::git::head_commit_sync(&paths.plugin_dir("example.com/test/plugin")).unwrap(),
         commit
     );
 }
@@ -231,7 +231,7 @@ async fn update_reuses_repo_cache_after_remote_advance() {
 
     assert_eq!(lock.plugins["example.com/test/plugin"].commit, commit_b);
     assert_eq!(
-        lazytmux::git::head_commit_sync(&paths.plugin_dir("example.com/test/plugin")).unwrap(),
+        tmup::git::head_commit_sync(&paths.plugin_dir("example.com/test/plugin")).unwrap(),
         commit_b
     );
 }
@@ -332,7 +332,7 @@ async fn update_noop_marker_clear_failure_does_not_advance_in_memory_lock() {
     let old_entry = lock.plugins["example.com/test/plugin"].clone();
     assert_ne!(
         old_entry.config_hash,
-        lazytmux::lockfile::remote_plugin_config_hash(&cfg.plugins[0]),
+        tmup::lockfile::remote_plugin_config_hash(&cfg.plugins[0]),
         "test setup requires update to rewrite the in-memory lock entry in the no-op path"
     );
 
@@ -409,7 +409,7 @@ fn is_known_failure_detects_matching_key() {
     paths.ensure_dirs().unwrap();
 
     // Write a failure marker
-    let marker = lazytmux::state::FailureMarker {
+    let marker = tmup::state::FailureMarker {
         plugin_id: "github.com/user/repo".into(),
         commit: "abc123".into(),
         build_hash: build_command_hash("make"),
@@ -417,7 +417,7 @@ fn is_known_failure_detects_matching_key() {
         failed_at: "now".into(),
         stderr_summary: "error".into(),
     };
-    lazytmux::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
+    tmup::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
 
     // Same tuple: should be known
     assert!(plugin::is_known_failure(&paths, "github.com/user/repo", "abc123", "make").unwrap());
@@ -471,14 +471,14 @@ fn list_shows_broken_for_empty_dotgit() {
 fn update_skips_pinned_tag() {
     let config = parse_config(r#"plugin "user/repo" tag="v1.0""#).unwrap();
     let spec = &config.plugins[0];
-    assert!(matches!(spec.tracking, lazytmux::model::Tracking::Tag(_)));
+    assert!(matches!(spec.tracking, tmup::model::Tracking::Tag(_)));
 }
 
 #[test]
 fn update_skips_pinned_commit() {
     let config = parse_config(r#"plugin "user/repo" commit="abc123""#).unwrap();
     let spec = &config.plugins[0];
-    assert!(matches!(spec.tracking, lazytmux::model::Tracking::Commit(_)));
+    assert!(matches!(spec.tracking, tmup::model::Tracking::Commit(_)));
 }
 
 #[test]
@@ -498,7 +498,7 @@ fn list_shows_both_state_and_build_status_for_build_failure() {
     // Update lock to match the real commit
     lock.plugins.insert("github.com/user/repo".into(), LockEntry::branch("main", &commit));
 
-    let marker = lazytmux::state::FailureMarker {
+    let marker = tmup::state::FailureMarker {
         plugin_id: "github.com/user/repo".into(),
         commit: commit.clone(),
         build_hash: build_command_hash("make"),
@@ -506,7 +506,7 @@ fn list_shows_both_state_and_build_status_for_build_failure() {
         failed_at: "now".into(),
         stderr_summary: "error".into(),
     };
-    lazytmux::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
+    tmup::state::write_failure_marker(&paths.failures_root, &marker).unwrap();
 
     let statuses = plugin::list(&config, &lock, &paths).unwrap();
     assert_eq!(statuses[0].state, planner::PluginState::Installed);
@@ -524,9 +524,9 @@ fn stale_lock_detection_catches_missing_and_mismatched_sync_metadata() {
 
     let mut aligned_lock = LockFile::new();
     let mut entry = LockEntry::branch("main", "abc123");
-    entry.config_hash = lazytmux::lockfile::remote_plugin_config_hash(&config.plugins[0]);
+    entry.config_hash = tmup::lockfile::remote_plugin_config_hash(&config.plugins[0]);
     aligned_lock.plugins.insert("github.com/user/repo".into(), entry);
-    aligned_lock.config_fingerprint = Some(lazytmux::lockfile::config_fingerprint(&config));
+    aligned_lock.config_fingerprint = Some(tmup::lockfile::config_fingerprint(&config));
     assert!(!sync::lock_is_stale(&config, &aligned_lock));
 
     aligned_lock.config_fingerprint = Some("stale-top-level".into());

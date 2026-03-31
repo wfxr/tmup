@@ -4,10 +4,10 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use lazytmux::model::Tracking;
-use lazytmux::state::Paths;
-use lazytmux::{git, repo};
 use tempfile::tempdir;
+use tmup::model::Tracking;
+use tmup::state::Paths;
+use tmup::{git, repo};
 use utils::*;
 
 async fn prepare_tracking(

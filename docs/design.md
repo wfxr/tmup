@@ -1,4 +1,4 @@
-# lazy.tmux Design
+# tmup Design
 
 ## Context
 
@@ -6,7 +6,7 @@ TPM (tmux plugin manager) has been unmaintained for years. It suffers from
 structural limitations: pure bash implementation, weak error handling, serial
 install/update, no lock file, and no reproducible state management.
 
-lazy.tmux is a Rust-based tmux plugin manager inspired by lazy.nvim's design
+tmup is a Rust-based tmux plugin manager inspired by lazy.nvim's design
 philosophy: concise configuration, concurrent operations, reproducible
 environments, and safe staged publish semantics.
 
@@ -20,7 +20,7 @@ script-friendly behavior with reliable exit codes.
 
 ### Goals
 
-1. **Reproducible**: the same `lazy.kdl` + `lazylock.json` snapshot produces
+1. **Reproducible**: the same `tmup.kdl` + `tmup.lock` snapshot produces
    identical plugin versions on any machine.
 2. **Compatible with common TPM plugins**: supports plugins that work through
    `*.tmux` entry scripts and `@option` settings.
@@ -56,7 +56,7 @@ script-friendly behavior with reliable exit codes.
 
 | Principle | Description |
 |-----------|-------------|
-| Config-driven sync | `lazy.kdl` is the desired state for remote plugins; `lazylock.json` is the resolved snapshot that mutating commands sync first. |
+| Config-driven sync | `tmup.kdl` is the desired state for remote plugins; `tmup.lock` is the resolved snapshot that mutating commands sync first. |
 | Prepare concurrent, apply serial | Prepare-phase git operations (clone, fetch, resolve, stage) run in parallel with bounded concurrency. Publish, build, lock mutation, and tmux loading execute serially in declaration order. |
 | URL-derived identity | Remote plugin IDs are derived from canonical source URLs, avoiding conflicts and manual naming. |
 | Zero magic options | `opt-prefix` defaults to empty. No automatic prefix inference or separator insertion. |
@@ -90,16 +90,16 @@ Rules:
 - `name` defaults to the last segment of the ID (basename); used only for
   display in `list` output and log messages.
 - The CLI target selector is `id`, not `name`.
-- The managed plugin tree is lazy.tmux-owned state; manually cloning into it,
+- The managed plugin tree is tmup-owned state; manually cloning into it,
   mutating repos in place, or introducing symlink-based layouts is unsupported.
-- Cleanup is defined only for undeclared remote directories that lazy.tmux
+- Cleanup is defined only for undeclared remote directories that tmup
   still recognizes as managed git repos (currently: directories under
   `plugin_root` that still contain `.git`).
 
 Directory layout:
 
 ```text
-~/.local/share/lazytmux/plugins/
+~/.local/share/tmup/plugins/
   +-- github.com/
   |   +-- tmux-plugins/
   |   |   +-- tmux-sensible/
@@ -120,7 +120,7 @@ participate in `sync` / `install` / `update` / `restore`.
 - Source must be a local path.
 - `~`, `$VAR`, and `${VAR}` are expanded before validation.
 - After expansion, the source must be an absolute path.
-- Loaded in-place by lazy.tmux.
+- Loaded in-place by tmup.
 - `name` is for display only.
 - `clean` never removes local plugin sources.
 
@@ -141,7 +141,7 @@ direct children are plugin directories. This is an explicit non-goal.
 ## 4. Configuration (KDL)
 
 ```kdl
-// ~/.config/tmux/lazy.kdl
+// ~/.config/tmux/tmup.kdl
 
 options {
     auto-install #true
@@ -240,14 +240,14 @@ The raw KDL text is not hashed. Comments, formatting, `name`, `opt`,
 ### 5.1 Command Overview
 
 ```text
-lazytmux init               # tmux startup: install missing, apply opts, load plugins
-lazytmux sync [id]          # reconcile config into the lock snapshot
-lazytmux install [id]       # install all/specified missing remote plugins after sync
-lazytmux update [id]        # update unchanged floating selectors after sync
-lazytmux restore [id]       # restore plugins to lock-recorded commits
-lazytmux clean              # remove undeclared managed remote repos
-lazytmux list               # list plugin status
-lazytmux migrate            # migrate from .tmux.conf TPM declarations (planned)
+tmup init               # tmux startup: install missing, apply opts, load plugins
+tmup sync [id]          # reconcile config into the lock snapshot
+tmup install [id]       # install all/specified missing remote plugins after sync
+tmup update [id]        # update unchanged floating selectors after sync
+tmup restore [id]       # restore plugins to lock-recorded commits
+tmup clean              # remove undeclared managed remote repos
+tmup list               # list plugin status
+tmup migrate            # migrate from .tmux.conf TPM declarations (planned)
 ```
 
 The CLI target selector is the **remote plugin ID**. `name` is for display
@@ -261,7 +261,7 @@ and mutation.
 
 ```text
 1. Acquire the global operation lock (blocking).
-2. Parse lazy.kdl, read lazylock.json, validate configuration.
+2. Parse tmup.kdl, read tmup.lock, validate configuration.
 3. Run implicit incremental sync as the only remote-plugin reconciliation pass.
    - Install newly declared remote plugins only when auto-install=true.
    - Repair missing, broken, or drifted managed plugin repos against the lock
@@ -289,7 +289,7 @@ Key constraints:
 
 ### 5.3 `sync [id]`
 
-- Public command that reconciles remote plugin config into `lazylock.json`.
+- Public command that reconciles remote plugin config into `tmup.lock`.
 - Uses canonical remote plugin IDs as selectors.
 - Applies source / selector / `build` changes incrementally by plugin ID.
 - Removed remote plugins lose their lock entries immediately.
@@ -338,7 +338,7 @@ ones and writing the lock snapshot.
 ### 5.7 `clean`
 
 - Runs a prune-only implicit sync first.
-- Removes undeclared remote directories from the managed tree when lazy.tmux
+- Removes undeclared remote directories from the managed tree when tmup
   still recognizes them as managed git repos.
 - Does not promise to clean arbitrary residue left behind by manual edits,
   symlink layouts, or broken directories that no longer match the managed-repo
@@ -361,7 +361,7 @@ Default columns:
 | `current` | Installed HEAD commit (short hash or `-`) |
 | `lock` | Lock-recorded commit (short hash or `-`) |
 
-Verbose columns (`lazytmux list -v`):
+Verbose columns (`tmup list -v`):
 
 | Column | Description |
 |--------|-------------|
@@ -393,8 +393,8 @@ Examples:
 - Update build failure: `state=installed`, `last-result=build-failed`
 - Fresh install build failure: `state=missing`, `last-result=build-failed`
 
-`list` is read-only. If the lock snapshot is stale relative to `lazy.kdl`,
-it prints a warning before the table and does not mutate `lazylock.json`.
+`list` is read-only. If the lock snapshot is stale relative to `tmup.kdl`,
+it prints a warning before the table and does not mutate `tmup.lock`.
 
 ### 5.9 `migrate` (planned)
 
@@ -402,7 +402,7 @@ it prints a warning before the table and does not mutate `lazylock.json`.
   `.tmux.conf`.
 - When `opt-prefix` cannot be reliably inferred, generates a TODO comment
   instead of guessing.
-- Does not overwrite an existing `lazy.kdl`.
+- Does not overwrite an existing `tmup.kdl`.
 
 ---
 
@@ -450,15 +450,15 @@ it prints a warning before the table and does not mutate `lazylock.json`.
 
 ### 6.3 Write Strategy
 
-1. Serialize to `lazylock.json.tmp`.
+1. Serialize to `tmup.lock.tmp`.
 2. `fsync`.
-3. `rename` to `lazylock.json`.
+3. `rename` to `tmup.lock`.
 4. Explicit sync and implicit sync preflights may still write updated metadata
    even when some plugins fail, preserving previous entries for failed plugins.
 
 ### 6.4 Read Error Handling
 
-If `lazylock.json` exists but cannot be read or parsed, lazy.tmux returns an
+If `tmup.lock` exists but cannot be read or parsed, tmup returns an
 error and aborts. It does **not** silently fall back to an empty lock file, as
 doing so could overwrite a valid lock with freshly resolved commits.
 
@@ -482,7 +482,7 @@ All mutating operations require the global exclusive lock:
 Lock file location:
 
 ```text
-$XDG_STATE_HOME/lazytmux/operations.lock
+$XDG_STATE_HOME/tmup/operations.lock
 ```
 
 The lock uses OS-level `flock(LOCK_EX)` and is released when the file
@@ -549,7 +549,7 @@ When the target directory already exists:
    guaranteed.
 
 This is not a lock-free atomic operation, but under the global operation lock
-it is safe for lazy.tmux's own reads and writes.
+it is safe for tmup's own reads and writes.
 
 ### 7.5 Lock File Commit Timing
 
@@ -561,7 +561,7 @@ it is safe for lazy.tmux's own reads and writes.
 
 ### 7.5 Build Failure Markers
 
-When a `build` command fails in staging, lazy.tmux records a
+When a `build` command fails in staging, tmup records a
 failure marker containing:
 
 - Plugin ID
@@ -612,10 +612,10 @@ operation failed.
 | Option setting | `tmux set -g @key "value"` before sourcing |
 | Execution scope | All `*.tmux` files in the plugin directory |
 | Intra-plugin order | `*.tmux` files sorted lexicographically by filename |
-| Inter-plugin order | Serial execution in `lazy.kdl` declaration order |
+| Inter-plugin order | Serial execution in `tmup.kdl` declaration order |
 | Local plugins | Same opt application and `*.tmux` execution |
 
-Note: `TMUX_PLUGIN_MANAGER_PATH` points to lazy.tmux's plugin root, which uses
+Note: `TMUX_PLUGIN_MANAGER_PATH` points to tmup's plugin root, which uses
 the full-path layout, not TPM's flat layout.
 
 ### 8.2 Explicitly Unsupported Behavior
@@ -642,10 +642,10 @@ guaranteed.
 Users add to `.tmux.conf`:
 
 ```tmux
-run-shell "lazytmux init"
+run-shell "tmup init"
 ```
 
-This is the only required integration point. lazy.tmux handles environment
+This is the only required integration point. tmup handles environment
 setup, option application, and plugin loading within the `init` command.
 
 ---
@@ -653,10 +653,10 @@ setup, option application, and plugin loading within the `init` command.
 ## 10. Directory Structure
 
 ```text
-~/.config/tmux/lazy.kdl                 # user configuration
-~/.config/tmux/lazylock.json            # resolved lock snapshot (check into version control)
+~/.config/tmux/tmup.kdl                 # user configuration
+~/.config/tmux/tmup.lock            # resolved lock snapshot (check into version control)
 
-~/.local/share/lazytmux/
+~/.local/share/tmup/
   +-- plugins/                          # installed plugin checkouts
   |   +-- github.com/tmux-plugins/tmux-sensible/
   |   +-- github.com/catppuccin/tmux/
@@ -664,21 +664,21 @@ setup, option application, and plugin loading within the `init` command.
   +-- .staging/                         # staging area (same filesystem as plugins)
   +-- .repos/                           # persistent remote cache
 
-~/.local/state/lazytmux/
+~/.local/state/tmup/
   +-- operations.lock                   # global operation lock
   +-- failures/                         # build failure markers (JSON)
 ```
 
 Config file search order:
 
-1. `$LAZY_TMUX_CONFIG`
-2. `$XDG_CONFIG_HOME/tmux/lazy.kdl`
-3. `~/.config/tmux/lazy.kdl`
-4. `~/.tmux/lazy.kdl`
+1. `$TMUP_CONFIG`
+2. `$XDG_CONFIG_HOME/tmux/tmup.kdl`
+3. `~/.config/tmux/tmup.kdl`
+4. `~/.tmux/tmup.kdl`
 
-The active `lazylock.json` is always stored next to the resolved config file.
-For example, `LAZY_TMUX_CONFIG=/path/to/custom.kdl` uses
-`/path/to/lazylock.json`.
+The active `tmup.lock` is always stored next to the resolved config file.
+For example, `TMUP_CONFIG=/path/to/custom.kdl` uses
+`/path/to/tmup.lock`.
 
 ---
 
@@ -701,7 +701,7 @@ For example, `LAZY_TMUX_CONFIG=/path/to/custom.kdl` uses
 ## 12. Project Structure
 
 ```text
-lazytmux/
+tmup/
 +-- Cargo.toml
 +-- src/
 |   +-- main.rs              # CLI entry: dispatch to init/sync/install/update/restore/clean/list
@@ -712,7 +712,7 @@ lazytmux/
 |   +-- sync.rs              # Config-driven sync diffing, policies, reconcile engine
 |   +-- git.rs               # clone/fetch/checkout/publish (async + sync)
 |   +-- loader.rs            # Build tmux load plan: set-environment, set-option, run-shell
-|   +-- lockfile.rs          # lazylock.json read/write and fingerprint helpers
+|   +-- lockfile.rs          # tmup.lock read/write and fingerprint helpers
 |   +-- state.rs             # Paths, OperationLock, failure markers
 |   +-- tmux.rs              # TmuxCommand enum and execution
 +-- tests/
@@ -732,7 +732,7 @@ lazytmux/
 |   +-- cli_list.rs          # CLI list output formatting
 |   +-- cli_sync.rs          # Sync CLI behavior
 +-- examples/
-    +-- lazy.kdl             # Example configuration
+    +-- tmup.kdl             # Example configuration
 ```
 
 ---

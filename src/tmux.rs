@@ -184,9 +184,9 @@ pub struct InitUiTarget {
 
 /// Parameters for scheduling the deferred init bootstrap command.
 pub struct InitBootstrapSpec {
-    /// Path to the lazytmux executable.
+    /// Path to the tmup executable.
     pub exe: PathBuf,
-    /// Path to the lazytmux configuration file.
+    /// Path to the tmup configuration file.
     pub config_path: PathBuf,
     /// Root directory for persistent data.
     pub data_root: PathBuf,
@@ -212,9 +212,9 @@ impl InitBootstrapSpec {
 
 /// Parameters for spawning an init child process in a tmux popup or split.
 pub struct InitUiChildSpec {
-    /// Path to the lazytmux executable.
+    /// Path to the tmup executable.
     pub exe: PathBuf,
-    /// Path to the lazytmux configuration file.
+    /// Path to the tmup configuration file.
     pub config_path: PathBuf,
     /// Root directory for persistent data.
     pub data_root: PathBuf,
@@ -226,7 +226,7 @@ pub struct InitUiChildSpec {
 
 impl InitUiChildSpec {
     /// Build a shell wrapper that:
-    /// - runs the lazytmux child process
+    /// - runs the tmup child process
     /// - writes exit code to a result file
     /// - uses `trap` to guarantee `wait-for -S` fires on any exit path
     ///
@@ -360,7 +360,7 @@ pub fn spawn_init_popup(
     ];
     if supports_title {
         args.push("-T".to_string());
-        args.push(" lazytmux init (press #[bold,fg=red]q#[default] to exit) ".to_string());
+        args.push(" tmup init (press #[bold,fg=red]q#[default] to exit) ".to_string());
     }
     args.push("--".to_string());
     args.push(wrapper);
