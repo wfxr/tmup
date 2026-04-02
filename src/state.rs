@@ -169,8 +169,13 @@ fn resolve_home_dir_from_env(home: Option<&str>) -> Result<PathBuf> {
 }
 
 fn xdg_dir(var: &str, fallback_suffix: &str) -> Result<PathBuf> {
-    let home = resolve_home_dir()?;
-    Ok(xdg_dir_from_env(&home, std::env::var(var).ok().as_deref(), fallback_suffix))
+    match std::env::var(var).ok().map(PathBuf::from) {
+        Some(path) if path.is_absolute() => Ok(path),
+        _ => {
+            let home = resolve_home_dir()?;
+            Ok(xdg_dir_from_env(&home, None, fallback_suffix))
+        }
+    }
 }
 
 fn xdg_dir_from_env(home: &Path, value: Option<&str>, fallback_suffix: &str) -> PathBuf {

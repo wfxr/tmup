@@ -38,7 +38,7 @@ fn write_git_rewrite_config(root: &std::path::Path) -> std::path::PathBuf {
 }
 
 #[test]
-fn config_mode_cli_mixed_auto_creates_tmup_kdl_and_reads_tpm_config() {
+fn config_mode_cli_list_mixed_reads_tpm_config_without_scaffolding_tmup_kdl() {
     let dir = tempdir().unwrap();
     let config_home = dir.path().join("config");
     let config_dir = config_home.join("tmux");
@@ -55,12 +55,14 @@ fn config_mode_cli_mixed_auto_creates_tmup_kdl_and_reads_tpm_config() {
         .success()
         .stdout(predicate::str::contains("tmux-plugins/tmux-sensible"));
 
-    let created = std::fs::read_to_string(config_dir.join("tmup.kdl")).unwrap();
-    assert!(created.contains("tmup configuration"), "{created}");
+    assert!(
+        !config_dir.join("tmup.kdl").exists(),
+        "list should stay read-only and avoid scaffolding a missing tmup.kdl"
+    );
 }
 
 #[test]
-fn config_mode_cli_tmup_auto_creates_missing_kdl() {
+fn config_mode_cli_tmup_list_does_not_auto_create_missing_kdl() {
     let dir = tempdir().unwrap();
     let config_home = dir.path().join("config");
     let config_dir = config_home.join("tmux");
@@ -76,12 +78,11 @@ fn config_mode_cli_tmup_auto_creates_missing_kdl() {
         .assert()
         .success();
 
-    let created = std::fs::read_to_string(config_dir.join("tmup.kdl")).unwrap();
-    assert!(created.contains("tmup configuration"), "{created}");
+    assert!(!config_dir.join("tmup.kdl").exists(), "list should not create a default tmup.kdl");
 }
 
 #[test]
-fn config_mode_cli_mixed_auto_creates_missing_tmup_config_override() {
+fn config_mode_cli_list_mixed_does_not_auto_create_missing_tmup_config_override() {
     let dir = tempdir().unwrap();
     let config_home = dir.path().join("config");
     let config_dir = config_home.join("tmux");
@@ -101,9 +102,46 @@ fn config_mode_cli_mixed_auto_creates_missing_tmup_config_override() {
         .success()
         .stdout(predicate::str::contains("tmux-plugins/tmux-sensible"));
 
-    assert!(override_kdl.exists(), "expected missing TMUP_CONFIG path to be created");
+    assert!(!override_kdl.exists(), "list should not create a missing TMUP_CONFIG path");
     let lock = override_dir.join("tmup.lock");
     assert!(!lock.exists(), "list should not create a lockfile");
+}
+
+#[test]
+fn config_mode_cli_mixed_works_with_absolute_xdg_without_home() {
+    let dir = tempdir().unwrap();
+    let config_home = dir.path().join("config");
+    let config_dir = config_home.join("tmux");
+    write_file(&config_dir.join("tmux.conf"), "set -g @plugin 'tmux-plugins/tmux-sensible'\n");
+
+    Command::cargo_bin("tmup")
+        .unwrap()
+        .args(["list", "--config-mode=mixed"])
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_DATA_HOME", dir.path().join("data"))
+        .env("XDG_STATE_HOME", dir.path().join("state"))
+        .env_remove("HOME")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("tmux-plugins/tmux-sensible"));
+}
+
+#[test]
+fn config_mode_cli_mixed_without_tpm_config_still_works_without_home() {
+    let dir = tempdir().unwrap();
+    let config_home = dir.path().join("config");
+    std::fs::create_dir_all(config_home.join("tmux")).unwrap();
+
+    Command::cargo_bin("tmup")
+        .unwrap()
+        .args(["list", "--config-mode=mixed"])
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_DATA_HOME", dir.path().join("data"))
+        .env("XDG_STATE_HOME", dir.path().join("state"))
+        .env_remove("HOME")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Plugin"));
 }
 
 #[test]
