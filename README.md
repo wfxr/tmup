@@ -112,6 +112,15 @@ If the target `tmup.kdl` does not exist yet, tmup will create it automatically.
 
 `tmup.lock` lives next to the active `tmup.kdl`.
 
+tmup supports two config loading modes:
+
+- `tmup` — load only `tmup.kdl`
+- `mixed` — load `tmup.kdl` and TPM-style tmux plugin declarations together
+
+Use `--config-mode=mixed` on any command that reads config when you want to
+temporarily combine `tmup.kdl` with existing `set -g @plugin ...` lines from
+your tmux config.
+
 ### Full example
 
 ```kdl
@@ -199,6 +208,8 @@ tmup clean              # Remove undeclared managed remote repos
 tmup list [-v]          # Print plugin status table (`-v` for diagnostic columns)
 ```
 
+Commands that read config also accept `--config-mode=tmup|mixed`.
+
 ### `init` — startup path
 
 Designed for `run-shell "tmup init"` in `.tmux.conf`.
@@ -261,7 +272,7 @@ Outputs a table with separated **state** and **last-result** columns:
 | `none` | No operation attempted yet |
 
 If the lock snapshot is stale relative to `tmup.kdl`, `list` prints a warning
-before the table without mutating anything.
+before the table without mutating `tmup.lock` or plugin state.
 
 ## Directory Layout
 
@@ -317,11 +328,13 @@ This boundary is intentional, not an oversight.
 
 ## Migrating from TPM
 
-1. Create `~/.config/tmux/tmup.kdl` based on your `set -g @plugin` lines.
-2. Replace the TPM `run` line in `.tmux.conf` with `run-shell "tmup init"`.
-3. Restart tmux. tmup will clone all plugins fresh and generate the lock snapshot.
-4. Commit `tmup.kdl` and `tmup.lock` to your dotfiles repo.
-5. Remove the old `~/.tmux/plugins/` directory when satisfied.
+1. Replace the TPM `run` line in `.tmux.conf` with `run-shell "tmup init --config-mode=mixed"`.
+2. Restart tmux. tmup will read both `tmup.kdl` and existing TPM-style
+   `set -g @plugin` declarations, then generate `tmup.lock`.
+3. Move plugins gradually from `.tmux.conf` into `~/.config/tmux/tmup.kdl`.
+4. Once migration is complete, switch back to plain `run-shell "tmup init"`.
+5. Commit `tmup.kdl` and `tmup.lock` to your dotfiles repo.
+6. Remove the old `~/.tmux/plugins/` directory when satisfied.
 
 ## Roadmap
 

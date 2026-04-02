@@ -2,8 +2,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use crate::config::{build_remote_plugin_spec, validate_unique_ids};
+use crate::config::build_remote_plugin_spec;
 use crate::model::{Config, Options, PluginSpec, Tracking};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourcedFile {
+    path: String,
+    quiet: bool,
+}
 
 /// Resolve the default TPM-style tmux config path from the supported search order.
 pub fn resolve_config_path() -> Result<PathBuf> {
@@ -30,6 +36,7 @@ pub fn resolve_config_path() -> Result<PathBuf> {
 /// Load plugin declarations from a TPM-style tmux config file.
 pub fn load_config_from_path(path: &Path) -> Result<Config> {
     let mut plugins = Vec::new();
+    let mut seen_remote_ids = std::collections::HashSet::new();
     for (source_path, content) in read_scan_inputs(path)? {
         for (lineno, line) in content.lines().enumerate() {
             let Some(raw) = plugin_declaration(line) else {
@@ -42,11 +49,15 @@ pub fn load_config_from_path(path: &Path) -> Result<Config> {
                     lineno + 1
                 )
             })?;
-            plugins.push(spec);
+            let Some(id) = spec.remote_id() else {
+                continue;
+            };
+            if seen_remote_ids.insert(id.to_string()) {
+                plugins.push(spec);
+            }
         }
     }
 
-    validate_unique_ids(&plugins)?;
     Ok(Config { options: Options::default(), plugins })
 }
 
@@ -58,30 +69,47 @@ fn read_scan_inputs(path: &Path) -> Result<Vec<(PathBuf, String)>> {
     // Intentionally only scans direct sourced files discovered from the root tmux config,
     // matching current TPM behavior instead of recursively expanding nested includes.
     for sourced in direct_sourced_files(&root) {
-        let sourced_path = expand_source_path(&sourced);
-        let content = std::fs::read_to_string(&sourced_path).with_context(|| {
-            format!("failed to read sourced tmux config: {}", sourced_path.display())
-        })?;
+        let sourced_path = expand_source_path(&sourced.path);
+        let content = match std::fs::read_to_string(&sourced_path) {
+            Ok(content) => content,
+            Err(err) if sourced.quiet && err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("failed to read sourced tmux config: {}", sourced_path.display())
+                });
+            }
+        };
         inputs.push((sourced_path, content));
     }
 
     Ok(inputs)
 }
 
-fn direct_sourced_files(input: &str) -> Vec<String> {
+fn direct_sourced_files(input: &str) -> Vec<SourcedFile> {
     input.lines().filter_map(source_directive).collect()
 }
 
-fn source_directive(line: &str) -> Option<String> {
+fn source_directive(line: &str) -> Option<SourcedFile> {
     let tokens = tokenize_tmux_line(line);
     if tokens.len() < 2 {
         return None;
     }
 
     match tokens[0].as_str() {
-        "source" | "source-file" => tokens.get(1).cloned(),
+        "source" | "source-file" => {
+            let (quiet, path_index) = match tokens.get(1) {
+                Some(flag) if is_quiet_source_flag(flag) => (true, 2),
+                Some(_) => (false, 1),
+                None => return None,
+            };
+            tokens.get(path_index).cloned().map(|path| SourcedFile { path, quiet })
+        }
         _ => None,
     }
+}
+
+fn is_quiet_source_flag(token: &str) -> bool {
+    token.starts_with('-') && token[1..].chars().all(|ch| ch == 'q') && token.len() > 1
 }
 
 fn plugin_declaration(line: &str) -> Option<String> {
