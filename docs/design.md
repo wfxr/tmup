@@ -159,6 +159,8 @@ In `mixed` mode:
 - `tmup.kdl` wins on conflict
 - a warning is emitted when a TPM declaration is ignored because a KDL entry
   for the same remote plugin ID exists
+- repeated TPM declarations for the same canonical remote plugin ID collapse to
+  the first declaration
 - local plugins may come only from `tmup.kdl`
 
 ### 4.1 tmup KDL
@@ -241,6 +243,8 @@ Rules:
 2. `branch`, `tag`, `commit` are mutually exclusive.
 3. `local=true` requires a path that expands to an absolute local path.
 4. Remote plugins always enter the lock snapshot after successful sync; local plugins never do.
+5. Local plugins cannot declare `branch` / `tag` / `commit`.
+6. `concurrency` must be an integer >= 1 and fit the platform `usize`.
 
 ### 4.2 TPM-Compatible tmux Config
 
@@ -269,8 +273,6 @@ Supported `source-file` behavior intentionally matches current TPM behavior:
 tmup does not infer ownership of ordinary `@foo` tmux options in TPM mode.
 Those options remain tmux-managed runtime state and are consumed by plugins in
 the usual way when their `*.tmux` scripts execute.
-5. Local plugins cannot declare `branch` / `tag` / `commit`.
-6. `concurrency` must be an integer >= 1 and fit the platform `usize`.
 
 ### 4.5 Lock-Affecting Inputs
 
@@ -449,9 +451,9 @@ Examples:
 - Update build failure: `state=installed`, `last-result=build-failed`
 - Fresh install build failure: `state=missing`, `last-result=build-failed`
 
-`list` is read-only. If the lock snapshot is stale relative to the effective
-configuration for the selected `--config-mode`, it prints a warning before the
-table and does not mutate `tmup.lock`.
+`list` does not mutate `tmup.lock` or plugin state. If the lock snapshot is
+stale relative to the effective configuration for the selected
+`--config-mode`, it prints a warning before the table.
 
 ## 6. Lock File
 

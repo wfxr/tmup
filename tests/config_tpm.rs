@@ -54,6 +54,24 @@ fn config_tpm_accepts_https_and_ssh_sources() {
 }
 
 #[test]
+fn config_tpm_deduplicates_equivalent_remote_plugin_ids() {
+    let dir = tempdir().unwrap();
+    let tmux_conf = dir.path().join("tmux.conf");
+    write_file(
+        &tmux_conf,
+        concat!(
+            "set -g @plugin 'tmux-plugins/tmux-sensible'\n",
+            "set -g @plugin 'https://github.com/tmux-plugins/tmux-sensible.git'\n",
+        ),
+    );
+
+    let cfg = load_config_from_path(&tmux_conf).unwrap();
+
+    assert_eq!(cfg.plugins.len(), 1);
+    assert_eq!(cfg.plugins[0].remote_id().unwrap(), "github.com/tmux-plugins/tmux-sensible");
+}
+
+#[test]
 fn config_tpm_reads_direct_sourced_file() {
     let dir = tempdir().unwrap();
     let tmux_conf = dir.path().join("tmux.conf");
@@ -65,6 +83,39 @@ fn config_tpm_reads_direct_sourced_file() {
 
     assert_eq!(cfg.plugins.len(), 1);
     assert_eq!(cfg.plugins[0].remote_id().unwrap(), "github.com/tmux-plugins/tmux-yank");
+}
+
+#[test]
+fn config_tpm_reads_direct_sourced_file_with_quiet_flag() {
+    let dir = tempdir().unwrap();
+    let tmux_conf = dir.path().join("tmux.conf");
+    let sourced = dir.path().join("plugins.conf");
+    write_file(&tmux_conf, &format!("source-file -q '{}'\n", sourced.display()));
+    write_file(&sourced, "set -g @plugin 'tmux-plugins/tmux-yank'\n");
+
+    let cfg = load_config_from_path(&tmux_conf).unwrap();
+
+    assert_eq!(cfg.plugins.len(), 1);
+    assert_eq!(cfg.plugins[0].remote_id().unwrap(), "github.com/tmux-plugins/tmux-yank");
+}
+
+#[test]
+fn config_tpm_ignores_missing_quiet_sourced_file() {
+    let dir = tempdir().unwrap();
+    let tmux_conf = dir.path().join("tmux.conf");
+    let missing = dir.path().join("missing.conf");
+    write_file(
+        &tmux_conf,
+        &format!(
+            concat!("set -g @plugin 'tmux-plugins/tmux-sensible'\n", "source-file -q '{}'\n"),
+            missing.display()
+        ),
+    );
+
+    let cfg = load_config_from_path(&tmux_conf).unwrap();
+
+    assert_eq!(cfg.plugins.len(), 1);
+    assert_eq!(cfg.plugins[0].remote_id().unwrap(), "github.com/tmux-plugins/tmux-sensible");
 }
 
 #[test]
