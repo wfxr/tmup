@@ -30,9 +30,11 @@ pub struct Paths {
 impl Paths {
     /// Resolve paths from the XDG base directories of the current user.
     pub fn resolve() -> Result<Self> {
-        let data_dir = xdg_dir("XDG_DATA_HOME", ".local/share")?.join("tmup");
-        let state_dir = xdg_dir("XDG_STATE_HOME", ".local/state")?.join("tmup");
-        let config_dir = tmux_config_dir()?;
+        let home_dir = resolve_home_dir().ok();
+        let data_dir = xdg_dir("XDG_DATA_HOME", ".local/share", home_dir.as_deref())?.join("tmup");
+        let state_dir =
+            xdg_dir("XDG_STATE_HOME", ".local/state", home_dir.as_deref())?.join("tmup");
+        let config_dir = tmux_config_dir(home_dir.as_deref())?;
 
         Ok(Self {
             plugin_root: data_dir.join("plugins"),
@@ -168,13 +170,14 @@ fn resolve_home_dir_from_env(home: Option<&str>) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn xdg_dir(var: &str, fallback_suffix: &str) -> Result<PathBuf> {
+fn xdg_dir(var: &str, fallback_suffix: &str, home: Option<&Path>) -> Result<PathBuf> {
     match std::env::var(var).ok().map(PathBuf::from) {
         Some(path) if path.is_absolute() => Ok(path),
-        _ => {
-            let home = resolve_home_dir()?;
-            Ok(xdg_dir_from_env(&home, None, fallback_suffix))
-        }
+        _ => Ok(xdg_dir_from_env(
+            home.context("HOME must be set to an absolute path")?,
+            None,
+            fallback_suffix,
+        )),
     }
 }
 
@@ -185,8 +188,8 @@ fn xdg_dir_from_env(home: &Path, value: Option<&str>, fallback_suffix: &str) -> 
     }
 }
 
-fn tmux_config_dir() -> Result<PathBuf> {
-    Ok(xdg_dir("XDG_CONFIG_HOME", ".config")?.join("tmux"))
+fn tmux_config_dir(home: Option<&Path>) -> Result<PathBuf> {
+    Ok(xdg_dir("XDG_CONFIG_HOME", ".config", home)?.join("tmux"))
 }
 
 fn checked_plugin_id(id: &str) -> &str {

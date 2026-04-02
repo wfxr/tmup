@@ -3,39 +3,7 @@ mod utils;
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::tempdir;
-use utils::{git, push_branch_commit};
-
-fn write_file(path: &std::path::Path, content: &str) {
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, content).unwrap();
-}
-
-fn make_remote_repo(root: &std::path::Path) {
-    let work = root.join("work");
-    std::fs::create_dir_all(&work).unwrap();
-
-    git(&["init", "-b", "main"], &work);
-    std::fs::write(work.join("init.tmux"), "#!/bin/sh\n").unwrap();
-    git(&["add", "."], &work);
-    git(&["commit", "-m", "init"], &work);
-
-    let bare_parent = root.join("remotes/example.com/test");
-    std::fs::create_dir_all(&bare_parent).unwrap();
-    let bare = bare_parent.join("plugin.git");
-    git(&["clone", "--bare", work.to_str().unwrap(), bare.to_str().unwrap()], root);
-    push_branch_commit(&bare, "feature", "feature");
-}
-
-fn write_git_rewrite_config(root: &std::path::Path) -> std::path::PathBuf {
-    let gitconfig = root.join("gitconfig");
-    let rewritten_base = format!("file://{}/", root.join("remotes/example.com").display());
-    std::fs::write(
-        &gitconfig,
-        format!("[url \"{rewritten_base}\"]\n    insteadOf = https://example.com/\n"),
-    )
-    .unwrap();
-    gitconfig
-}
+use utils::{make_remote_repo, push_branch_commit, write_file, write_git_rewrite_config};
 
 #[test]
 fn config_mode_cli_list_mixed_reads_tpm_config_without_scaffolding_tmup_kdl() {
@@ -82,7 +50,7 @@ fn config_mode_cli_tmup_list_does_not_auto_create_missing_kdl() {
 }
 
 #[test]
-fn config_mode_cli_list_mixed_does_not_auto_create_missing_tmup_config_override() {
+fn config_mode_cli_list_mixed_rejects_missing_tmup_config_override() {
     let dir = tempdir().unwrap();
     let config_home = dir.path().join("config");
     let config_dir = config_home.join("tmux");
@@ -99,12 +67,35 @@ fn config_mode_cli_list_mixed_does_not_auto_create_missing_tmup_config_override(
         .env("XDG_STATE_HOME", dir.path().join("state"))
         .env("HOME", dir.path())
         .assert()
-        .success()
-        .stdout(predicate::str::contains("tmux-plugins/tmux-sensible"));
+        .failure()
+        .stderr(predicate::str::contains("TMUP_CONFIG"))
+        .stderr(predicate::str::contains("existing file"));
 
     assert!(!override_kdl.exists(), "list should not create a missing TMUP_CONFIG path");
-    let lock = override_dir.join("tmup.lock");
-    assert!(!lock.exists(), "list should not create a lockfile");
+    assert!(!override_dir.join("tmup.lock").exists(), "list should not create a lockfile");
+}
+
+#[test]
+fn config_mode_cli_sync_rejects_missing_tmup_config_override() {
+    let dir = tempdir().unwrap();
+    let override_dir = dir.path().join("override");
+    let override_kdl = override_dir.join("missing.kdl");
+
+    Command::cargo_bin("tmup")
+        .unwrap()
+        .arg("sync")
+        .env("TMUP_CONFIG", &override_kdl)
+        .env("XDG_CONFIG_HOME", dir.path().join("config"))
+        .env("XDG_DATA_HOME", dir.path().join("data"))
+        .env("XDG_STATE_HOME", dir.path().join("state"))
+        .env("HOME", dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("TMUP_CONFIG"))
+        .stderr(predicate::str::contains("existing file"));
+
+    assert!(!override_kdl.exists(), "sync should not create a missing TMUP_CONFIG path");
+    assert!(!override_dir.join("tmup.lock").exists(), "sync should not create a sibling lockfile");
 }
 
 #[test]
@@ -181,7 +172,8 @@ fn config_mode_cli_list_mixed_warns_and_prefers_kdl() {
 #[test]
 fn config_mode_cli_sync_mixed_writes_lockfile_next_to_kdl_with_kdl_precedence() {
     let dir = tempdir().unwrap();
-    make_remote_repo(dir.path());
+    let bare = make_remote_repo(dir.path());
+    push_branch_commit(&bare, "feature", "feature");
     let gitconfig = write_git_rewrite_config(dir.path());
     let config_home = dir.path().join("config");
     let config_dir = config_home.join("tmux");
