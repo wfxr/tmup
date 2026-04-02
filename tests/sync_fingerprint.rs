@@ -1,5 +1,12 @@
+use tempfile::tempdir;
 use tmup::config::parse_config;
+use tmup::config_mode::{ConfigMode, load_from_sources};
 use tmup::lockfile::{config_fingerprint, remote_plugin_config_hash};
+
+fn write_file(path: &std::path::Path, content: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, content).unwrap();
+}
 
 #[test]
 fn default_branch_hash_uses_declared_selector_semantics() {
@@ -47,4 +54,18 @@ fn config_fingerprint_changes_when_build_changes() {
     let cfg_b = parse_config(r#"plugin "user/repo" build="just build""#).unwrap();
 
     assert_ne!(config_fingerprint(&cfg_a), config_fingerprint(&cfg_b));
+}
+
+#[test]
+fn sync_fingerprint_config_mode_uses_merged_kdl_precedence() {
+    let dir = tempdir().unwrap();
+    let kdl = dir.path().join("tmup.kdl");
+    let tmux_conf = dir.path().join("tmux.conf");
+    write_file(&kdl, r#"plugin "tmux-plugins/tmux-sensible" branch="feature""#);
+    write_file(&tmux_conf, "set -g @plugin 'tmux-plugins/tmux-sensible'\n");
+
+    let loaded = load_from_sources(ConfigMode::Mixed, Some(&kdl), Some(&tmux_conf)).unwrap();
+    let expected = parse_config(r#"plugin "tmux-plugins/tmux-sensible" branch="feature""#).unwrap();
+
+    assert_eq!(config_fingerprint(&loaded.config), config_fingerprint(&expected));
 }

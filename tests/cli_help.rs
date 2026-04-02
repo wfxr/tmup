@@ -2,7 +2,7 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 
 #[test]
-fn help_lists_core_commands() {
+fn cli_help_lists_core_commands() {
     Command::cargo_bin("tmup")
         .unwrap()
         .arg("--help")
@@ -14,6 +14,17 @@ fn help_lists_core_commands() {
         .stdout(predicate::str::contains("update"))
         .stdout(predicate::str::contains("restore"))
         .stdout(predicate::str::contains("clean"))
-        .stdout(predicate::str::contains("list"))
-        .stdout(predicate::str::contains("migrate"));
+        .stdout(predicate::str::contains("list"));
+}
+
+#[test]
+fn cli_help_documents_config_mode() {
+    Command::cargo_bin("tmup")
+        .unwrap()
+        .args(["init", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--config-mode"))
+        .stdout(predicate::str::contains("tmup"))
+        .stdout(predicate::str::contains("mixed"));
 }

@@ -11,6 +11,14 @@ fn paths_keep_plugins_and_staging_on_same_data_root() {
 }
 
 #[test]
+fn state_paths_retarget_lockfile_when_config_path_changes() {
+    let mut paths = Paths::for_test("/tmp/data", "/tmp/state");
+    paths.set_config_path("/tmp/override/custom.kdl".into()).unwrap();
+
+    assert_eq!(paths.lockfile_path, std::path::PathBuf::from("/tmp/override/tmup.lock"));
+}
+
+#[test]
 fn failure_key_changes_when_build_command_changes() {
     let a = FailureKey::new("github.com/user/repo", "abc123", &build_command_hash("make install"));
     let b = FailureKey::new("github.com/user/repo", "abc123", &build_command_hash("just build"));

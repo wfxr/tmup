@@ -107,11 +107,10 @@ tmup uses [KDL v2](https://kdl.dev) syntax. Config file search order:
 1. `$TMUP_CONFIG`
 2. `$XDG_CONFIG_HOME/tmux/tmup.kdl`
 3. `~/.config/tmux/tmup.kdl`
-4. `~/.tmux/tmup.kdl`
 
-The active `tmup.lock` always lives next to the selected config file. For
-example, if `TMUP_CONFIG=/path/to/custom.kdl`, tmup reads and writes
-`/path/to/tmup.lock`.
+If the target `tmup.kdl` does not exist yet, tmup will create it automatically.
+
+`tmup.lock` lives next to the active `tmup.kdl`.
 
 ### Full example
 
@@ -198,7 +197,6 @@ tmup update [id]        # Advance unchanged floating selectors after sync
 tmup restore [id]       # Restore to lock-recorded commits
 tmup clean              # Remove undeclared managed remote repos
 tmup list [-v]          # Print plugin status table (`-v` for diagnostic columns)
-tmup migrate            # Migrate from TPM declarations (planned)
 ```
 
 ### `init` — startup path
@@ -329,7 +327,6 @@ This boundary is intentional, not an oversight.
 
 - [x] **Concurrent operations** — parallel git clone/fetch across plugins (`concurrency` config option)
 - [ ] **Incremental fetch** — reuse healthy local repos (fetch + resolve) instead of fresh clone on every sync/install
-- [ ] **`migrate` command** — auto-generate `tmup.kdl` from TPM `set -g @plugin` declarations
 
 ## License
 

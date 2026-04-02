@@ -2,7 +2,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
-use etcetera::BaseStrategy;
 use sha2::{Digest, Sha256};
 
 /// All filesystem paths used by tmup.
@@ -31,14 +30,9 @@ pub struct Paths {
 impl Paths {
     /// Resolve paths from the XDG base directories of the current user.
     pub fn resolve() -> Result<Self> {
-        let base_dirs = etcetera::base_strategy::choose_base_strategy()
-            .context("failed to determine XDG base directories")?;
-        let data_dir = base_dirs.data_dir().join("tmup");
-        let state_dir = base_dirs
-            .state_dir()
-            .unwrap_or_else(|| base_dirs.home_dir().join(".local/state"))
-            .join("tmup");
-        let config_dir = base_dirs.config_dir().join("tmux");
+        let data_dir = xdg_dir("XDG_DATA_HOME", ".local/share").join("tmup");
+        let state_dir = xdg_dir("XDG_STATE_HOME", ".local/state").join("tmup");
+        let config_dir = tmux_config_dir();
 
         Ok(Self {
             plugin_root: data_dir.join("plugins"),
@@ -91,7 +85,7 @@ impl Paths {
         })
     }
 
-    /// Override the active config path and update the derived lockfile path accordingly.
+    /// Override the active config path and retarget the derived lockfile path.
     pub fn set_config_path(&mut self, config_path: PathBuf) -> Result<()> {
         let config_dir = config_path.parent().with_context(|| {
             format!("config path has no parent directory: {}", config_path.display())
@@ -160,6 +154,18 @@ pub(crate) fn validate_plugin_id(id: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn home_dir() -> PathBuf {
+    std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/"))
+}
+
+fn xdg_dir(var: &str, fallback_suffix: &str) -> PathBuf {
+    std::env::var(var).map(PathBuf::from).unwrap_or_else(|_| home_dir().join(fallback_suffix))
+}
+
+fn tmux_config_dir() -> PathBuf {
+    xdg_dir("XDG_CONFIG_HOME", ".config").join("tmux")
 }
 
 fn checked_plugin_id(id: &str) -> &str {
