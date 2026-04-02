@@ -30,9 +30,9 @@ pub struct Paths {
 impl Paths {
     /// Resolve paths from the XDG base directories of the current user.
     pub fn resolve() -> Result<Self> {
-        let data_dir = xdg_dir("XDG_DATA_HOME", ".local/share").join("tmup");
-        let state_dir = xdg_dir("XDG_STATE_HOME", ".local/state").join("tmup");
-        let config_dir = tmux_config_dir();
+        let data_dir = xdg_dir("XDG_DATA_HOME", ".local/share")?.join("tmup");
+        let state_dir = xdg_dir("XDG_STATE_HOME", ".local/state")?.join("tmup");
+        let config_dir = tmux_config_dir()?;
 
         Ok(Self {
             plugin_root: data_dir.join("plugins"),
@@ -156,16 +156,32 @@ pub(crate) fn validate_plugin_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-fn home_dir() -> PathBuf {
-    std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/"))
+pub(crate) fn resolve_home_dir() -> Result<PathBuf> {
+    resolve_home_dir_from_env(std::env::var("HOME").ok().as_deref())
 }
 
-fn xdg_dir(var: &str, fallback_suffix: &str) -> PathBuf {
-    std::env::var(var).map(PathBuf::from).unwrap_or_else(|_| home_dir().join(fallback_suffix))
+fn resolve_home_dir_from_env(home: Option<&str>) -> Result<PathBuf> {
+    let home =
+        home.filter(|value| !value.is_empty()).context("HOME must be set to an absolute path")?;
+    let path = PathBuf::from(home);
+    ensure!(path.is_absolute(), "HOME must be set to an absolute path");
+    Ok(path)
 }
 
-fn tmux_config_dir() -> PathBuf {
-    xdg_dir("XDG_CONFIG_HOME", ".config").join("tmux")
+fn xdg_dir(var: &str, fallback_suffix: &str) -> Result<PathBuf> {
+    let home = resolve_home_dir()?;
+    Ok(xdg_dir_from_env(&home, std::env::var(var).ok().as_deref(), fallback_suffix))
+}
+
+fn xdg_dir_from_env(home: &Path, value: Option<&str>, fallback_suffix: &str) -> PathBuf {
+    match value.map(PathBuf::from) {
+        Some(path) if path.is_absolute() => path,
+        _ => home.join(fallback_suffix),
+    }
+}
+
+fn tmux_config_dir() -> Result<PathBuf> {
+    Ok(xdg_dir("XDG_CONFIG_HOME", ".config")?.join("tmux"))
 }
 
 fn checked_plugin_id(id: &str) -> &str {
@@ -365,6 +381,7 @@ pub struct OperationLockGuard {
 #[cfg(test)]
 mod tests {
     use std::io::{Error, ErrorKind, Result};
+    use std::path::Path;
 
     #[test]
     fn try_write_result_maps_would_block_to_none() {
@@ -376,5 +393,23 @@ mod tests {
     fn try_write_result_preserves_real_errors() {
         let err = super::map_try_write_result::<()>(Err(Error::other("boom"))).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::Other);
+    }
+
+    #[test]
+    fn resolve_home_dir_from_env_rejects_missing_home() {
+        assert!(super::resolve_home_dir_from_env(None).is_err());
+    }
+
+    #[test]
+    fn xdg_dir_from_env_falls_back_for_empty_or_relative_values() {
+        let home = Path::new("/tmp/home");
+        assert_eq!(
+            super::xdg_dir_from_env(home, Some(""), ".local/share"),
+            home.join(".local/share")
+        );
+        assert_eq!(
+            super::xdg_dir_from_env(home, Some("relative/path"), ".local/share"),
+            home.join(".local/share")
+        );
     }
 }

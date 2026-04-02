@@ -1,13 +1,9 @@
-use std::path::Path;
+mod utils;
 
 use tempfile::tempdir;
 use tmup::config_tpm::load_config_from_path;
 use tmup::model::Tracking;
-
-fn write_file(path: &Path, content: &str) {
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, content).unwrap();
-}
+use utils::write_file;
 
 #[test]
 fn config_tpm_parses_single_plugin_declaration() {
@@ -20,6 +16,30 @@ fn config_tpm_parses_single_plugin_declaration() {
     assert_eq!(cfg.plugins.len(), 1);
     assert_eq!(cfg.plugins[0].remote_id().unwrap(), "github.com/tmux-plugins/tmux-sensible");
     assert!(matches!(cfg.plugins[0].tracking, Tracking::DefaultBranch));
+}
+
+#[test]
+fn config_tpm_accepts_set_option_form() {
+    let dir = tempdir().unwrap();
+    let tmux_conf = dir.path().join("tmux.conf");
+    write_file(&tmux_conf, "set-option -g @plugin 'tmux-plugins/tmux-sensible'\n");
+
+    let cfg = load_config_from_path(&tmux_conf).unwrap();
+
+    assert_eq!(cfg.plugins.len(), 1);
+    assert_eq!(cfg.plugins[0].remote_id().unwrap(), "github.com/tmux-plugins/tmux-sensible");
+}
+
+#[test]
+fn config_tpm_accepts_combined_set_flags() {
+    let dir = tempdir().unwrap();
+    let tmux_conf = dir.path().join("tmux.conf");
+    write_file(&tmux_conf, "set -gq @plugin 'tmux-plugins/tmux-sensible'\n");
+
+    let cfg = load_config_from_path(&tmux_conf).unwrap();
+
+    assert_eq!(cfg.plugins.len(), 1);
+    assert_eq!(cfg.plugins[0].remote_id().unwrap(), "github.com/tmux-plugins/tmux-sensible");
 }
 
 #[test]
@@ -86,6 +106,20 @@ fn config_tpm_reads_direct_sourced_file() {
 }
 
 #[test]
+fn config_tpm_reads_source_alias() {
+    let dir = tempdir().unwrap();
+    let tmux_conf = dir.path().join("tmux.conf");
+    let sourced = dir.path().join("plugins.conf");
+    write_file(&tmux_conf, &format!("source '{}'\n", sourced.display()));
+    write_file(&sourced, "set -g @plugin 'tmux-plugins/tmux-yank'\n");
+
+    let cfg = load_config_from_path(&tmux_conf).unwrap();
+
+    assert_eq!(cfg.plugins.len(), 1);
+    assert_eq!(cfg.plugins[0].remote_id().unwrap(), "github.com/tmux-plugins/tmux-yank");
+}
+
+#[test]
 fn config_tpm_reads_direct_sourced_file_with_quiet_flag() {
     let dir = tempdir().unwrap();
     let tmux_conf = dir.path().join("tmux.conf");
@@ -97,6 +131,24 @@ fn config_tpm_reads_direct_sourced_file_with_quiet_flag() {
 
     assert_eq!(cfg.plugins.len(), 1);
     assert_eq!(cfg.plugins[0].remote_id().unwrap(), "github.com/tmux-plugins/tmux-yank");
+}
+
+#[test]
+fn config_tpm_expands_globbed_sourced_files() {
+    let dir = tempdir().unwrap();
+    let tmux_conf = dir.path().join("tmux.conf");
+    let conf_d = dir.path().join("conf.d");
+    let first = conf_d.join("one.conf");
+    let second = conf_d.join("two.conf");
+    write_file(&tmux_conf, &format!("source-file '{}'\n", conf_d.join("*.conf").display()));
+    write_file(&first, "set -g @plugin 'tmux-plugins/tmux-sensible'\n");
+    write_file(&second, "set -g @plugin 'tmux-plugins/tmux-yank'\n");
+
+    let cfg = load_config_from_path(&tmux_conf).unwrap();
+
+    assert_eq!(cfg.plugins.len(), 2);
+    assert_eq!(cfg.plugins[0].remote_id().unwrap(), "github.com/tmux-plugins/tmux-sensible");
+    assert_eq!(cfg.plugins[1].remote_id().unwrap(), "github.com/tmux-plugins/tmux-yank");
 }
 
 #[test]
@@ -116,6 +168,54 @@ fn config_tpm_ignores_missing_quiet_sourced_file() {
 
     assert_eq!(cfg.plugins.len(), 1);
     assert_eq!(cfg.plugins[0].remote_id().unwrap(), "github.com/tmux-plugins/tmux-sensible");
+}
+
+#[test]
+fn config_tpm_ignores_blank_and_comment_lines() {
+    let dir = tempdir().unwrap();
+    let tmux_conf = dir.path().join("tmux.conf");
+    write_file(
+        &tmux_conf,
+        concat!("\n", "  \n", "# comment only\n", "set -g @plugin 'tmux-plugins/tmux-sensible'\n"),
+    );
+
+    let cfg = load_config_from_path(&tmux_conf).unwrap();
+
+    assert_eq!(cfg.plugins.len(), 1);
+    assert_eq!(cfg.plugins[0].remote_id().unwrap(), "github.com/tmux-plugins/tmux-sensible");
+}
+
+#[test]
+fn config_tpm_skips_malformed_plugin_line_without_value() {
+    let dir = tempdir().unwrap();
+    let tmux_conf = dir.path().join("tmux.conf");
+    write_file(
+        &tmux_conf,
+        concat!("set -g @plugin\n", "set -g @plugin 'tmux-plugins/tmux-sensible'\n"),
+    );
+
+    let cfg = load_config_from_path(&tmux_conf).unwrap();
+
+    assert_eq!(cfg.plugins.len(), 1);
+    assert_eq!(cfg.plugins[0].remote_id().unwrap(), "github.com/tmux-plugins/tmux-sensible");
+}
+
+#[test]
+fn config_tpm_deduplicates_multiple_equivalent_remote_plugin_ids() {
+    let dir = tempdir().unwrap();
+    let tmux_conf = dir.path().join("tmux.conf");
+    write_file(
+        &tmux_conf,
+        concat!(
+            "set -g @plugin 'tmux-plugins/tmux-sensible'\n",
+            "set -g @plugin 'https://github.com/tmux-plugins/tmux-sensible.git'\n",
+            "set -g @plugin 'git@github.com:tmux-plugins/tmux-sensible.git'\n",
+        ),
+    );
+
+    let cfg = load_config_from_path(&tmux_conf).unwrap();
+
+    assert_eq!(cfg.plugins.len(), 1);
 }
 
 #[test]

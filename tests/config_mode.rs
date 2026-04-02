@@ -1,11 +1,9 @@
+mod utils;
+
 use tempfile::tempdir;
 use tmup::config_mode::{ConfigMode, load_from_sources};
 use tmup::model::{PluginSource, Tracking};
-
-fn write_file(path: &std::path::Path, content: &str) {
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, content).unwrap();
-}
+use utils::write_file;
 
 #[test]
 fn config_mode_tmup_loads_only_kdl() {
@@ -85,4 +83,44 @@ fn config_mode_mixed_requires_kdl_source() {
 
     let err = load_from_sources(ConfigMode::Mixed, None, Some(&tpm)).unwrap_err();
     assert!(err.to_string().contains("tmup config file not found"));
+}
+
+#[test]
+fn config_mode_mixed_allows_missing_tpm_config() {
+    let dir = tempdir().unwrap();
+    let kdl = dir.path().join("tmup.kdl");
+    write_file(&kdl, r#"plugin "tmux-plugins/tmux-sensible""#);
+
+    let loaded = load_from_sources(ConfigMode::Mixed, Some(&kdl), None).unwrap();
+
+    assert_eq!(loaded.config.plugins.len(), 1);
+    assert!(loaded.warnings.is_empty());
+}
+
+#[test]
+fn config_mode_mixed_supports_empty_kdl_with_tpm_plugins() {
+    let dir = tempdir().unwrap();
+    let kdl = dir.path().join("tmup.kdl");
+    let tpm = dir.path().join("tmux.conf");
+    write_file(&kdl, "");
+    write_file(&tpm, "set -g @plugin 'tmux-plugins/tmux-yank'\n");
+
+    let loaded = load_from_sources(ConfigMode::Mixed, Some(&kdl), Some(&tpm)).unwrap();
+
+    assert_eq!(loaded.config.plugins.len(), 1);
+    assert_eq!(loaded.config.plugins[0].remote_id().unwrap(), "github.com/tmux-plugins/tmux-yank");
+}
+
+#[test]
+fn config_mode_mixed_supports_empty_sources() {
+    let dir = tempdir().unwrap();
+    let kdl = dir.path().join("tmup.kdl");
+    let tpm = dir.path().join("tmux.conf");
+    write_file(&kdl, "");
+    write_file(&tpm, "");
+
+    let loaded = load_from_sources(ConfigMode::Mixed, Some(&kdl), Some(&tpm)).unwrap();
+
+    assert!(loaded.config.plugins.is_empty());
+    assert!(loaded.warnings.is_empty());
 }

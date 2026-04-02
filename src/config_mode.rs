@@ -35,7 +35,7 @@ pub struct LoadedConfig {
     /// Warnings emitted while loading or merging config sources.
     pub warnings: Vec<String>,
     /// The resolved primary config path that should own the active lockfile.
-    pub active_config_path: Option<PathBuf>,
+    pub active_config_path: PathBuf,
 }
 
 /// Load configuration for the requested mode using discovered paths.
@@ -60,7 +60,7 @@ pub fn load_from_sources(
             Ok(LoadedConfig {
                 config: load_tmup_config(path)?,
                 warnings: Vec::new(),
-                active_config_path: Some(path.to_path_buf()),
+                active_config_path: path.to_path_buf(),
             })
         }
         ConfigMode::Mixed => load_mixed(tmup_path, tpm_path),
@@ -76,18 +76,19 @@ fn load_mixed(tmup_path: Option<&Path>, tpm_path: Option<&Path>) -> Result<Loade
     match tpm_config {
         Some(tpm) => {
             let config = merge_configs(tmup_config, tpm, &mut warnings);
-            Ok(LoadedConfig { config, warnings, active_config_path: Some(tmup_path.to_path_buf()) })
+            Ok(LoadedConfig { config, warnings, active_config_path: tmup_path.to_path_buf() })
         }
         None => Ok(LoadedConfig {
             config: tmup_config,
             warnings,
-            active_config_path: Some(tmup_path.to_path_buf()),
+            active_config_path: tmup_path.to_path_buf(),
         }),
     }
 }
 
 fn load_tmup_config(path: &Path) -> Result<Config> {
-    let content = std::fs::read_to_string(path)?;
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read tmup config: {}", path.display()))?;
     config::parse_config(&content)
 }
 
@@ -168,9 +169,5 @@ options {
 }
 
 fn discover_tpm_config_path() -> Result<Option<PathBuf>> {
-    match config_tpm::resolve_config_path() {
-        Ok(path) => Ok(Some(path)),
-        Err(err) if err.to_string().contains("tmux config file not found") => Ok(None),
-        Err(err) => Err(err),
-    }
+    config_tpm::resolve_config_path()
 }

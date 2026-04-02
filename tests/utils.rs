@@ -2,6 +2,11 @@
 
 use std::path::Path;
 
+pub fn write_file(path: &Path, content: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, content).unwrap();
+}
+
 /// Run a hermetic git command in the given directory.
 pub fn git(args: &[&str], dir: &Path) -> String {
     let out = std::process::Command::new("git")
