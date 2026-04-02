@@ -55,6 +55,18 @@ fn config_tpm_parses_branch_suffix() {
 }
 
 #[test]
+fn config_tpm_parses_unquoted_branch_suffix() {
+    let dir = tempdir().unwrap();
+    let tmux_conf = dir.path().join("tmux.conf");
+    write_file(&tmux_conf, "set -g @plugin tmux-plugins/tmux-resurrect#feature\n");
+
+    let cfg = load_config_from_path(&tmux_conf).unwrap();
+
+    assert_eq!(cfg.plugins.len(), 1);
+    assert!(matches!(&cfg.plugins[0].tracking, Tracking::Branch(branch) if branch == "feature"));
+}
+
+#[test]
 fn config_tpm_accepts_https_and_ssh_sources() {
     let dir = tempdir().unwrap();
     let tmux_conf = dir.path().join("tmux.conf");
@@ -97,6 +109,20 @@ fn config_tpm_reads_direct_sourced_file() {
     let tmux_conf = dir.path().join("tmux.conf");
     let sourced = dir.path().join("plugins.conf");
     write_file(&tmux_conf, &format!("source-file '{}'\n", sourced.display()));
+    write_file(&sourced, "set -g @plugin 'tmux-plugins/tmux-yank'\n");
+
+    let cfg = load_config_from_path(&tmux_conf).unwrap();
+
+    assert_eq!(cfg.plugins.len(), 1);
+    assert_eq!(cfg.plugins[0].remote_id().unwrap(), "github.com/tmux-plugins/tmux-yank");
+}
+
+#[test]
+fn config_tpm_reads_relative_sourced_file_from_config_dir() {
+    let dir = tempdir().unwrap();
+    let tmux_conf = dir.path().join("tmux.conf");
+    let sourced = dir.path().join("conf.d/plugins.conf");
+    write_file(&tmux_conf, "source-file conf.d/plugins.conf\n");
     write_file(&sourced, "set -g @plugin 'tmux-plugins/tmux-yank'\n");
 
     let cfg = load_config_from_path(&tmux_conf).unwrap();

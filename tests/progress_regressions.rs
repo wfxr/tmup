@@ -5,6 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
+use predicates::prelude::*;
 use tempfile::tempdir;
 use utils::git;
 
@@ -695,6 +696,39 @@ fn init_parent_bootstrap_uses_resolved_tmup_config_path() {
         log.contains(&format!("'{}'", override_config.display())),
         "expected scheduled bootstrap command to use the resolved TMUP_CONFIG path, got log:\n{log}"
     );
+}
+
+#[test]
+fn init_bootstrap_prefers_explicit_config_path_over_tmup_config_env() {
+    let dir = tempdir().unwrap();
+    let good_config = dir.path().join("good/good.kdl");
+    let bad_config = dir.path().join("bad/bad.kdl");
+    std::fs::create_dir_all(good_config.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(bad_config.parent().unwrap()).unwrap();
+    std::fs::write(&good_config, "").unwrap();
+    std::fs::write(&bad_config, "plugin {\n").unwrap();
+
+    let tmux_log = dir.path().join("tmux.log");
+    let fake_tmux_dir = write_fake_tmux_with_log(dir.path(), &tmux_log);
+    let path = format!("{}:{}", fake_tmux_dir.display(), std::env::var("PATH").unwrap_or_default());
+
+    Command::cargo_bin("tmup")
+        .unwrap()
+        .args([
+            "init",
+            "--bootstrap",
+            "--config-path",
+            good_config.to_str().unwrap(),
+            "--data-root",
+            dir.path().join("data").to_str().unwrap(),
+            "--state-root",
+            dir.path().join("state").to_str().unwrap(),
+        ])
+        .env("TMUP_CONFIG", &bad_config)
+        .env("PATH", path)
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("failed to parse KDL").not());
 }
 
 #[test]

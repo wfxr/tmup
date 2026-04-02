@@ -40,12 +40,21 @@ pub struct LoadedConfig {
 
 /// Load configuration for the requested mode using discovered paths.
 pub fn load(paths: &Paths, mode: ConfigMode) -> Result<LoadedConfig> {
-    let tmup_path = ensure_tmup_config_path(paths)?;
-    let tpm_path = match mode {
-        ConfigMode::Tmup => None,
-        ConfigMode::Mixed => discover_tpm_config_path()?,
-    };
-    load_from_sources(mode, Some(tmup_path.as_path()), tpm_path.as_deref())
+    load_with_policy(paths, mode, true)
+}
+
+/// Load configuration without creating a missing tmup.kdl on disk.
+pub fn load_read_only(paths: &Paths, mode: ConfigMode) -> Result<LoadedConfig> {
+    load_with_policy(paths, mode, false)
+}
+
+/// Ensure the active tmup.kdl exists on disk using the default template.
+pub fn ensure_tmup_config_exists(paths: &Paths) -> Result<()> {
+    let path = prepare_tmup_config_path(paths, false)?;
+    if !path.exists() {
+        create_default_tmup_config(&path)?;
+    }
+    Ok(())
 }
 
 /// Load configuration for the requested mode from explicit source paths.
@@ -71,7 +80,7 @@ fn load_mixed(tmup_path: Option<&Path>, tpm_path: Option<&Path>) -> Result<Loade
     let tmup_path = tmup_path.context("tmup config file not found")?;
     let mut warnings = Vec::new();
     let tpm_config = tpm_path.map(config_tpm::load_config_from_path).transpose()?;
-    let tmup_config = load_tmup_config(tmup_path)?;
+    let tmup_config = load_tmup_config_or_default(tmup_path)?;
 
     match tpm_config {
         Some(tpm) => {
@@ -86,10 +95,33 @@ fn load_mixed(tmup_path: Option<&Path>, tpm_path: Option<&Path>) -> Result<Loade
     }
 }
 
+fn load_with_policy(paths: &Paths, mode: ConfigMode, create_missing: bool) -> Result<LoadedConfig> {
+    let tmup_path = prepare_tmup_config_path(paths, create_missing)?;
+    match mode {
+        ConfigMode::Tmup => Ok(LoadedConfig {
+            config: if create_missing || tmup_path.exists() {
+                load_tmup_config(&tmup_path)?
+            } else {
+                default_tmup_config()?
+            },
+            warnings: Vec::new(),
+            active_config_path: tmup_path,
+        }),
+        ConfigMode::Mixed => {
+            let tpm_path = discover_tpm_config_path()?;
+            load_from_sources(mode, Some(tmup_path.as_path()), tpm_path.as_deref())
+        }
+    }
+}
+
 fn load_tmup_config(path: &Path) -> Result<Config> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read tmup config: {}", path.display()))?;
     config::parse_config(&content)
+}
+
+fn load_tmup_config_or_default(path: &Path) -> Result<Config> {
+    if path.exists() { load_tmup_config(path) } else { default_tmup_config() }
 }
 
 fn merge_configs(mut kdl: Config, tpm: Config, warnings: &mut Vec<String>) -> Config {
@@ -128,17 +160,11 @@ fn merge_configs(mut kdl: Config, tpm: Config, warnings: &mut Vec<String>) -> Co
     Config { options: kdl.options, plugins: merged }
 }
 
-fn ensure_tmup_config_path(paths: &Paths) -> Result<PathBuf> {
-    let path = if let Ok(p) = std::env::var("TMUP_CONFIG") {
-        PathBuf::from(p)
-    } else {
-        paths.config_path.clone()
-    };
-
-    if !path.exists() {
+fn prepare_tmup_config_path(paths: &Paths, create_missing: bool) -> Result<PathBuf> {
+    let path = paths.config_path.clone();
+    if create_missing && !path.exists() {
         create_default_tmup_config(&path)?;
     }
-
     Ok(path)
 }
 
@@ -148,8 +174,18 @@ fn create_default_tmup_config(path: &Path) -> Result<()> {
         .with_context(|| format!("config path has no parent directory: {}", path.display()))?;
     std::fs::create_dir_all(parent)
         .with_context(|| format!("failed to create config directory: {}", parent.display()))?;
-    std::fs::write(path, default_tmup_config_template())
-        .with_context(|| format!("failed to create config: {}", path.display()))?;
+    let mut file = match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("failed to create config: {}", path.display()));
+        }
+    };
+    use std::io::Write;
+    file.write_all(default_tmup_config_template().as_bytes())
+        .with_context(|| format!("failed to write config: {}", path.display()))?;
+    file.flush().with_context(|| format!("failed to flush config: {}", path.display()))?;
     Ok(())
 }
 
@@ -168,6 +204,27 @@ options {
 "#
 }
 
+fn default_tmup_config() -> Result<Config> {
+    config::parse_config(default_tmup_config_template())
+        .context("internal default tmup config invalid")
+}
+
 fn discover_tpm_config_path() -> Result<Option<PathBuf>> {
     config_tpm::resolve_config_path()
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    #[test]
+    fn create_default_tmup_config_does_not_overwrite_existing_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("tmup.kdl");
+        std::fs::write(&path, "plugin \"user/custom\"\n").unwrap();
+
+        super::create_default_tmup_config(&path).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "plugin \"user/custom\"\n");
+    }
 }
