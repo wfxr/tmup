@@ -8,6 +8,7 @@ fn cli_help_lists_core_commands() {
         .arg("--help")
         .assert()
         .success()
+        .stdout(predicate::str::contains("--config-mode"))
         .stdout(predicate::str::contains("init"))
         .stdout(predicate::str::contains("install"))
         .stdout(predicate::str::contains("sync"))
