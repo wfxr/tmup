@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
-use clap::{Args, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use owo_colors::OwoColorize;
 use tabled::builder::Builder;
 use tabled::settings::object::Segment;
@@ -18,6 +18,9 @@ use tmup::{loader, lockfile, plugin, termui, tmux};
 #[derive(Debug, Parser)]
 #[command(name = "tmup", about = "Modern tmux plugin manager")]
 struct Cli {
+    #[arg(long = "config-mode", global = true, value_enum, default_value_t = ConfigMode::Tmup)]
+    config_mode: ConfigMode,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -38,61 +41,41 @@ enum Commands {
         data_root: Option<PathBuf>,
         #[arg(hide = true, long)]
         state_root: Option<PathBuf>,
-        #[command(flatten)]
-        config_mode: ConfigModeArgs,
     },
     /// Install missing remote plugins
     Install {
         /// Plugin id to install (all if omitted)
         id: Option<String>,
-        #[command(flatten)]
-        config_mode: ConfigModeArgs,
     },
     /// Reconcile lock metadata and declared remote plugins with config
     Sync {
         /// Plugin id to sync (all if omitted)
         id: Option<String>,
-        #[command(flatten)]
-        config_mode: ConfigModeArgs,
     },
     /// Update remote plugins (the only command that advances lock)
     Update {
         /// Plugin id to update (all if omitted)
         id: Option<String>,
-        #[command(flatten)]
-        config_mode: ConfigModeArgs,
     },
     /// Restore plugins to lock-recorded commits
     Restore {
         /// Plugin id to restore (all if omitted)
         id: Option<String>,
-        #[command(flatten)]
-        config_mode: ConfigModeArgs,
     },
     /// Remove undeclared managed remote plugins
-    Clean {
-        #[command(flatten)]
-        config_mode: ConfigModeArgs,
-    },
+    Clean,
     /// List plugin status
     List {
         /// Show diagnostic columns including canonical id and source details
         #[arg(short, long)]
         verbose: bool,
-        #[command(flatten)]
-        config_mode: ConfigModeArgs,
     },
-}
-
-#[derive(Debug, Clone, Args)]
-struct ConfigModeArgs {
-    #[arg(long = "config-mode", value_enum, default_value_t = ConfigMode::Tmup)]
-    mode: ConfigMode,
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
+    let config_mode = cli.config_mode;
 
     let result = match cli.command {
         Commands::Init {
@@ -102,7 +85,6 @@ async fn main() -> ExitCode {
             config_path,
             data_root,
             state_root,
-            config_mode,
         } => {
             run_init(
                 bootstrap,
@@ -111,16 +93,16 @@ async fn main() -> ExitCode {
                 config_path,
                 data_root,
                 state_root,
-                config_mode.mode,
+                config_mode,
             )
             .await
         }
-        Commands::Install { id, config_mode } => run_install(id, config_mode.mode).await,
-        Commands::Sync { id, config_mode } => run_sync(id, config_mode.mode).await,
-        Commands::Update { id, config_mode } => run_update(id, config_mode.mode).await,
-        Commands::Restore { id, config_mode } => run_restore(id, config_mode.mode).await,
-        Commands::Clean { config_mode } => run_clean(config_mode.mode).await,
-        Commands::List { verbose, config_mode } => run_list(verbose, config_mode.mode),
+        Commands::Install { id } => run_install(id, config_mode).await,
+        Commands::Sync { id } => run_sync(id, config_mode).await,
+        Commands::Update { id } => run_update(id, config_mode).await,
+        Commands::Restore { id } => run_restore(id, config_mode).await,
+        Commands::Clean => run_clean(config_mode).await,
+        Commands::List { verbose } => run_list(verbose, config_mode),
     };
 
     match result {
@@ -765,8 +747,9 @@ mod tests {
     use std::io::Write;
 
     use anstream::{AutoStream, ColorChoice};
+    use clap::Parser;
 
-    use super::render_table;
+    use super::{Cli, Commands, render_table};
 
     fn adapt(text: &str, choice: ColorChoice) -> String {
         let mut stream = AutoStream::new(Vec::new(), choice);
@@ -796,5 +779,11 @@ mod tests {
         let table = render_table(["Plugin", "State"], [vec!["user/repo".into(), "missing".into()]]);
         let output = adapt(&table, ColorChoice::AlwaysAnsi);
         assert!(output.contains("\u{1b}[1mPlugin"));
+    }
+
+    #[test]
+    fn cli_parses_config_mode_before_subcommand() {
+        let cli = Cli::try_parse_from(["tmup", "--config-mode", "mixed", "list"]).unwrap();
+        assert!(matches!(cli.command, Commands::List { .. }));
     }
 }
