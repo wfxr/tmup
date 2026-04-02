@@ -86,8 +86,8 @@ enum Commands {
 
 #[derive(Debug, Clone, Args)]
 struct ConfigModeArgs {
-    #[arg(long, value_enum, default_value_t = ConfigMode::Tmup)]
-    config_mode: ConfigMode,
+    #[arg(long = "config-mode", value_enum, default_value_t = ConfigMode::Tmup)]
+    mode: ConfigMode,
 }
 
 #[tokio::main]
@@ -111,16 +111,16 @@ async fn main() -> ExitCode {
                 config_path,
                 data_root,
                 state_root,
-                config_mode.config_mode,
+                config_mode.mode,
             )
             .await
         }
-        Commands::Install { id, config_mode } => run_install(id, config_mode.config_mode).await,
-        Commands::Sync { id, config_mode } => run_sync(id, config_mode.config_mode).await,
-        Commands::Update { id, config_mode } => run_update(id, config_mode.config_mode).await,
-        Commands::Restore { id, config_mode } => run_restore(id, config_mode.config_mode).await,
-        Commands::Clean { config_mode } => run_clean(config_mode.config_mode).await,
-        Commands::List { verbose, config_mode } => run_list(verbose, config_mode.config_mode),
+        Commands::Install { id, config_mode } => run_install(id, config_mode.mode).await,
+        Commands::Sync { id, config_mode } => run_sync(id, config_mode.mode).await,
+        Commands::Update { id, config_mode } => run_update(id, config_mode.mode).await,
+        Commands::Restore { id, config_mode } => run_restore(id, config_mode.mode).await,
+        Commands::Clean { config_mode } => run_clean(config_mode.mode).await,
+        Commands::List { verbose, config_mode } => run_list(verbose, config_mode.mode),
     };
 
     match result {
@@ -143,17 +143,17 @@ fn load_effective_config(paths: &Paths, mode: ConfigMode) -> Result<LoadedConfig
     config_mode::load(paths, mode)
 }
 
-fn sync_loaded_config_path(paths: &mut Paths, loaded: &LoadedConfig) -> Result<()> {
-    if let Some(path) = loaded.active_config_path.as_ref() {
-        paths.set_config_path(path.clone())?;
-    }
-    Ok(())
-}
-
 fn emit_config_warnings(warnings: &[String]) {
     for warning in warnings {
         eprintln!("warning: {warning}");
     }
+}
+
+fn apply_config(paths: &mut Paths, mode: ConfigMode) -> Result<tmup::model::Config> {
+    let loaded = load_effective_config(paths, mode)?;
+    paths.set_config_path(loaded.active_config_path)?;
+    emit_config_warnings(&loaded.warnings);
+    Ok(loaded.config)
 }
 
 fn load_lockfile(paths: &Paths) -> Result<lockfile::LockFile> {
@@ -279,10 +279,7 @@ async fn run_init_with_ui_mode(
 async fn run_init_parent(config_mode: ConfigMode) -> Result<()> {
     let mut paths = resolve_runtime_paths()?;
     paths.ensure_dirs()?;
-    let loaded = load_effective_config(&paths, config_mode)?;
-    sync_loaded_config_path(&mut paths, &loaded)?;
-    emit_config_warnings(&loaded.warnings);
-    let cfg = loaded.config;
+    let cfg = apply_config(&mut paths, config_mode)?;
 
     // Lock-free preview: does this init need visible work?
     let lock = load_lockfile(&paths)?;
@@ -323,10 +320,7 @@ async fn run_init_bootstrap(
 ) -> Result<()> {
     let mut paths = Paths::from_runtime_roots(data_root, state_root, config_path)?;
     paths.ensure_dirs()?;
-    let loaded = load_effective_config(&paths, config_mode)?;
-    sync_loaded_config_path(&mut paths, &loaded)?;
-    emit_config_warnings(&loaded.warnings);
-    let cfg = loaded.config;
+    let cfg = apply_config(&mut paths, config_mode)?;
 
     let lock = load_lockfile(&paths)?;
     let sync_preview =
@@ -369,10 +363,7 @@ async fn run_init_child(
 ) -> Result<()> {
     let mut paths = Paths::from_runtime_roots(data_root, state_root, config_path)?;
     paths.ensure_dirs()?;
-    let loaded = load_effective_config(&paths, config_mode)?;
-    sync_loaded_config_path(&mut paths, &loaded)?;
-    emit_config_warnings(&loaded.warnings);
-    let cfg = loaded.config;
+    let cfg = apply_config(&mut paths, config_mode)?;
 
     let labels = progress::build_display_labels(&cfg, None);
     let reporter = progress::create_reporter(&paths, "init", labels);
@@ -474,10 +465,7 @@ async fn run_install(id: Option<String>, config_mode: ConfigMode) -> Result<()> 
     let mut paths = resolve_runtime_paths()?;
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another tmup operation is in progress")?;
-    let loaded = load_effective_config(&paths, config_mode)?;
-    sync_loaded_config_path(&mut paths, &loaded)?;
-    emit_config_warnings(&loaded.warnings);
-    let cfg = loaded.config;
+    let cfg = apply_config(&mut paths, config_mode)?;
     cfg.validate_target_id(id.as_deref())?;
     let mut lock = load_lockfile(&paths)?;
     paths.ensure_dirs()?;
@@ -510,10 +498,7 @@ async fn run_sync(id: Option<String>, config_mode: ConfigMode) -> Result<()> {
     let mut paths = resolve_runtime_paths()?;
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another tmup operation is in progress")?;
-    let loaded = load_effective_config(&paths, config_mode)?;
-    sync_loaded_config_path(&mut paths, &loaded)?;
-    emit_config_warnings(&loaded.warnings);
-    let cfg = loaded.config;
+    let cfg = apply_config(&mut paths, config_mode)?;
     cfg.validate_target_id(id.as_deref())?;
     let mut lock = load_lockfile(&paths)?;
     paths.ensure_dirs()?;
@@ -544,10 +529,7 @@ async fn run_update(id: Option<String>, config_mode: ConfigMode) -> Result<()> {
     let mut paths = resolve_runtime_paths()?;
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another tmup operation is in progress")?;
-    let loaded = load_effective_config(&paths, config_mode)?;
-    sync_loaded_config_path(&mut paths, &loaded)?;
-    emit_config_warnings(&loaded.warnings);
-    let cfg = loaded.config;
+    let cfg = apply_config(&mut paths, config_mode)?;
     cfg.validate_target_id(id.as_deref())?;
     let mut lock = load_lockfile(&paths)?;
     paths.ensure_dirs()?;
@@ -580,10 +562,7 @@ async fn run_restore(id: Option<String>, config_mode: ConfigMode) -> Result<()> 
     let mut paths = resolve_runtime_paths()?;
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another tmup operation is in progress")?;
-    let loaded = load_effective_config(&paths, config_mode)?;
-    sync_loaded_config_path(&mut paths, &loaded)?;
-    emit_config_warnings(&loaded.warnings);
-    let cfg = loaded.config;
+    let cfg = apply_config(&mut paths, config_mode)?;
     cfg.validate_target_id(id.as_deref())?;
     let mut lock = load_lockfile(&paths)?;
     paths.ensure_dirs()?;
@@ -620,10 +599,7 @@ async fn run_clean(config_mode: ConfigMode) -> Result<()> {
     let mut paths = resolve_runtime_paths()?;
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another tmup operation is in progress")?;
-    let loaded = load_effective_config(&paths, config_mode)?;
-    sync_loaded_config_path(&mut paths, &loaded)?;
-    emit_config_warnings(&loaded.warnings);
-    let cfg = loaded.config;
+    let cfg = apply_config(&mut paths, config_mode)?;
     let mut lock = load_lockfile(&paths)?;
     let sync_outcome = sync::run_and_write(
         &cfg,
@@ -641,10 +617,7 @@ async fn run_clean(config_mode: ConfigMode) -> Result<()> {
 
 fn run_list(verbose: bool, config_mode: ConfigMode) -> Result<()> {
     let mut paths = resolve_runtime_paths()?;
-    let loaded = load_effective_config(&paths, config_mode)?;
-    sync_loaded_config_path(&mut paths, &loaded)?;
-    emit_config_warnings(&loaded.warnings);
-    let cfg = loaded.config;
+    let cfg = apply_config(&mut paths, config_mode)?;
     let lock = load_lockfile(&paths)?;
     let statuses = plugin::list(&cfg, &lock, &paths)?;
 

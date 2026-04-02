@@ -121,6 +121,10 @@ Use `--config-mode=mixed` on any command that reads config when you want to
 temporarily combine `tmup.kdl` with existing `set -g @plugin ...` lines from
 your tmux config.
 
+In mixed mode, plugin order starts from the TPM declarations that were found.
+KDL-only plugins are appended afterward, and if both sources declare the same
+remote plugin ID, tmup keeps the TPM position but uses the `tmup.kdl` entry.
+
 ### Full example
 
 ```kdl

@@ -161,6 +161,8 @@ In `mixed` mode:
   for the same remote plugin ID exists
 - repeated TPM declarations for the same canonical remote plugin ID collapse to
   the first declaration
+- plugin order starts from TPM declaration order; KDL-only plugins are appended
+  afterward, while conflicting entries keep the TPM slot but use the KDL config
 - local plugins may come only from `tmup.kdl`
 
 ### 4.1 tmup KDL
@@ -749,7 +751,7 @@ TPM-compatible tmux config search order:
 | Git operations | shell out | `tokio::process::Command` (async), `std::process::Command` (sync for scan) |
 | Error handling | -- | `anyhow` + `thiserror` |
 | File locking | OS flock | `fd-lock` |
-| XDG paths | -- | `etcetera` |
+| XDG paths | explicit environment resolution | -- |
 | Hashing | SHA-256 | `sha2` |
 
 ---

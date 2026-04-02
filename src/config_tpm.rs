@@ -1,9 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
+use glob::glob;
 
 use crate::config::build_remote_plugin_spec;
 use crate::model::{Config, Options, PluginSpec, Tracking};
+use crate::state::resolve_home_dir;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SourcedFile {
@@ -12,25 +14,34 @@ struct SourcedFile {
 }
 
 /// Resolve the default TPM-style tmux config path from the supported search order.
-pub fn resolve_config_path() -> Result<PathBuf> {
-    if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
-        let path = PathBuf::from(xdg_config_home).join("tmux/tmux.conf");
+pub fn resolve_config_path() -> Result<Option<PathBuf>> {
+    let home_dir = resolve_home_dir()?;
+    Ok(resolve_config_path_from_env(std::env::var("XDG_CONFIG_HOME").ok().as_deref(), &home_dir))
+}
+
+fn resolve_config_path_from_env(xdg_config_home: Option<&str>, home_dir: &Path) -> Option<PathBuf> {
+    if let Some(xdg_config_home) = xdg_config_home
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+    {
+        let path = xdg_config_home.join("tmux/tmux.conf");
         if path.exists() {
-            return Ok(path);
+            return Some(path);
         }
     }
 
-    let config_home = home_dir().join(".config/tmux/tmux.conf");
+    let config_home = home_dir.join(".config/tmux/tmux.conf");
     if config_home.exists() {
-        return Ok(config_home);
+        return Some(config_home);
     }
 
-    let legacy_home = home_dir().join(".tmux.conf");
+    let legacy_home = home_dir.join(".tmux.conf");
     if legacy_home.exists() {
-        return Ok(legacy_home);
+        return Some(legacy_home);
     }
 
-    bail!("tmux config file not found")
+    None
 }
 
 /// Load plugin declarations from a TPM-style tmux config file.
@@ -69,17 +80,18 @@ fn read_scan_inputs(path: &Path) -> Result<Vec<(PathBuf, String)>> {
     // Intentionally only scans direct sourced files discovered from the root tmux config,
     // matching current TPM behavior instead of recursively expanding nested includes.
     for sourced in direct_sourced_files(&root) {
-        let sourced_path = expand_source_path(&sourced.path);
-        let content = match std::fs::read_to_string(&sourced_path) {
-            Ok(content) => content,
-            Err(err) if sourced.quiet && err.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(err) => {
-                return Err(err).with_context(|| {
-                    format!("failed to read sourced tmux config: {}", sourced_path.display())
-                });
-            }
-        };
-        inputs.push((sourced_path, content));
+        for sourced_path in expand_source_paths(&sourced.path)? {
+            let content = match std::fs::read_to_string(&sourced_path) {
+                Ok(content) => content,
+                Err(err) if sourced.quiet && err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => {
+                    return Err(err).with_context(|| {
+                        format!("failed to read sourced tmux config: {}", sourced_path.display())
+                    });
+                }
+            };
+            inputs.push((sourced_path, content));
+        }
     }
 
     Ok(inputs)
@@ -137,20 +149,41 @@ fn parse_plugin_spec(raw: &str) -> Result<PluginSpec> {
     build_remote_plugin_spec(source, None, String::new(), tracking, None, Vec::new())
 }
 
-fn expand_source_path(raw: &str) -> PathBuf {
-    if raw == "~" {
-        return home_dir();
+fn expand_source_paths(raw: &str) -> Result<Vec<PathBuf>> {
+    let expanded = shellexpand::full(raw)
+        .with_context(|| format!("failed to expand sourced tmux config path: {raw}"))?
+        .into_owned();
+    if !has_glob_pattern(&expanded) {
+        return Ok(vec![PathBuf::from(expanded)]);
     }
-    if let Some(suffix) = raw.strip_prefix("~/") {
-        return home_dir().join(suffix);
+    let mut matches = Vec::new();
+    for path in
+        glob(&expanded).with_context(|| format!("invalid sourced tmux config glob: {expanded}"))?
+    {
+        matches.push(
+            path.with_context(|| format!("failed to expand sourced tmux config glob: {expanded}"))?,
+        );
     }
-    if raw == "$HOME" {
-        return home_dir();
+
+    if matches.is_empty() { Ok(vec![PathBuf::from(expanded)]) } else { Ok(matches) }
+}
+
+fn has_glob_pattern(value: &str) -> bool {
+    value.chars().any(|ch| matches!(ch, '*' | '?' | '['))
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    #[test]
+    fn resolve_config_path_from_env_returns_none_when_missing() {
+        let dir = tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        assert_eq!(super::resolve_config_path_from_env(None, &home), None);
     }
-    if let Some(suffix) = raw.strip_prefix("$HOME/") {
-        return home_dir().join(suffix);
-    }
-    PathBuf::from(raw)
 }
 
 fn tokenize_tmux_line(line: &str) -> Vec<String> {
@@ -178,8 +211,4 @@ fn tokenize_tmux_line(line: &str) -> Vec<String> {
     }
 
     tokens
-}
-
-fn home_dir() -> PathBuf {
-    std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/"))
 }
