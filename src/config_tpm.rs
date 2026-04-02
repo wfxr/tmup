@@ -137,7 +137,9 @@ fn source_directive(line: &str) -> Option<SourcedFile> {
 }
 
 fn is_quiet_source_flag(token: &str) -> bool {
-    token.starts_with('-') && token[1..].chars().all(|ch| ch == 'q') && token.len() > 1
+    token
+        .strip_prefix('-')
+        .is_some_and(|flags| !flags.is_empty() && flags.chars().all(|ch| ch == 'q'))
 }
 
 fn plugin_declaration(line: &str) -> Option<String> {
@@ -192,20 +194,6 @@ fn has_glob_pattern(value: &str) -> bool {
     value.chars().any(|ch| matches!(ch, '*' | '?' | '['))
 }
 
-#[cfg(test)]
-mod tests {
-    use tempfile::tempdir;
-
-    #[test]
-    fn resolve_config_path_from_env_returns_none_when_missing() {
-        let dir = tempdir().unwrap();
-        let home = dir.path().join("home");
-        std::fs::create_dir_all(&home).unwrap();
-
-        assert_eq!(super::resolve_config_path_from_env(None, &home), None);
-    }
-}
-
 fn tokenize_tmux_line(line: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
@@ -236,4 +224,18 @@ fn tokenize_tmux_line(line: &str) -> Vec<String> {
     }
 
     tokens
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    #[test]
+    fn resolve_config_path_from_env_returns_none_when_missing() {
+        let dir = tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        assert_eq!(super::resolve_config_path_from_env(None, &home), None);
+    }
 }

@@ -108,7 +108,9 @@ tmup uses [KDL v2](https://kdl.dev) syntax. Config file search order:
 2. `$XDG_CONFIG_HOME/tmux/tmup.kdl`
 3. `~/.config/tmux/tmup.kdl`
 
-If the target `tmup.kdl` does not exist yet, tmup will create it automatically.
+If the default discovered `tmup.kdl` does not exist yet, tmup will create it
+automatically. When `TMUP_CONFIG` is set explicitly, it must point to an
+existing file.
 
 `tmup.lock` lives next to the active `tmup.kdl`.
 

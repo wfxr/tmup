@@ -30,6 +30,40 @@ pub fn git(args: &[&str], dir: &Path) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
+/// Create a bare repo under `remotes/example.com/test/{name}.git`.
+pub fn make_remote_repo_named(root: &Path, name: &str) -> std::path::PathBuf {
+    let work = root.join(format!("work-{name}"));
+    std::fs::create_dir_all(&work).unwrap();
+
+    git(&["init", "-b", "main"], &work);
+    std::fs::write(work.join("init.tmux"), "#!/bin/sh\n").unwrap();
+    git(&["add", "."], &work);
+    git(&["commit", "-m", "init"], &work);
+
+    let bare_parent = root.join("remotes/example.com/test");
+    std::fs::create_dir_all(&bare_parent).unwrap();
+    let bare = bare_parent.join(format!("{name}.git"));
+    git(&["clone", "--bare", work.to_str().unwrap(), bare.to_str().unwrap()], root);
+    bare
+}
+
+/// Create the default bare repo at `remotes/example.com/test/plugin.git`.
+pub fn make_remote_repo(root: &Path) -> std::path::PathBuf {
+    make_remote_repo_named(root, "plugin")
+}
+
+/// Write a git config that rewrites `https://example.com/` to the local remotes dir.
+pub fn write_git_rewrite_config(root: &Path) -> std::path::PathBuf {
+    let gitconfig = root.join("gitconfig");
+    let rewritten_base = format!("file://{}/", root.join("remotes/example.com").display());
+    std::fs::write(
+        &gitconfig,
+        format!("[url \"{rewritten_base}\"]\n    insteadOf = https://example.com/\n"),
+    )
+    .unwrap();
+    gitconfig
+}
+
 /// Create a bare repo with one commit and return (bare_path, commit_hash).
 pub fn make_bare_repo(root: &Path) -> (std::path::PathBuf, String) {
     let work = root.join("work");

@@ -7,38 +7,7 @@ use std::path::{Path, PathBuf};
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::tempdir;
-use utils::git;
-
-fn make_remote_repo(root: &Path) -> PathBuf {
-    make_remote_repo_named(root, "plugin")
-}
-
-fn make_remote_repo_named(root: &Path, name: &str) -> PathBuf {
-    let work = root.join(format!("work-{name}"));
-    std::fs::create_dir_all(&work).unwrap();
-
-    git(&["init", "-b", "main"], &work);
-    std::fs::write(work.join("init.tmux"), "#!/bin/sh\n").unwrap();
-    git(&["add", "."], &work);
-    git(&["commit", "-m", "init"], &work);
-
-    let bare_parent = root.join("remotes/example.com/test");
-    std::fs::create_dir_all(&bare_parent).unwrap();
-    let bare = bare_parent.join(format!("{name}.git"));
-    git(&["clone", "--bare", work.to_str().unwrap(), bare.to_str().unwrap()], root);
-    bare
-}
-
-fn write_git_rewrite_config(root: &Path) -> PathBuf {
-    let gitconfig = root.join("gitconfig");
-    let rewritten_base = format!("file://{}/", root.join("remotes/example.com").display());
-    std::fs::write(
-        &gitconfig,
-        format!("[url \"{rewritten_base}\"]\n    insteadOf = https://example.com/\n"),
-    )
-    .unwrap();
-    gitconfig
-}
+use utils::{make_remote_repo, make_remote_repo_named, write_git_rewrite_config};
 
 fn write_fake_tmux_with_log(root: &Path, log_path: &Path) -> PathBuf {
     let bin_dir = root.join("bin-with-log");

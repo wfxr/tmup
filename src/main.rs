@@ -120,7 +120,13 @@ async fn main() -> ExitCode {
 fn resolve_runtime_paths() -> Result<Paths> {
     let mut paths = Paths::resolve()?;
     if let Ok(path) = std::env::var("TMUP_CONFIG") {
-        paths.set_config_path(resolve_explicit_config_path(PathBuf::from(path))?)?;
+        let path = resolve_explicit_config_path(PathBuf::from(path))?;
+        anyhow::ensure!(
+            path.is_file(),
+            "TMUP_CONFIG={} must point to an existing file",
+            path.display()
+        );
+        paths.set_config_path(path)?;
     }
     Ok(paths)
 }

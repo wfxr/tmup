@@ -1,3 +1,4 @@
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -17,12 +18,11 @@ pub enum ConfigMode {
     Mixed,
 }
 
-impl ConfigMode {
-    /// Return the CLI-facing lowercase spelling for this mode.
-    pub fn as_str(self) -> &'static str {
+impl fmt::Display for ConfigMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Tmup => "tmup",
-            Self::Mixed => "mixed",
+            Self::Tmup => f.write_str("tmup"),
+            Self::Mixed => f.write_str("mixed"),
         }
     }
 }
@@ -108,7 +108,7 @@ fn load_with_policy(paths: &Paths, mode: ConfigMode, create_missing: bool) -> Re
             active_config_path: tmup_path,
         }),
         ConfigMode::Mixed => {
-            let tpm_path = discover_tpm_config_path()?;
+            let tpm_path = config_tpm::resolve_config_path()?;
             load_from_sources(mode, Some(tmup_path.as_path()), tpm_path.as_deref())
         }
     }
@@ -207,10 +207,6 @@ options {
 fn default_tmup_config() -> Result<Config> {
     config::parse_config(default_tmup_config_template())
         .context("internal default tmup config invalid")
-}
-
-fn discover_tpm_config_path() -> Result<Option<PathBuf>> {
-    config_tpm::resolve_config_path()
 }
 
 #[cfg(test)]

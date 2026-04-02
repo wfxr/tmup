@@ -727,8 +727,9 @@ tmup KDL search order:
 2. `$XDG_CONFIG_HOME/tmux/tmup.kdl`
 3. `~/.config/tmux/tmup.kdl`
 
-If the selected `tmup.kdl` does not exist yet, tmup creates it automatically
-with a minimal commented template before loading configuration.
+If the selected default `tmup.kdl` does not exist yet, tmup creates it
+automatically with a minimal commented template before loading configuration.
+When `TMUP_CONFIG` is set explicitly, it must point to an existing file.
 
 TPM-compatible tmux config search order:
 

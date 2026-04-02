@@ -1,12 +1,10 @@
+mod utils;
+
 use tempfile::tempdir;
 use tmup::config::parse_config;
 use tmup::config_mode::{ConfigMode, load_from_sources};
 use tmup::lockfile::{config_fingerprint, remote_plugin_config_hash};
-
-fn write_file(path: &std::path::Path, content: &str) {
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, content).unwrap();
-}
+use utils::write_file;
 
 #[test]
 fn default_branch_hash_uses_declared_selector_semantics() {

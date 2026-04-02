@@ -211,7 +211,7 @@ impl InitBootstrapSpec {
             "--state-root".into(),
             self.state_root.to_string_lossy().into_owned(),
             "--config-mode".into(),
-            self.config_mode.as_str().into(),
+            self.config_mode.to_string(),
         ])
     }
 }
@@ -271,7 +271,7 @@ exit 0"#,
             cp = shell_quote(&self.config_path.to_string_lossy()),
             dr = shell_quote(&self.data_root.to_string_lossy()),
             sr = shell_quote(&self.state_root.to_string_lossy()),
-            cm = shell_quote(self.config_mode.as_str()),
+            cm = shell_quote(&self.config_mode.to_string()),
         )
     }
 }
