@@ -4,6 +4,10 @@
 
 /// KDL configuration file parsing.
 pub mod config;
+/// Config-mode resolution and multi-source loading.
+pub mod config_mode;
+/// TPM-style tmux config scanning and plugin extraction.
+pub mod config_tpm;
 /// Async git operations (clone, fetch, checkout, publish).
 pub mod git;
 /// Tmux load-plan construction (set env, apply opts, source `*.tmux` scripts).

@@ -513,14 +513,16 @@ fn init_ui_child_stops_after_sync_failure() {
     let gitconfig = write_git_rewrite_config(dir.path());
 
     let config_dir = dir.path().join("config");
+    let xdg_config_dir = dir.path().join("xdg-config/tmux");
     std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::create_dir_all(&xdg_config_dir).unwrap();
     let config_path = config_dir.join("tmup.kdl");
     std::fs::write(&config_path, r#"plugin "https://example.com/test/plugin.git""#).unwrap();
 
-    let original_mode = std::fs::metadata(&config_dir).unwrap().permissions().mode();
-    let mut readonly = std::fs::metadata(&config_dir).unwrap().permissions();
+    let original_mode = std::fs::metadata(&xdg_config_dir).unwrap().permissions().mode();
+    let mut readonly = std::fs::metadata(&xdg_config_dir).unwrap().permissions();
     readonly.set_mode(0o555);
-    std::fs::set_permissions(&config_dir, readonly).unwrap();
+    std::fs::set_permissions(&xdg_config_dir, readonly).unwrap();
 
     let output = Command::cargo_bin("tmup")
         .unwrap()
@@ -536,15 +538,16 @@ fn init_ui_child_stops_after_sync_failure() {
             "--state-root",
             dir.path().join("state").to_str().unwrap(),
         ])
+        .env("XDG_CONFIG_HOME", dir.path().join("xdg-config"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", gitconfig)
         .env("HOME", dir.path())
         .output()
         .unwrap();
 
-    let mut restored = std::fs::metadata(&config_dir).unwrap().permissions();
+    let mut restored = std::fs::metadata(&xdg_config_dir).unwrap().permissions();
     restored.set_mode(original_mode);
-    std::fs::set_permissions(&config_dir, restored).unwrap();
+    std::fs::set_permissions(&xdg_config_dir, restored).unwrap();
 
     assert!(!output.status.success(), "ui child should fail when sync fails");
 
@@ -656,6 +659,41 @@ fn init_parent_schedules_bootstrap_in_background() {
     assert!(
         !log.contains("split-window "),
         "init parent should not open split synchronously anymore, got log:\n{log}"
+    );
+}
+
+#[test]
+fn init_parent_bootstrap_uses_resolved_tmup_config_path() {
+    let dir = tempdir().unwrap();
+    let default_config_dir = dir.path().join("config/tmux");
+    let override_dir = dir.path().join("alt-config");
+    std::fs::create_dir_all(&default_config_dir).unwrap();
+    std::fs::create_dir_all(&override_dir).unwrap();
+    let override_config = override_dir.join("custom.kdl");
+    std::fs::write(default_config_dir.join("tmup.kdl"), r#"plugin "user/default""#).unwrap();
+    std::fs::write(&override_config, r#"plugin "user/override""#).unwrap();
+
+    let tmux_log = dir.path().join("tmux.log");
+    let fake_tmux_dir = write_fake_tmux_with_log(dir.path(), &tmux_log);
+    let path = format!("{}:{}", fake_tmux_dir.display(), std::env::var("PATH").unwrap_or_default());
+
+    let output = Command::cargo_bin("tmup")
+        .unwrap()
+        .arg("init")
+        .env("TMUP_CONFIG", &override_config)
+        .env("XDG_CONFIG_HOME", dir.path().join("config"))
+        .env("XDG_DATA_HOME", dir.path().join("data"))
+        .env("XDG_STATE_HOME", dir.path().join("state"))
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "init should succeed after scheduling bootstrap");
+
+    let log = std::fs::read_to_string(&tmux_log).unwrap_or_default();
+    assert!(
+        log.contains(&format!("'{}'", override_config.display())),
+        "expected scheduled bootstrap command to use the resolved TMUP_CONFIG path, got log:\n{log}"
     );
 }
 
@@ -1129,6 +1167,7 @@ plugin "https://example.com/test/plugin.git" build="exit 1"
 
     let data_root = dir.path().join("data");
     let state_root = dir.path().join("state");
+    let xdg_config_home = dir.path().join("xdg-config");
     std::fs::create_dir_all(&data_root).unwrap();
     std::fs::create_dir_all(&state_root).unwrap();
 
@@ -1151,6 +1190,7 @@ plugin "https://example.com/test/plugin.git" build="exit 1"
             state_root.to_str().unwrap(),
         ])
         .env("PATH", path)
+        .env("XDG_CONFIG_HOME", &xdg_config_home)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", gitconfig)
         .env("HOME", dir.path())

@@ -3,16 +3,17 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use owo_colors::OwoColorize;
 use tabled::builder::Builder;
 use tabled::settings::object::Segment;
 use tabled::settings::{Alignment, Modify, Style};
+use tmup::config_mode::{self, ConfigMode, LoadedConfig};
 use tmup::planner::{BuildStatus, PluginState, PluginStatus};
 use tmup::progress::{self, NullReporter, OperationStage, ProgressEvent, ProgressReporter};
 use tmup::state::{OperationLock, OperationLockGuard, Paths};
 use tmup::sync::{self, SyncMode, SyncPolicy};
-use tmup::{config, loader, lockfile, plugin, termui, tmux};
+use tmup::{loader, lockfile, plugin, termui, tmux};
 
 #[derive(Debug, Parser)]
 #[command(name = "tmup", about = "Modern tmux plugin manager")]
@@ -37,37 +38,56 @@ enum Commands {
         data_root: Option<PathBuf>,
         #[arg(hide = true, long)]
         state_root: Option<PathBuf>,
+        #[command(flatten)]
+        config_mode: ConfigModeArgs,
     },
     /// Install missing remote plugins
     Install {
         /// Plugin id to install (all if omitted)
         id: Option<String>,
+        #[command(flatten)]
+        config_mode: ConfigModeArgs,
     },
     /// Reconcile lock metadata and declared remote plugins with config
     Sync {
         /// Plugin id to sync (all if omitted)
         id: Option<String>,
+        #[command(flatten)]
+        config_mode: ConfigModeArgs,
     },
     /// Update remote plugins (the only command that advances lock)
     Update {
         /// Plugin id to update (all if omitted)
         id: Option<String>,
+        #[command(flatten)]
+        config_mode: ConfigModeArgs,
     },
     /// Restore plugins to lock-recorded commits
     Restore {
         /// Plugin id to restore (all if omitted)
         id: Option<String>,
+        #[command(flatten)]
+        config_mode: ConfigModeArgs,
     },
     /// Remove undeclared managed remote plugins
-    Clean,
+    Clean {
+        #[command(flatten)]
+        config_mode: ConfigModeArgs,
+    },
     /// List plugin status
     List {
         /// Show diagnostic columns including canonical id and source details
         #[arg(short, long)]
         verbose: bool,
+        #[command(flatten)]
+        config_mode: ConfigModeArgs,
     },
-    /// Migrate from TPM .tmux.conf declarations
-    Migrate,
+}
+
+#[derive(Debug, Clone, Args)]
+struct ConfigModeArgs {
+    #[arg(long, value_enum, default_value_t = ConfigMode::Tmup)]
+    config_mode: ConfigMode,
 }
 
 #[tokio::main]
@@ -82,17 +102,25 @@ async fn main() -> ExitCode {
             config_path,
             data_root,
             state_root,
-        } => run_init(bootstrap, ui_child, wait_channel, config_path, data_root, state_root).await,
-        Commands::Install { id } => run_install(id).await,
-        Commands::Sync { id } => run_sync(id).await,
-        Commands::Update { id } => run_update(id).await,
-        Commands::Restore { id } => run_restore(id).await,
-        Commands::Clean => run_clean().await,
-        Commands::List { verbose } => run_list(verbose),
-        Commands::Migrate => {
-            eprintln!("migrate not yet implemented");
-            Ok(())
+            config_mode,
+        } => {
+            run_init(
+                bootstrap,
+                ui_child,
+                wait_channel,
+                config_path,
+                data_root,
+                state_root,
+                config_mode.config_mode,
+            )
+            .await
         }
+        Commands::Install { id, config_mode } => run_install(id, config_mode.config_mode).await,
+        Commands::Sync { id, config_mode } => run_sync(id, config_mode.config_mode).await,
+        Commands::Update { id, config_mode } => run_update(id, config_mode.config_mode).await,
+        Commands::Restore { id, config_mode } => run_restore(id, config_mode.config_mode).await,
+        Commands::Clean { config_mode } => run_clean(config_mode.config_mode).await,
+        Commands::List { verbose, config_mode } => run_list(verbose, config_mode.config_mode),
     };
 
     match result {
@@ -108,38 +136,24 @@ async fn main() -> ExitCode {
 }
 
 fn resolve_runtime_paths() -> Result<Paths> {
-    let mut paths = Paths::resolve()?;
-    let config_path = resolve_config_path(&paths)?;
-    paths.set_config_path(config_path)?;
-    Ok(paths)
+    Paths::resolve()
 }
 
-fn load_config(paths: &Paths) -> Result<tmup::model::Config> {
-    let content = std::fs::read_to_string(&paths.config_path)
-        .with_context(|| format!("failed to read config: {}", paths.config_path.display()))?;
-    config::parse_config(&content)
+fn load_effective_config(paths: &Paths, mode: ConfigMode) -> Result<LoadedConfig> {
+    config_mode::load(paths, mode)
 }
 
-fn resolve_config_path(paths: &Paths) -> Result<std::path::PathBuf> {
-    // 1. $TMUP_CONFIG
-    if let Ok(p) = std::env::var("TMUP_CONFIG") {
-        let path = std::path::PathBuf::from(p);
-        anyhow::ensure!(path.exists(), "TMUP_CONFIG={} does not exist", path.display());
-        return Ok(path);
+fn sync_loaded_config_path(paths: &mut Paths, loaded: &LoadedConfig) -> Result<()> {
+    if let Some(path) = loaded.active_config_path.as_ref() {
+        paths.set_config_path(path.clone())?;
     }
-    // 2. Default config path
-    if paths.config_path.exists() {
-        return Ok(paths.config_path.clone());
+    Ok(())
+}
+
+fn emit_config_warnings(warnings: &[String]) {
+    for warning in warnings {
+        eprintln!("warning: {warning}");
     }
-    // 3. ~/.tmux/tmup.kdl
-    let home_tmux = dirs_home().join(".tmux/tmup.kdl");
-    if home_tmux.exists() {
-        return Ok(home_tmux);
-    }
-    anyhow::bail!(
-        "config file not found. Create {} or set TMUP_CONFIG",
-        paths.config_path.display()
-    )
 }
 
 fn load_lockfile(paths: &Paths) -> Result<lockfile::LockFile> {
@@ -161,6 +175,7 @@ async fn run_init(
     config_path: Option<PathBuf>,
     data_root: Option<PathBuf>,
     state_root: Option<PathBuf>,
+    config_mode: ConfigMode,
 ) -> Result<()> {
     if ui_child {
         return run_init_child(
@@ -168,6 +183,7 @@ async fn run_init(
             config_path.context("--ui-child requires --config-path")?,
             data_root.context("--ui-child requires --data-root")?,
             state_root.context("--ui-child requires --state-root")?,
+            config_mode,
         )
         .await;
     }
@@ -176,23 +192,32 @@ async fn run_init(
             config_path.context("--bootstrap requires --config-path")?,
             data_root.context("--bootstrap requires --data-root")?,
             state_root.context("--bootstrap requires --state-root")?,
+            config_mode,
         )
         .await;
     }
-    run_init_parent().await
+    run_init_parent(config_mode).await
 }
 
-fn build_init_bootstrap_spec(paths: &Paths) -> Result<tmux::InitBootstrapSpec> {
+fn build_init_bootstrap_spec(
+    paths: &Paths,
+    config_mode: ConfigMode,
+) -> Result<tmux::InitBootstrapSpec> {
     let exe = std::env::current_exe().context("failed to determine current executable")?;
     Ok(tmux::InitBootstrapSpec {
         exe,
         config_path: paths.config_path.clone(),
         data_root: paths.data_root().to_path_buf(),
         state_root: paths.state_root().to_path_buf(),
+        config_mode,
     })
 }
 
-fn build_init_ui_child_spec(paths: &Paths, wait_channel: String) -> Result<tmux::InitUiChildSpec> {
+fn build_init_ui_child_spec(
+    paths: &Paths,
+    wait_channel: String,
+    config_mode: ConfigMode,
+) -> Result<tmux::InitUiChildSpec> {
     let exe = std::env::current_exe().context("failed to determine current executable")?;
     Ok(tmux::InitUiChildSpec {
         exe,
@@ -200,6 +225,7 @@ fn build_init_ui_child_spec(paths: &Paths, wait_channel: String) -> Result<tmux:
         data_root: paths.data_root().to_path_buf(),
         state_root: paths.state_root().to_path_buf(),
         wait_channel,
+        config_mode,
     })
 }
 
@@ -224,11 +250,12 @@ async fn run_init_with_ui_mode(
     paths: &Paths,
     target: &tmux::InitUiTarget,
     mode: tmux::InitUiMode,
+    config_mode: ConfigMode,
 ) -> Result<i32> {
     let wait_channel = format!("tmup-init-{}-{}", std::process::id(), epoch_millis());
     let result_file = paths.init_result_path(&wait_channel);
     let _ = std::fs::remove_file(&result_file);
-    let spec = build_init_ui_child_spec(paths, wait_channel)?;
+    let spec = build_init_ui_child_spec(paths, wait_channel, config_mode)?;
 
     match mode {
         tmux::InitUiMode::Popup { supports_title } => {
@@ -249,10 +276,13 @@ async fn run_init_with_ui_mode(
 /// Parent init flow: preview whether work is needed, then either run inline,
 /// launch popup/split immediately when a usable tmux target already exists,
 /// or schedule a deferred bootstrap for cold startup.
-async fn run_init_parent() -> Result<()> {
-    let paths = resolve_runtime_paths()?;
+async fn run_init_parent(config_mode: ConfigMode) -> Result<()> {
+    let mut paths = resolve_runtime_paths()?;
     paths.ensure_dirs()?;
-    let cfg = load_config(&paths)?;
+    let loaded = load_effective_config(&paths, config_mode)?;
+    sync_loaded_config_path(&mut paths, &loaded)?;
+    emit_config_warnings(&loaded.warnings);
+    let cfg = loaded.config;
 
     // Lock-free preview: does this init need visible work?
     let lock = load_lockfile(&paths)?;
@@ -271,11 +301,11 @@ async fn run_init_parent() -> Result<()> {
     }
 
     if let Some(target) = tmux::current_init_ui_target() {
-        let exit_code = run_init_with_ui_mode(&paths, &target, ui_mode).await?;
+        let exit_code = run_init_with_ui_mode(&paths, &target, ui_mode, config_mode).await?;
         return if exit_code == 0 { Ok(()) } else { Err(progress::reported_error()) };
     }
 
-    let spec = build_init_bootstrap_spec(&paths)?;
+    let spec = build_init_bootstrap_spec(&paths, config_mode)?;
     if tmux::spawn_init_bootstrap(&spec).is_ok() {
         return Ok(());
     }
@@ -289,10 +319,14 @@ async fn run_init_bootstrap(
     config_path: PathBuf,
     data_root: PathBuf,
     state_root: PathBuf,
+    config_mode: ConfigMode,
 ) -> Result<()> {
-    let paths = Paths::from_runtime_roots(data_root, state_root, config_path)?;
+    let mut paths = Paths::from_runtime_roots(data_root, state_root, config_path)?;
     paths.ensure_dirs()?;
-    let cfg = load_config(&paths)?;
+    let loaded = load_effective_config(&paths, config_mode)?;
+    sync_loaded_config_path(&mut paths, &loaded)?;
+    emit_config_warnings(&loaded.warnings);
+    let cfg = loaded.config;
 
     let lock = load_lockfile(&paths)?;
     let sync_preview =
@@ -308,7 +342,7 @@ async fn run_init_bootstrap(
     }
 
     if let Some(target) = tmux::probe_init_ui_target() {
-        let exit_code = run_init_with_ui_mode(&paths, &target, ui_mode).await?;
+        let exit_code = run_init_with_ui_mode(&paths, &target, ui_mode, config_mode).await?;
         return if exit_code == 0 { Ok(()) } else { Err(progress::reported_error()) };
     }
 
@@ -331,10 +365,14 @@ async fn run_init_child(
     config_path: PathBuf,
     data_root: PathBuf,
     state_root: PathBuf,
+    config_mode: ConfigMode,
 ) -> Result<()> {
-    let paths = Paths::from_runtime_roots(data_root, state_root, config_path)?;
+    let mut paths = Paths::from_runtime_roots(data_root, state_root, config_path)?;
     paths.ensure_dirs()?;
-    let cfg = load_config(&paths)?;
+    let loaded = load_effective_config(&paths, config_mode)?;
+    sync_loaded_config_path(&mut paths, &loaded)?;
+    emit_config_warnings(&loaded.warnings);
+    let cfg = loaded.config;
 
     let labels = progress::build_display_labels(&cfg, None);
     let reporter = progress::create_reporter(&paths, "init", labels);
@@ -432,11 +470,14 @@ fn epoch_millis() -> u128 {
 // Progress-enabled commands
 // ---------------------------------------------------------------------------
 
-async fn run_install(id: Option<String>) -> Result<()> {
-    let paths = resolve_runtime_paths()?;
+async fn run_install(id: Option<String>, config_mode: ConfigMode) -> Result<()> {
+    let mut paths = resolve_runtime_paths()?;
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another tmup operation is in progress")?;
-    let cfg = load_config(&paths)?;
+    let loaded = load_effective_config(&paths, config_mode)?;
+    sync_loaded_config_path(&mut paths, &loaded)?;
+    emit_config_warnings(&loaded.warnings);
+    let cfg = loaded.config;
     cfg.validate_target_id(id.as_deref())?;
     let mut lock = load_lockfile(&paths)?;
     paths.ensure_dirs()?;
@@ -465,11 +506,14 @@ async fn run_install(id: Option<String>) -> Result<()> {
     finish_visible_operation(&*reporter, "install", result)
 }
 
-async fn run_sync(id: Option<String>) -> Result<()> {
-    let paths = resolve_runtime_paths()?;
+async fn run_sync(id: Option<String>, config_mode: ConfigMode) -> Result<()> {
+    let mut paths = resolve_runtime_paths()?;
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another tmup operation is in progress")?;
-    let cfg = load_config(&paths)?;
+    let loaded = load_effective_config(&paths, config_mode)?;
+    sync_loaded_config_path(&mut paths, &loaded)?;
+    emit_config_warnings(&loaded.warnings);
+    let cfg = loaded.config;
     cfg.validate_target_id(id.as_deref())?;
     let mut lock = load_lockfile(&paths)?;
     paths.ensure_dirs()?;
@@ -496,11 +540,14 @@ async fn run_sync(id: Option<String>) -> Result<()> {
     finish_visible_operation(&*reporter, "sync", result)
 }
 
-async fn run_update(id: Option<String>) -> Result<()> {
-    let paths = resolve_runtime_paths()?;
+async fn run_update(id: Option<String>, config_mode: ConfigMode) -> Result<()> {
+    let mut paths = resolve_runtime_paths()?;
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another tmup operation is in progress")?;
-    let cfg = load_config(&paths)?;
+    let loaded = load_effective_config(&paths, config_mode)?;
+    sync_loaded_config_path(&mut paths, &loaded)?;
+    emit_config_warnings(&loaded.warnings);
+    let cfg = loaded.config;
     cfg.validate_target_id(id.as_deref())?;
     let mut lock = load_lockfile(&paths)?;
     paths.ensure_dirs()?;
@@ -529,11 +576,14 @@ async fn run_update(id: Option<String>) -> Result<()> {
     finish_visible_operation(&*reporter, "update", result)
 }
 
-async fn run_restore(id: Option<String>) -> Result<()> {
-    let paths = resolve_runtime_paths()?;
+async fn run_restore(id: Option<String>, config_mode: ConfigMode) -> Result<()> {
+    let mut paths = resolve_runtime_paths()?;
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another tmup operation is in progress")?;
-    let cfg = load_config(&paths)?;
+    let loaded = load_effective_config(&paths, config_mode)?;
+    sync_loaded_config_path(&mut paths, &loaded)?;
+    emit_config_warnings(&loaded.warnings);
+    let cfg = loaded.config;
     cfg.validate_target_id(id.as_deref())?;
     let mut lock = load_lockfile(&paths)?;
     paths.ensure_dirs()?;
@@ -566,11 +616,14 @@ async fn run_restore(id: Option<String>) -> Result<()> {
 // Non-progress commands
 // ---------------------------------------------------------------------------
 
-async fn run_clean() -> Result<()> {
-    let paths = resolve_runtime_paths()?;
+async fn run_clean(config_mode: ConfigMode) -> Result<()> {
+    let mut paths = resolve_runtime_paths()?;
     let _guard = OperationLock::try_acquire(&paths.lock_path)?
         .context("another tmup operation is in progress")?;
-    let cfg = load_config(&paths)?;
+    let loaded = load_effective_config(&paths, config_mode)?;
+    sync_loaded_config_path(&mut paths, &loaded)?;
+    emit_config_warnings(&loaded.warnings);
+    let cfg = loaded.config;
     let mut lock = load_lockfile(&paths)?;
     let sync_outcome = sync::run_and_write(
         &cfg,
@@ -586,9 +639,12 @@ async fn run_clean() -> Result<()> {
     plugin::clean(&cfg, &paths)
 }
 
-fn run_list(verbose: bool) -> Result<()> {
-    let paths = resolve_runtime_paths()?;
-    let cfg = load_config(&paths)?;
+fn run_list(verbose: bool, config_mode: ConfigMode) -> Result<()> {
+    let mut paths = resolve_runtime_paths()?;
+    let loaded = load_effective_config(&paths, config_mode)?;
+    sync_loaded_config_path(&mut paths, &loaded)?;
+    emit_config_warnings(&loaded.warnings);
+    let cfg = loaded.config;
     let lock = load_lockfile(&paths)?;
     let statuses = plugin::list(&cfg, &lock, &paths)?;
 
@@ -729,12 +785,6 @@ fn finish_visible_operation(
             Err(progress::reported_error())
         }
     }
-}
-
-fn dirs_home() -> std::path::PathBuf {
-    std::env::var("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("/"))
 }
 
 #[cfg(test)]

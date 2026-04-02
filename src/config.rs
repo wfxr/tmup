@@ -150,20 +150,30 @@ fn parse_plugin(node: &kdl::KdlNode) -> Result<PluginSpec> {
             opts,
         }
     } else {
-        let (id, clone_url) = normalize_remote_source(&raw)?;
-        let name =
-            explicit_name.unwrap_or_else(|| id.rsplit('/').next().unwrap_or(&id).to_string());
-        PluginSpec {
-            source: PluginSource::Remote { raw, id, clone_url },
-            name,
-            opt_prefix,
-            tracking,
-            build,
-            opts,
-        }
+        build_remote_plugin_spec(raw, explicit_name, opt_prefix, tracking, build, opts)?
     };
 
     Ok(source)
+}
+
+pub(crate) fn build_remote_plugin_spec(
+    raw: String,
+    explicit_name: Option<String>,
+    opt_prefix: String,
+    tracking: Tracking,
+    build: Option<String>,
+    opts: Vec<(String, String)>,
+) -> Result<PluginSpec> {
+    let (id, clone_url) = normalize_remote_source(&raw)?;
+    let name = explicit_name.unwrap_or_else(|| id.rsplit('/').next().unwrap_or(&id).to_string());
+    Ok(PluginSpec {
+        source: PluginSource::Remote { raw, id, clone_url },
+        name,
+        opt_prefix,
+        tracking,
+        build,
+        opts,
+    })
 }
 
 /// Normalize a remote source string into (canonical_id, clone_url).
@@ -221,7 +231,7 @@ fn normalize_remote_id(host: &str, path: &str) -> Result<String> {
     Ok(id)
 }
 
-fn validate_unique_ids(plugins: &[PluginSpec]) -> Result<()> {
+pub(crate) fn validate_unique_ids(plugins: &[PluginSpec]) -> Result<()> {
     let mut seen = HashSet::new();
     for p in plugins {
         if let Some(id) = p.remote_id()

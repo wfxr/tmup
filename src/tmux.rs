@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 
+use crate::config_mode::ConfigMode;
+
 /// Represents a tmux command to be executed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TmuxCommand {
@@ -192,6 +194,8 @@ pub struct InitBootstrapSpec {
     pub data_root: PathBuf,
     /// Root directory for runtime state.
     pub state_root: PathBuf,
+    /// Configuration loading mode for the child process.
+    pub config_mode: ConfigMode,
 }
 
 impl InitBootstrapSpec {
@@ -206,6 +210,8 @@ impl InitBootstrapSpec {
             self.data_root.to_string_lossy().into_owned(),
             "--state-root".into(),
             self.state_root.to_string_lossy().into_owned(),
+            "--config-mode".into(),
+            self.config_mode.as_str().into(),
         ])
     }
 }
@@ -222,6 +228,8 @@ pub struct InitUiChildSpec {
     pub state_root: PathBuf,
     /// tmux `wait-for` channel name used to signal completion.
     pub wait_channel: String,
+    /// Configuration loading mode for the child process.
+    pub config_mode: ConfigMode,
 }
 
 impl InitUiChildSpec {
@@ -244,7 +252,7 @@ tty_state=
 cleanup() {{ tmux wait-for -S "$channel"; }}
 restore_tty() {{ [ -n "$tty_state" ] && stty "$tty_state" >/dev/null 2>&1 || true; }}
 trap 'restore_tty; cleanup' EXIT INT TERM HUP
-{roe}{exe} init --ui-child --wait-channel {ch} --config-path {cp} --data-root {dr} --state-root {sr}
+{roe}{exe} init --ui-child --wait-channel {ch} --config-path {cp} --data-root {dr} --state-root {sr} --config-mode {cm}
 rc=$?
 printf '{{"exit_code":%d}}\n' "$rc" > "$result_file"
 if [ -t 0 ]; then
@@ -263,6 +271,7 @@ exit 0"#,
             cp = shell_quote(&self.config_path.to_string_lossy()),
             dr = shell_quote(&self.data_root.to_string_lossy()),
             sr = shell_quote(&self.state_root.to_string_lossy()),
+            cm = shell_quote(self.config_mode.as_str()),
         )
     }
 }

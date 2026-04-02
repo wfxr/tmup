@@ -138,7 +138,30 @@ direct children are plugin directories. This is an explicit non-goal.
 
 ---
 
-## 4. Configuration (KDL)
+## 4. Configuration Sources
+
+tmup supports two configuration-loading modes:
+
+- `tmup`: load only `tmup.kdl`
+- `mixed`: load both sources and merge them
+
+The CLI surface is:
+
+```text
+tmup <command> --config-mode=tmup|mixed
+```
+
+Default mode is `tmup`.
+
+In `mixed` mode:
+
+- remote plugins are deduplicated by canonical remote plugin ID
+- `tmup.kdl` wins on conflict
+- a warning is emitted when a TPM declaration is ignored because a KDL entry
+  for the same remote plugin ID exists
+- local plugins may come only from `tmup.kdl`
+
+### 4.1 tmup KDL
 
 ```kdl
 // ~/.config/tmux/tmup.kdl
@@ -176,7 +199,7 @@ plugin "~/dev/my-tmux-plugin" local=#true name="my-plugin-dev"
 /-plugin "tmux-plugins/tmux-continuum"
 ```
 
-### 4.1 Option Mechanism
+### 4.1.1 Option Mechanism
 
 Formula:
 
@@ -191,7 +214,7 @@ Rules:
 - No automatic `-` or `_` separator.
 - The user is responsible for the final tmux option name.
 
-### 4.2 Plugin Properties
+### 4.1.2 Plugin Properties
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
@@ -205,19 +228,47 @@ Rules:
 | `build` | string | -- | Executed in the staged plugin directory before publish |
 | `opt` | child node | -- | Becomes `set -g @{opt-prefix}{key} "{value}"` |
 
-### 4.3 Global Options
+### 4.1.3 Global Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `auto-install` | bool | `true` | Install missing plugins during `init` |
 | `concurrency` | integer | `16` | Max concurrent remote prepare jobs; `1` forces serial prepare |
 
-### 4.4 Validation Rules
+### 4.1.4 Validation Rules
 
 1. Remote plugin IDs must be unique; duplicates cause an error.
 2. `branch`, `tag`, `commit` are mutually exclusive.
 3. `local=true` requires a path that expands to an absolute local path.
 4. Remote plugins always enter the lock snapshot after successful sync; local plugins never do.
+
+### 4.2 TPM-Compatible tmux Config
+
+In `mixed` mode, tmup supplements `tmup.kdl` with plugin declarations read from
+the tmux config source set.
+
+Supported discovery order:
+
+1. `$XDG_CONFIG_HOME/tmux/tmux.conf`
+2. `~/.config/tmux/tmux.conf`
+3. `~/.tmux.conf`
+
+Supported declarations:
+
+- `set -g @plugin 'user/repo'`
+- `set -g @plugin 'user/repo#branch'`
+- `set -g @plugin 'https://host/user/repo.git'`
+- `set -g @plugin 'git@host:user/repo.git'`
+
+Supported `source-file` behavior intentionally matches current TPM behavior:
+
+- tmup scans the root tmux config file
+- tmup includes only directly sourced files discovered there
+- tmup does not recursively expand nested sourced files
+
+tmup does not infer ownership of ordinary `@foo` tmux options in TPM mode.
+Those options remain tmux-managed runtime state and are consumed by plugins in
+the usual way when their `*.tmux` scripts execute.
 5. Local plugins cannot declare `branch` / `tag` / `commit`.
 6. `concurrency` must be an integer >= 1 and fit the platform `usize`.
 
@@ -247,11 +298,15 @@ tmup update [id]        # update unchanged floating selectors after sync
 tmup restore [id]       # restore plugins to lock-recorded commits
 tmup clean              # remove undeclared managed remote repos
 tmup list               # list plugin status
-tmup migrate            # migrate from .tmux.conf TPM declarations (planned)
 ```
 
 The CLI target selector is the **remote plugin ID**. `name` is for display
 only. Local plugins do not participate in `sync` / `install` / `update` / `restore`.
+Every command that consumes configuration also accepts:
+
+```text
+--config-mode=tmup|mixed
+```
 
 ### 5.2 `init` (tmux startup path)
 
@@ -261,7 +316,8 @@ and mutation.
 
 ```text
 1. Acquire the global operation lock (blocking).
-2. Parse tmup.kdl, read tmup.lock, validate configuration.
+2. Load configuration according to `--config-mode`, read `tmup.lock`, and
+   validate the effective configuration.
 3. Run implicit incremental sync as the only remote-plugin reconciliation pass.
    - Install newly declared remote plugins only when auto-install=true.
    - Repair missing, broken, or drifted managed plugin repos against the lock
@@ -393,18 +449,9 @@ Examples:
 - Update build failure: `state=installed`, `last-result=build-failed`
 - Fresh install build failure: `state=missing`, `last-result=build-failed`
 
-`list` is read-only. If the lock snapshot is stale relative to `tmup.kdl`,
-it prints a warning before the table and does not mutate `tmup.lock`.
-
-### 5.9 `migrate` (planned)
-
-- Extracts `set -g @plugin` and related `set -g @xxx` options from
-  `.tmux.conf`.
-- When `opt-prefix` cannot be reliably inferred, generates a TODO comment
-  instead of guessing.
-- Does not overwrite an existing `tmup.kdl`.
-
----
+`list` is read-only. If the lock snapshot is stale relative to the effective
+configuration for the selected `--config-mode`, it prints a warning before the
+table and does not mutate `tmup.lock`.
 
 ## 6. Lock File
 
@@ -653,8 +700,9 @@ setup, option application, and plugin loading within the `init` command.
 ## 10. Directory Structure
 
 ```text
-~/.config/tmux/tmup.kdl                 # user configuration
-~/.config/tmux/tmup.lock            # resolved lock snapshot (check into version control)
+~/.config/tmux/tmup.kdl                 # tmup-native configuration
+~/.config/tmux/tmux.conf                # optional TPM-compatible config source
+~/.config/tmux/tmup.lock                # resolved snapshot when using the default tmup.kdl
 
 ~/.local/share/tmup/
   +-- plugins/                          # installed plugin checkouts
@@ -669,16 +717,22 @@ setup, option application, and plugin loading within the `init` command.
   +-- failures/                         # build failure markers (JSON)
 ```
 
-Config file search order:
+tmup KDL search order:
 
 1. `$TMUP_CONFIG`
 2. `$XDG_CONFIG_HOME/tmux/tmup.kdl`
 3. `~/.config/tmux/tmup.kdl`
-4. `~/.tmux/tmup.kdl`
 
-The active `tmup.lock` is always stored next to the resolved config file.
-For example, `TMUP_CONFIG=/path/to/custom.kdl` uses
-`/path/to/tmup.lock`.
+If the selected `tmup.kdl` does not exist yet, tmup creates it automatically
+with a minimal commented template before loading configuration.
+
+TPM-compatible tmux config search order:
+
+1. `$XDG_CONFIG_HOME/tmux/tmux.conf`
+2. `~/.config/tmux/tmux.conf`
+3. `~/.tmux.conf`
+
+`tmup.lock` is always stored next to the active `tmup.kdl`.
 
 ---
 
@@ -762,7 +816,6 @@ tmup/
 
 ### Phase 3: Polish
 
-- [ ] `migrate` command
 - [x] Concurrent git operations (bounded prepare-phase concurrency, default 16)
 - [ ] `list --json` structured output
 - [ ] Crash recovery: stale staging cleanup on startup

@@ -48,7 +48,7 @@ fn cargo_cmd(
 }
 
 #[test]
-fn list_reads_lockfile_next_to_override_config() {
+fn cli_paths_list_reads_lockfile_next_to_override_config() {
     let dir = tempdir().unwrap();
     let config_dir = dir.path().join("alt-config");
     let xdg_config_dir = dir.path().join("xdg-config/tmux");
@@ -69,7 +69,7 @@ fn list_reads_lockfile_next_to_override_config() {
 }
 
 #[test]
-fn sync_writes_lockfile_next_to_override_config() {
+fn cli_paths_sync_writes_lockfile_next_to_override_config() {
     let dir = tempdir().unwrap();
     make_remote_repo(dir.path());
     let gitconfig = write_git_rewrite_config(dir.path());
