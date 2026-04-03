@@ -136,13 +136,12 @@ async fn main() -> ExitCode {
 fn resolve_runtime_paths() -> Result<Paths> {
     if let Ok(path) = std::env::var("TMUP_CONFIG") {
         let path = resolve_explicit_config_path(PathBuf::from(path))?;
-        let paths = Paths::resolve_with_config_path(Some(path.clone()))?;
         anyhow::ensure!(
             path.is_file(),
             "TMUP_CONFIG={} must point to an existing file",
             path.display()
         );
-        return Ok(paths);
+        return Paths::resolve_with_config_path(Some(path));
     }
     Paths::resolve()
 }
@@ -163,17 +162,25 @@ fn load_effective_config(
     create_missing: bool,
     explicit_tpm_config_path: Option<&std::path::Path>,
 ) -> Result<LoadedConfig> {
-    if matches!(mode, ConfigMode::Mixed) && explicit_tpm_config_path.is_some() && !create_missing {
-        config_mode::load_from_sources(
+    if create_missing {
+        debug_assert!(
+            explicit_tpm_config_path.is_none(),
+            "explicit TPM config path is only expected for init child/bootstrap flows"
+        );
+        return config_mode::load_or_create_default(paths, mode);
+    }
+
+    if matches!(mode, ConfigMode::Mixed)
+        && let Some(tpm_config_path) = explicit_tpm_config_path
+    {
+        return config_mode::load_from_sources(
             mode,
             Some(paths.config_path.as_path()),
-            explicit_tpm_config_path,
-        )
-    } else if create_missing {
-        config_mode::load_or_create_default(paths, mode)
-    } else {
-        config_mode::load(paths, mode)
+            Some(tpm_config_path),
+        );
     }
+
+    config_mode::load(paths, mode)
 }
 
 struct AppliedConfig {

@@ -53,9 +53,7 @@ pub fn load_or_create_default(paths: &Paths, mode: ConfigMode) -> Result<LoadedC
 /// Ensure the active tmup.kdl exists on disk using the default template.
 pub fn ensure_tmup_config_exists(paths: &Paths) -> Result<()> {
     let path = prepare_tmup_config_path(paths, false)?;
-    if !path.exists() {
-        create_default_tmup_config(&path)?;
-    }
+    create_default_tmup_config(&path)?;
     Ok(())
 }
 
@@ -139,6 +137,9 @@ fn load_tmup_config_or_default(path: &Path) -> Result<Config> {
 }
 
 fn merge_configs(mut kdl: Config, tpm: Config, warnings: &mut Vec<String>) -> Config {
+    // Mixed mode preserves TPM-discovered order for TPM entries, while KDL-only
+    // entries are appended afterward in their original KDL order. Conflicting
+    // remote ids keep the TPM slot but use the KDL declaration.
     let mut merged = Vec::with_capacity(tpm.plugins.len() + kdl.plugins.len());
     let mut kdl_remote_indices = std::collections::HashMap::new();
 
@@ -171,12 +172,14 @@ fn merge_configs(mut kdl: Config, tpm: Config, warnings: &mut Vec<String>) -> Co
         }
     }
 
-    Config { options: kdl.options, plugins: merged }
+    let config = Config { options: kdl.options, plugins: merged };
+    debug_assert!(config::validate_unique_ids(&config.plugins).is_ok());
+    config
 }
 
 fn prepare_tmup_config_path(paths: &Paths, create_missing: bool) -> Result<PathBuf> {
     let path = paths.config_path.clone();
-    if create_missing && !path.exists() {
+    if create_missing {
         create_default_tmup_config(&path)?;
     }
     Ok(path)

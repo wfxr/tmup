@@ -19,6 +19,18 @@ fn config_tpm_parses_single_plugin_declaration() {
 }
 
 #[test]
+fn config_tpm_parses_double_quoted_plugin_declaration() {
+    let dir = tempdir().unwrap();
+    let tmux_conf = dir.path().join("tmux.conf");
+    write_file(&tmux_conf, "set -g @plugin \"tmux-plugins/tmux-sensible\"\n");
+
+    let cfg = load_config_from_path(&tmux_conf).unwrap();
+
+    assert_eq!(cfg.plugins.len(), 1);
+    assert_eq!(cfg.plugins[0].remote_id().unwrap(), "github.com/tmux-plugins/tmux-sensible");
+}
+
+#[test]
 fn config_tpm_accepts_set_option_form() {
     let dir = tempdir().unwrap();
     let tmux_conf = dir.path().join("tmux.conf");
