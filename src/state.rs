@@ -107,6 +107,13 @@ impl Paths {
         Ok(())
     }
 
+    /// Clone the current path set while retargeting the active config and lockfile pair.
+    pub fn with_config_path(&self, config_path: PathBuf) -> Result<Self> {
+        let mut paths = self.clone();
+        paths.set_config_path(config_path)?;
+        Ok(paths)
+    }
+
     /// Ensure all required directories exist.
     pub fn ensure_dirs(&self) -> Result<()> {
         fs::create_dir_all(&self.plugin_root)?;

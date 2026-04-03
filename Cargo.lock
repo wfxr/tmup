@@ -980,6 +980,7 @@ dependencies = [
  "kdl",
  "owo-colors",
  "predicates",
+ "regex",
  "serde",
  "serde_json",
  "sha2",

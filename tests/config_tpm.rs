@@ -43,15 +43,25 @@ fn config_tpm_accepts_set_option_form() {
 }
 
 #[test]
-fn config_tpm_accepts_combined_set_flags() {
+fn config_tpm_ignores_combined_set_flags_not_supported_by_tpm() {
     let dir = tempdir().unwrap();
     let tmux_conf = dir.path().join("tmux.conf");
     write_file(&tmux_conf, "set -gq @plugin 'tmux-plugins/tmux-sensible'\n");
 
     let cfg = load_config_from_path(&tmux_conf).unwrap();
 
-    assert_eq!(cfg.plugins.len(), 1);
-    assert_eq!(cfg.plugins[0].remote_id().unwrap(), "github.com/tmux-plugins/tmux-sensible");
+    assert!(cfg.plugins.is_empty());
+}
+
+#[test]
+fn config_tpm_ignores_unset_plugin_declaration() {
+    let dir = tempdir().unwrap();
+    let tmux_conf = dir.path().join("tmux.conf");
+    write_file(&tmux_conf, "set -ug @plugin 'tmux-plugins/tmux-sensible'\n");
+
+    let cfg = load_config_from_path(&tmux_conf).unwrap();
+
+    assert!(cfg.plugins.is_empty());
 }
 
 #[test]

@@ -93,6 +93,19 @@ pub struct LoadedConfig {
     pub tpm_config_path: Option<PathBuf>,
 }
 
+/// Result of loading config for a concrete runtime request, including finalized paths.
+#[derive(Debug)]
+pub struct LoadedRequest {
+    /// The normalized effective configuration.
+    pub config: Config,
+    /// Warnings emitted while loading or merging config sources.
+    pub warnings: Vec<String>,
+    /// Runtime paths retargeted to the resolved active config and lockfile pair.
+    pub paths: Paths,
+    /// The resolved TPM config path when mixed mode discovered one.
+    pub tpm_config_path: Option<PathBuf>,
+}
+
 /// Ensure the active tmup.kdl exists on disk using the default template.
 pub fn ensure_tmup_config_exists(paths: &Paths) -> Result<()> {
     let path = prepare_tmup_config_path(paths, TmupConfigPolicy::ReadOnly)?;
@@ -120,16 +133,16 @@ pub fn load_from_sources(
     }
 }
 
-/// Load configuration according to an explicit request.
-pub fn load_with_request(paths: &Paths, request: LoadRequest) -> Result<LoadedConfig> {
+/// Load configuration according to an explicit request and finalize its runtime paths.
+pub fn load_with_request(paths: &Paths, request: LoadRequest) -> Result<LoadedRequest> {
     let tmup_path = prepare_tmup_config_path(paths, request.tmup_policy)?;
-    match request.mode {
-        ConfigMode::Tmup => Ok(LoadedConfig {
+    let loaded: LoadedConfig = match request.mode {
+        ConfigMode::Tmup => LoadedConfig {
             config: load_tmup_config_for_policy(&tmup_path, request.tmup_policy)?,
             warnings: Vec::new(),
             active_config_path: tmup_path,
             tpm_config_path: None,
-        }),
+        },
         ConfigMode::Mixed => {
             let (tpm_path, warnings) = resolve_tpm_config_path(request.tpm_policy)?;
             let mut loaded = load_from_sources(
@@ -138,9 +151,17 @@ pub fn load_with_request(paths: &Paths, request: LoadRequest) -> Result<LoadedCo
                 tpm_path.as_deref(),
             )?;
             loaded.warnings.extend(warnings);
-            Ok(loaded)
+            loaded
         }
-    }
+    };
+
+    let finalized_paths = paths.with_config_path(loaded.active_config_path.clone())?;
+    Ok(LoadedRequest {
+        config: loaded.config,
+        warnings: loaded.warnings,
+        paths: finalized_paths,
+        tpm_config_path: loaded.tpm_config_path,
+    })
 }
 
 fn load_mixed(tmup_path: Option<&Path>, tpm_path: Option<&Path>) -> Result<LoadedConfig> {
@@ -212,6 +233,8 @@ fn merge_configs(mut kdl: Config, tpm: Config, warnings: &mut Vec<String>) -> Co
     let mut consumed_kdl = vec![false; kdl.plugins.len()];
     for plugin in tpm.plugins {
         let Some(id) = plugin.remote_id() else {
+            // TPM scan only yields remote plugins today. Keep this defensive
+            // skip in case future callers hand us already-parsed mixed input.
             continue;
         };
 

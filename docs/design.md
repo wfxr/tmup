@@ -265,6 +265,8 @@ Supported declarations:
 
 - `set -g @plugin 'user/repo'`
 - `set -g @plugin 'user/repo#branch'`
+- `set-option -g @plugin 'user/repo'`
+- `set-option -g @plugin 'user/repo#branch'`
 - `set -g @plugin 'https://host/user/repo.git'`
 - `set -g @plugin 'git@host:user/repo.git'`
 
@@ -273,6 +275,8 @@ Supported `source-file` behavior intentionally matches current TPM behavior:
 - tmup scans the root tmux config file
 - tmup includes only directly sourced files discovered there
 - tmup does not recursively expand nested sourced files
+- tmup mirrors TPM's current `@plugin` extraction behavior and does not accept
+  broader `set` flag combinations than TPM for plugin discovery
 
 tmup does not infer ownership of ordinary `@foo` tmux options in TPM mode.
 Those options remain tmux-managed runtime state and are consumed by plugins in
