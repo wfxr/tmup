@@ -38,8 +38,6 @@ enum Commands {
         tpm_config_path: Option<PathBuf>,
         #[arg(hide = true, long, conflicts_with = "tpm_config_path")]
         no_tpm_config: bool,
-        #[arg(hide = true, long, value_enum, default_value_t = ConfigMode::Pure)]
-        config_mode: ConfigMode,
         #[arg(hide = true, long)]
         data_root: Option<PathBuf>,
         #[arg(hide = true, long)]
@@ -82,7 +80,6 @@ struct InitInvocation {
     config_path: Option<PathBuf>,
     tpm_config_path: Option<PathBuf>,
     no_tpm_config: bool,
-    config_mode: ConfigMode,
     data_root: Option<PathBuf>,
     state_root: Option<PathBuf>,
 }
@@ -99,7 +96,6 @@ async fn main() -> ExitCode {
                 config_path,
                 tpm_config_path,
                 no_tpm_config,
-                config_mode,
                 data_root,
                 state_root,
             } => {
@@ -111,7 +107,6 @@ async fn main() -> ExitCode {
                         config_path,
                         tpm_config_path,
                         no_tpm_config,
-                        config_mode,
                         data_root,
                         state_root,
                     },
@@ -146,7 +141,7 @@ fn resolve_requested_config_mode() -> Result<ConfigMode> {
         Ok(value) => parse_config_mode_env(&value),
         Err(std::env::VarError::NotPresent) => Ok(ConfigMode::Pure),
         Err(std::env::VarError::NotUnicode(_)) => {
-            anyhow::bail!("TMUP_CONFIG_MODE must be valid UTF-8 and one of 'pure' or 'mixed'")
+            anyhow::bail!("TMUP_CONFIG_MODE contains invalid UTF-8")
         }
     }
 }
@@ -243,10 +238,6 @@ fn apply_config_with_tpm_policy(
     })
 }
 
-fn stale_lock_sync_hint() -> &'static str {
-    "tmup sync"
-}
-
 fn load_lockfile(paths: &Paths) -> Result<lockfile::LockFile> {
     if paths.lockfile_path.exists() {
         lockfile::read_lockfile(&paths.lockfile_path)
@@ -264,20 +255,20 @@ async fn run_init(init: InitInvocation, config_mode: ConfigMode) -> Result<()> {
         return run_init_child(
             init.wait_channel.context("--ui-child requires --wait-channel")?,
             init.config_path.context("--ui-child requires --config-path")?,
-            init_tpm_config_policy(init.config_mode, init.tpm_config_path, init.no_tpm_config),
+            init_tpm_config_policy(config_mode, init.tpm_config_path, init.no_tpm_config),
             init.data_root.context("--ui-child requires --data-root")?,
             init.state_root.context("--ui-child requires --state-root")?,
-            init.config_mode,
+            config_mode,
         )
         .await;
     }
     if init.bootstrap {
         return run_init_bootstrap(
             init.config_path.context("--bootstrap requires --config-path")?,
-            init_tpm_config_policy(init.config_mode, init.tpm_config_path, init.no_tpm_config),
+            init_tpm_config_policy(config_mode, init.tpm_config_path, init.no_tpm_config),
             init.data_root.context("--bootstrap requires --data-root")?,
             init.state_root.context("--bootstrap requires --state-root")?,
-            init.config_mode,
+            config_mode,
         )
         .await;
     }
@@ -750,10 +741,7 @@ fn run_list(verbose: bool, config_mode: ConfigMode) -> Result<()> {
     let statuses = plugin::list(&cfg, &lock, &paths)?;
 
     if sync::lock_is_stale(&cfg, &lock) {
-        eprintln!(
-            "warning: lock metadata is stale relative to config; run `{}`",
-            stale_lock_sync_hint()
-        );
+        eprintln!("warning: lock metadata is stale relative to config; run `tmup sync`");
     }
 
     if verbose {

@@ -702,8 +702,8 @@ fn init_parent_bootstrap_uses_resolved_tpm_config_path_in_mixed_mode() {
         "expected scheduled bootstrap command to use the resolved TPM config path, got log:\n{log}"
     );
     assert!(
-        log.contains("'--config-mode' 'mixed'"),
-        "expected scheduled bootstrap command to propagate mixed mode, got log:\n{log}"
+        log.contains("TMUP_CONFIG_MODE='mixed'"),
+        "expected scheduled bootstrap command to propagate mixed mode via environment, got log:\n{log}"
     );
 }
 
@@ -805,9 +805,8 @@ fn init_bootstrap_mixed_uses_tpm_plugins_when_tmup_kdl_is_missing() {
             dir.path().join("data").to_str().unwrap(),
             "--state-root",
             dir.path().join("state").to_str().unwrap(),
-            "--config-mode",
-            "mixed",
         ])
+        .env("TMUP_CONFIG_MODE", "mixed")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", &gitconfig)
         .env("HOME", dir.path())
@@ -849,9 +848,8 @@ fn init_bootstrap_no_tpm_config_disables_rediscovery() {
             dir.path().join("data").to_str().unwrap(),
             "--state-root",
             dir.path().join("state").to_str().unwrap(),
-            "--config-mode",
-            "mixed",
         ])
+        .env("TMUP_CONFIG_MODE", "mixed")
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))

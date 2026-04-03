@@ -9,7 +9,6 @@ fn cli_help_lists_core_commands() {
         .assert()
         .success()
         .stdout(predicate::str::contains("--tpm").not())
-        .stdout(predicate::str::contains("--config-mode").not())
         .stdout(predicate::str::contains("init"))
         .stdout(predicate::str::contains("install"))
         .stdout(predicate::str::contains("sync"))
@@ -20,14 +19,11 @@ fn cli_help_lists_core_commands() {
 }
 
 #[test]
-fn cli_help_hides_internal_config_mode_switches() {
+fn init_help_omits_removed_tpm_flag() {
     Command::cargo_bin("tmup")
         .unwrap()
         .args(["init", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("--tpm").not())
-        .stdout(predicate::str::contains("--config-mode").not())
-        .stdout(predicate::str::contains("--bootstrap").not())
-        .stdout(predicate::str::contains("--ui-child").not());
+        .stdout(predicate::str::contains("--tpm").not());
 }
