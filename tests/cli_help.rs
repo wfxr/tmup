@@ -8,7 +8,8 @@ fn cli_help_lists_core_commands() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("--config-mode"))
+        .stdout(predicate::str::contains("--tpm"))
+        .stdout(predicate::str::contains("--config-mode").not())
         .stdout(predicate::str::contains("init"))
         .stdout(predicate::str::contains("install"))
         .stdout(predicate::str::contains("sync"))
@@ -19,13 +20,13 @@ fn cli_help_lists_core_commands() {
 }
 
 #[test]
-fn cli_help_documents_config_mode() {
+fn cli_help_documents_tpm_flag() {
     Command::cargo_bin("tmup")
         .unwrap()
         .args(["init", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("--config-mode"))
-        .stdout(predicate::str::contains("tmup"))
-        .stdout(predicate::str::contains("mixed"));
+        .stdout(predicate::str::contains("--tpm"))
+        .stdout(predicate::str::contains("--config-mode").not())
+        .stdout(predicate::str::contains("Enable TPM compatibility mode"));
 }

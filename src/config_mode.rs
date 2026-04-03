@@ -13,7 +13,7 @@ use crate::{config, config_tpm};
 #[value(rename_all = "lower")]
 pub enum ConfigMode {
     /// Load only tmup.kdl.
-    Tmup,
+    Pure,
     /// Load both config sources and merge them.
     Mixed,
 }
@@ -62,7 +62,7 @@ impl LoadRequest {
             TmupConfigPolicy::ReadOnly
         };
         let tpm_policy = match mode {
-            ConfigMode::Tmup => TpmConfigPolicy::Disabled,
+            ConfigMode::Pure => TpmConfigPolicy::Disabled,
             ConfigMode::Mixed => explicit_tpm_config_path
                 .map(|path| TpmConfigPolicy::Resolved(Some(path.to_path_buf())))
                 .unwrap_or(TpmConfigPolicy::Discover),
@@ -74,7 +74,7 @@ impl LoadRequest {
 impl fmt::Display for ConfigMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Tmup => f.write_str("tmup"),
+            Self::Pure => f.write_str("pure"),
             Self::Mixed => f.write_str("mixed"),
         }
     }
@@ -122,7 +122,7 @@ pub fn load_from_sources(
     tpm_path: Option<&Path>,
 ) -> Result<LoadedConfig> {
     match mode {
-        ConfigMode::Tmup => {
+        ConfigMode::Pure => {
             let path = tmup_path.context("tmup config file not found")?;
             Ok(LoadedConfig {
                 config: load_tmup_config(path)?,
@@ -139,7 +139,7 @@ pub fn load_from_sources(
 pub fn load_with_request(paths: &Paths, request: LoadRequest) -> Result<LoadedRequest> {
     let tmup_path = prepare_tmup_config_path(paths, request.tmup_policy)?;
     let (loaded, tpm_policy): (LoadedConfig, TpmConfigPolicy) = match request.mode {
-        ConfigMode::Tmup => (
+        ConfigMode::Pure => (
             LoadedConfig {
                 config: load_tmup_config_for_policy(&tmup_path, request.tmup_policy)?,
                 warnings: Vec::new(),
@@ -301,7 +301,7 @@ fn default_tmup_config_template() -> &'static str {
 // plugin "tmux-plugins/tmux-sensible"
 //
 // If you are migrating from TPM, you can temporarily use:
-// tmup <command> --config-mode=mixed
+// tmup <command> --tpm
 
 options {
     auto-install #true

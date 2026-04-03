@@ -14,7 +14,7 @@ fn config_mode_cli_list_mixed_reads_tpm_config_without_scaffolding_tmup_kdl() {
 
     Command::cargo_bin("tmup")
         .unwrap()
-        .args(["list", "--config-mode=mixed"])
+        .args(["list", "--tpm"])
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -40,7 +40,7 @@ fn config_mode_cli_list_mixed_reads_tilde_sourced_tpm_file() {
 
     Command::cargo_bin("tmup")
         .unwrap()
-        .args(["list", "--config-mode=mixed"])
+        .args(["list", "--tpm"])
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -51,7 +51,7 @@ fn config_mode_cli_list_mixed_reads_tilde_sourced_tpm_file() {
 }
 
 #[test]
-fn config_mode_cli_tmup_list_does_not_auto_create_missing_kdl() {
+fn config_mode_cli_pure_list_does_not_auto_create_missing_kdl() {
     let dir = tempdir().unwrap();
     let config_home = dir.path().join("config");
     let config_dir = config_home.join("tmux");
@@ -81,7 +81,7 @@ fn config_mode_cli_list_mixed_rejects_missing_tmup_config_override() {
 
     Command::cargo_bin("tmup")
         .unwrap()
-        .args(["list", "--config-mode=mixed"])
+        .args(["list", "--tpm"])
         .env("TMUP_CONFIG", &override_kdl)
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", dir.path().join("data"))
@@ -128,7 +128,7 @@ fn config_mode_cli_mixed_works_with_absolute_xdg_without_home() {
 
     Command::cargo_bin("tmup")
         .unwrap()
-        .args(["list", "--config-mode=mixed"])
+        .args(["list", "--tpm"])
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -146,7 +146,7 @@ fn config_mode_cli_mixed_without_tpm_config_still_works_without_home() {
 
     Command::cargo_bin("tmup")
         .unwrap()
-        .args(["list", "--config-mode=mixed"])
+        .args(["list", "--tpm"])
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -166,7 +166,7 @@ fn config_mode_cli_mixed_warns_when_home_is_unavailable_for_tpm_discovery() {
 
     Command::cargo_bin("tmup")
         .unwrap()
-        .args(["list", "--config-mode=mixed"])
+        .args(["list", "--tpm"])
         .env("TMUP_CONFIG", &config_path)
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -199,7 +199,7 @@ fn config_mode_cli_list_mixed_warns_and_prefers_kdl() {
 
     Command::cargo_bin("tmup")
         .unwrap()
-        .args(["list", "--config-mode=mixed"])
+        .args(["list", "--tpm"])
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -232,7 +232,7 @@ fn config_mode_cli_sync_mixed_writes_lockfile_next_to_kdl_with_kdl_precedence() 
 
     Command::cargo_bin("tmup")
         .unwrap()
-        .args(["sync", "--config-mode=mixed"])
+        .args(["sync", "--tpm"])
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -264,7 +264,7 @@ fn config_mode_cli_sync_mixed_scaffolds_tmup_kdl_when_only_tpm_config_exists() {
 
     Command::cargo_bin("tmup")
         .unwrap()
-        .args(["sync", "--config-mode=mixed"])
+        .args(["sync", "--tpm"])
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
