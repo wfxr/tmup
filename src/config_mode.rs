@@ -102,6 +102,8 @@ pub struct LoadedRequest {
     pub warnings: Vec<String>,
     /// Runtime paths retargeted to the resolved active config and lockfile pair.
     pub paths: Paths,
+    /// The resolved TPM loading policy for downstream consumers such as init children.
+    pub tpm_policy: TpmConfigPolicy,
     /// The resolved TPM config path when mixed mode discovered one.
     pub tpm_config_path: Option<PathBuf>,
 }
@@ -136,13 +138,16 @@ pub fn load_from_sources(
 /// Load configuration according to an explicit request and finalize its runtime paths.
 pub fn load_with_request(paths: &Paths, request: LoadRequest) -> Result<LoadedRequest> {
     let tmup_path = prepare_tmup_config_path(paths, request.tmup_policy)?;
-    let loaded: LoadedConfig = match request.mode {
-        ConfigMode::Tmup => LoadedConfig {
-            config: load_tmup_config_for_policy(&tmup_path, request.tmup_policy)?,
-            warnings: Vec::new(),
-            active_config_path: tmup_path,
-            tpm_config_path: None,
-        },
+    let (loaded, tpm_policy): (LoadedConfig, TpmConfigPolicy) = match request.mode {
+        ConfigMode::Tmup => (
+            LoadedConfig {
+                config: load_tmup_config_for_policy(&tmup_path, request.tmup_policy)?,
+                warnings: Vec::new(),
+                active_config_path: tmup_path,
+                tpm_config_path: None,
+            },
+            TpmConfigPolicy::Disabled,
+        ),
         ConfigMode::Mixed => {
             let (tpm_path, warnings) = resolve_tpm_config_path(request.tpm_policy)?;
             let mut loaded = load_from_sources(
@@ -151,7 +156,7 @@ pub fn load_with_request(paths: &Paths, request: LoadRequest) -> Result<LoadedRe
                 tpm_path.as_deref(),
             )?;
             loaded.warnings.extend(warnings);
-            loaded
+            (loaded, TpmConfigPolicy::Resolved(tpm_path))
         }
     };
 
@@ -160,6 +165,7 @@ pub fn load_with_request(paths: &Paths, request: LoadRequest) -> Result<LoadedRe
         config: loaded.config,
         warnings: loaded.warnings,
         paths: finalized_paths,
+        tpm_policy,
         tpm_config_path: loaded.tpm_config_path,
     })
 }

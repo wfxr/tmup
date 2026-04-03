@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 
-use crate::config_mode::ConfigMode;
+use crate::config_mode::{ConfigMode, TpmConfigPolicy};
 
 /// Represents a tmux command to be executed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,8 +190,8 @@ pub struct InitBootstrapSpec {
     pub exe: PathBuf,
     /// Path to the tmup configuration file.
     pub config_path: PathBuf,
-    /// Path to the resolved TPM config file for mixed-mode init, if any.
-    pub tpm_config_path: Option<PathBuf>,
+    /// Resolved TPM config loading policy for mixed-mode init.
+    pub tpm_config_policy: TpmConfigPolicy,
     /// Root directory for persistent data.
     pub data_root: PathBuf,
     /// Root directory for runtime state.
@@ -209,9 +209,13 @@ impl InitBootstrapSpec {
             "--config-path".into(),
             self.config_path.to_string_lossy().into_owned(),
         ];
-        if let Some(tpm_config_path) = &self.tpm_config_path {
-            args.push("--tpm-config-path".into());
-            args.push(tpm_config_path.to_string_lossy().into_owned());
+        match &self.tpm_config_policy {
+            TpmConfigPolicy::Resolved(Some(tpm_config_path)) => {
+                args.push("--tpm-config-path".into());
+                args.push(tpm_config_path.to_string_lossy().into_owned());
+            }
+            TpmConfigPolicy::Resolved(None) => args.push("--no-tpm-config".into()),
+            TpmConfigPolicy::Disabled | TpmConfigPolicy::Discover => {}
         }
         args.extend([
             "--data-root".into(),
@@ -231,8 +235,8 @@ pub struct InitUiChildSpec {
     pub exe: PathBuf,
     /// Path to the tmup configuration file.
     pub config_path: PathBuf,
-    /// Path to the resolved TPM config file for mixed-mode init, if any.
-    pub tpm_config_path: Option<PathBuf>,
+    /// Resolved TPM config loading policy for mixed-mode init.
+    pub tpm_config_policy: TpmConfigPolicy,
     /// Root directory for persistent data.
     pub data_root: PathBuf,
     /// Root directory for runtime state.
@@ -256,11 +260,13 @@ impl InitUiChildSpec {
         } else {
             ""
         };
-        let tpm_config_path = self
-            .tpm_config_path
-            .as_ref()
-            .map(|path| format!(" --tpm-config-path {}", shell_quote(&path.to_string_lossy())))
-            .unwrap_or_default();
+        let tpm_config_args = match &self.tpm_config_policy {
+            TpmConfigPolicy::Resolved(Some(path)) => {
+                format!(" --tpm-config-path {}", shell_quote(&path.to_string_lossy()))
+            }
+            TpmConfigPolicy::Resolved(None) => " --no-tpm-config".into(),
+            TpmConfigPolicy::Disabled | TpmConfigPolicy::Discover => String::new(),
+        };
         format!(
             r#"channel={ch}
 result_file={rf}
@@ -285,7 +291,7 @@ exit 0"#,
             roe = remain_on_exit,
             exe = shell_quote(&self.exe.to_string_lossy()),
             cp = shell_quote(&self.config_path.to_string_lossy()),
-            tp = tpm_config_path,
+            tp = tpm_config_args,
             dr = shell_quote(&self.data_root.to_string_lossy()),
             sr = shell_quote(&self.state_root.to_string_lossy()),
             cm = shell_quote(&self.config_mode.to_string()),

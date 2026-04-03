@@ -8,7 +8,7 @@ use owo_colors::OwoColorize;
 use tabled::builder::Builder;
 use tabled::settings::object::Segment;
 use tabled::settings::{Alignment, Modify, Style};
-use tmup::config_mode::{self, ConfigMode};
+use tmup::config_mode::{self, ConfigMode, TpmConfigPolicy};
 use tmup::planner::{BuildStatus, PluginState, PluginStatus};
 use tmup::progress::{self, NullReporter, OperationStage, ProgressEvent, ProgressReporter};
 use tmup::state::{OperationLock, OperationLockGuard, Paths};
@@ -39,6 +39,8 @@ enum Commands {
         config_path: Option<PathBuf>,
         #[arg(hide = true, long)]
         tpm_config_path: Option<PathBuf>,
+        #[arg(hide = true, long, conflicts_with = "tpm_config_path")]
+        no_tpm_config: bool,
         #[arg(hide = true, long)]
         data_root: Option<PathBuf>,
         #[arg(hide = true, long)]
@@ -80,6 +82,7 @@ struct InitInvocation {
     wait_channel: Option<String>,
     config_path: Option<PathBuf>,
     tpm_config_path: Option<PathBuf>,
+    no_tpm_config: bool,
     data_root: Option<PathBuf>,
     state_root: Option<PathBuf>,
 }
@@ -96,6 +99,7 @@ async fn main() -> ExitCode {
             wait_channel,
             config_path,
             tpm_config_path,
+            no_tpm_config,
             data_root,
             state_root,
         } => {
@@ -106,6 +110,7 @@ async fn main() -> ExitCode {
                     wait_channel,
                     config_path,
                     tpm_config_path,
+                    no_tpm_config,
                     data_root,
                     state_root,
                 },
@@ -160,7 +165,7 @@ struct AppliedConfig {
     paths: Paths,
     config: tmup::model::Config,
     warnings: Vec<String>,
-    tpm_config_path: Option<PathBuf>,
+    tpm_config_policy: TpmConfigPolicy,
 }
 
 fn emit_config_warnings(warnings: &[String]) {
@@ -170,25 +175,52 @@ fn emit_config_warnings(warnings: &[String]) {
 }
 
 fn apply_config(paths: &Paths, mode: ConfigMode, create_missing: bool) -> Result<AppliedConfig> {
-    let applied = apply_config_with_tpm_path(paths, mode, create_missing, None)?;
+    let applied = apply_config_with_tpm_policy(paths, mode, create_missing, None)?;
     emit_config_warnings(&applied.warnings);
     Ok(applied)
 }
 
-fn apply_config_with_tpm_path(
+fn init_tpm_config_policy(
+    mode: ConfigMode,
+    explicit_tpm_config_path: Option<PathBuf>,
+    no_tpm_config: bool,
+) -> TpmConfigPolicy {
+    match mode {
+        ConfigMode::Tmup => TpmConfigPolicy::Disabled,
+        ConfigMode::Mixed => {
+            if no_tpm_config {
+                TpmConfigPolicy::Resolved(None)
+            } else if let Some(path) = explicit_tpm_config_path {
+                TpmConfigPolicy::Resolved(Some(path))
+            } else {
+                TpmConfigPolicy::Discover
+            }
+        }
+    }
+}
+
+fn apply_config_with_tpm_policy(
     paths: &Paths,
     mode: ConfigMode,
     create_missing: bool,
-    explicit_tpm_config_path: Option<&std::path::Path>,
+    explicit_tpm_policy: Option<TpmConfigPolicy>,
 ) -> Result<AppliedConfig> {
-    let request =
-        config_mode::LoadRequest::from_command(mode, create_missing, explicit_tpm_config_path);
+    let request = config_mode::LoadRequest {
+        mode,
+        tmup_policy: if create_missing {
+            config_mode::TmupConfigPolicy::CreateIfMissing
+        } else {
+            config_mode::TmupConfigPolicy::ReadOnly
+        },
+        tpm_policy: explicit_tpm_policy
+            .unwrap_or_else(|| init_tpm_config_policy(mode, None, false)),
+    };
     let loaded = config_mode::load_with_request(paths, request)?;
     Ok(AppliedConfig {
         paths: loaded.paths,
         config: loaded.config,
         warnings: loaded.warnings,
-        tpm_config_path: loaded.tpm_config_path,
+        tpm_config_policy: loaded.tpm_policy,
     })
 }
 
@@ -216,7 +248,7 @@ async fn run_init(init: InitInvocation, config_mode: ConfigMode) -> Result<()> {
         return run_init_child(
             init.wait_channel.context("--ui-child requires --wait-channel")?,
             init.config_path.context("--ui-child requires --config-path")?,
-            init.tpm_config_path,
+            init_tpm_config_policy(config_mode, init.tpm_config_path, init.no_tpm_config),
             init.data_root.context("--ui-child requires --data-root")?,
             init.state_root.context("--ui-child requires --state-root")?,
             config_mode,
@@ -226,7 +258,7 @@ async fn run_init(init: InitInvocation, config_mode: ConfigMode) -> Result<()> {
     if init.bootstrap {
         return run_init_bootstrap(
             init.config_path.context("--bootstrap requires --config-path")?,
-            init.tpm_config_path,
+            init_tpm_config_policy(config_mode, init.tpm_config_path, init.no_tpm_config),
             init.data_root.context("--bootstrap requires --data-root")?,
             init.state_root.context("--bootstrap requires --state-root")?,
             config_mode,
@@ -239,13 +271,13 @@ async fn run_init(init: InitInvocation, config_mode: ConfigMode) -> Result<()> {
 fn build_init_bootstrap_spec(
     paths: &Paths,
     config_mode: ConfigMode,
-    tpm_config_path: Option<&std::path::Path>,
+    tpm_config_policy: &TpmConfigPolicy,
 ) -> Result<tmux::InitBootstrapSpec> {
     let exe = std::env::current_exe().context("failed to determine current executable")?;
     Ok(tmux::InitBootstrapSpec {
         exe,
         config_path: paths.config_path.clone(),
-        tpm_config_path: tpm_config_path.map(std::path::Path::to_path_buf),
+        tpm_config_policy: tpm_config_policy.clone(),
         data_root: paths.data_root().to_path_buf(),
         state_root: paths.state_root().to_path_buf(),
         config_mode,
@@ -256,13 +288,13 @@ fn build_init_ui_child_spec(
     paths: &Paths,
     wait_channel: String,
     config_mode: ConfigMode,
-    tpm_config_path: Option<&std::path::Path>,
+    tpm_config_policy: &TpmConfigPolicy,
 ) -> Result<tmux::InitUiChildSpec> {
     let exe = std::env::current_exe().context("failed to determine current executable")?;
     Ok(tmux::InitUiChildSpec {
         exe,
         config_path: paths.config_path.clone(),
-        tpm_config_path: tpm_config_path.map(std::path::Path::to_path_buf),
+        tpm_config_policy: tpm_config_policy.clone(),
         data_root: paths.data_root().to_path_buf(),
         state_root: paths.state_root().to_path_buf(),
         wait_channel,
@@ -292,12 +324,12 @@ async fn run_init_with_ui_mode(
     target: &tmux::InitUiTarget,
     mode: tmux::InitUiMode,
     config_mode: ConfigMode,
-    tpm_config_path: Option<&std::path::Path>,
+    tpm_config_policy: &TpmConfigPolicy,
 ) -> Result<i32> {
     let wait_channel = format!("tmup-init-{}-{}", std::process::id(), epoch_millis());
     let result_file = paths.init_result_path(&wait_channel);
     let _ = std::fs::remove_file(&result_file);
-    let spec = build_init_ui_child_spec(paths, wait_channel, config_mode, tpm_config_path)?;
+    let spec = build_init_ui_child_spec(paths, wait_channel, config_mode, tpm_config_policy)?;
 
     match mode {
         tmux::InitUiMode::Popup { supports_title } => {
@@ -321,11 +353,11 @@ async fn run_init_with_ui_mode(
 async fn run_init_parent(config_mode: ConfigMode) -> Result<()> {
     let paths = resolve_runtime_paths()?;
     paths.ensure_dirs()?;
-    let applied = apply_config_with_tpm_path(&paths, config_mode, false, None)?;
+    let applied = apply_config_with_tpm_policy(&paths, config_mode, false, None)?;
     let paths = applied.paths;
     let cfg = applied.config;
     let warnings = applied.warnings;
-    let tpm_config_path = applied.tpm_config_path;
+    let tpm_config_policy = applied.tpm_config_policy;
 
     // Lock-free preview: does this init need visible work?
     let lock = load_lockfile(&paths)?;
@@ -346,18 +378,13 @@ async fn run_init_parent(config_mode: ConfigMode) -> Result<()> {
     }
 
     if let Some(target) = tmux::current_init_ui_target() {
-        let exit_code = run_init_with_ui_mode(
-            &paths,
-            &target,
-            ui_mode,
-            config_mode,
-            tpm_config_path.as_deref(),
-        )
-        .await?;
+        let exit_code =
+            run_init_with_ui_mode(&paths, &target, ui_mode, config_mode, &tpm_config_policy)
+                .await?;
         return if exit_code == 0 { Ok(()) } else { Err(progress::reported_error()) };
     }
 
-    let spec = build_init_bootstrap_spec(&paths, config_mode, tpm_config_path.as_deref())?;
+    let spec = build_init_bootstrap_spec(&paths, config_mode, &tpm_config_policy)?;
     if tmux::spawn_init_bootstrap(&spec).is_ok() {
         return Ok(());
     }
@@ -370,7 +397,7 @@ async fn run_init_parent(config_mode: ConfigMode) -> Result<()> {
 
 async fn run_init_bootstrap(
     config_path: PathBuf,
-    tpm_config_path: Option<PathBuf>,
+    tpm_config_policy: TpmConfigPolicy,
     data_root: PathBuf,
     state_root: PathBuf,
     config_mode: ConfigMode,
@@ -378,11 +405,11 @@ async fn run_init_bootstrap(
     let paths = Paths::from_runtime_roots(data_root, state_root, config_path)?;
     paths.ensure_dirs()?;
     let applied =
-        apply_config_with_tpm_path(&paths, config_mode, false, tpm_config_path.as_deref())?;
+        apply_config_with_tpm_policy(&paths, config_mode, false, Some(tpm_config_policy))?;
     let paths = applied.paths;
     let cfg = applied.config;
     let warnings = applied.warnings;
-    let tpm_config_path = applied.tpm_config_path;
+    let tpm_config_policy = applied.tpm_config_policy;
 
     let lock = load_lockfile(&paths)?;
     let sync_preview =
@@ -400,14 +427,9 @@ async fn run_init_bootstrap(
     }
 
     if let Some(target) = tmux::probe_init_ui_target() {
-        let exit_code = run_init_with_ui_mode(
-            &paths,
-            &target,
-            ui_mode,
-            config_mode,
-            tpm_config_path.as_deref(),
-        )
-        .await?;
+        let exit_code =
+            run_init_with_ui_mode(&paths, &target, ui_mode, config_mode, &tpm_config_policy)
+                .await?;
         return if exit_code == 0 { Ok(()) } else { Err(progress::reported_error()) };
     }
 
@@ -429,7 +451,7 @@ enum InitCoreResult {
 async fn run_init_child(
     _wait_channel: String, // signaled by the shell wrapper, not by Rust
     config_path: PathBuf,
-    tpm_config_path: Option<PathBuf>,
+    tpm_config_policy: TpmConfigPolicy,
     data_root: PathBuf,
     state_root: PathBuf,
     config_mode: ConfigMode,
@@ -437,7 +459,7 @@ async fn run_init_child(
     let paths = Paths::from_runtime_roots(data_root, state_root, config_path)?;
     paths.ensure_dirs()?;
     let applied =
-        apply_config_with_tpm_path(&paths, config_mode, false, tpm_config_path.as_deref())?;
+        apply_config_with_tpm_policy(&paths, config_mode, false, Some(tpm_config_policy))?;
     let paths = applied.paths;
     let cfg = applied.config;
     emit_config_warnings(&applied.warnings);
@@ -860,10 +882,10 @@ mod tests {
     use anstream::{AutoStream, ColorChoice};
     use clap::Parser;
     use tempfile::tempdir;
-    use tmup::config_mode::ConfigMode;
+    use tmup::config_mode::{ConfigMode, TpmConfigPolicy};
     use tmup::state::Paths;
 
-    use super::{Cli, Commands, apply_config_with_tpm_path, render_table};
+    use super::{Cli, Commands, apply_config_with_tpm_policy, render_table};
 
     fn adapt(text: &str, choice: ColorChoice) -> String {
         let mut stream = AutoStream::new(Vec::new(), choice);
@@ -903,7 +925,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_config_with_tpm_path_returns_warnings_for_init_callers() {
+    fn apply_config_with_tpm_policy_returns_warnings_for_init_callers() {
         let dir = tempdir().unwrap();
         let config_dir = dir.path().join("config/tmux");
         std::fs::create_dir_all(&config_dir).unwrap();
@@ -924,11 +946,11 @@ mod tests {
         )
         .unwrap();
 
-        let applied = apply_config_with_tpm_path(
+        let applied = apply_config_with_tpm_policy(
             &paths,
             ConfigMode::Mixed,
             false,
-            Some(tpm_config.as_path()),
+            Some(TpmConfigPolicy::Resolved(Some(tpm_config))),
         )
         .unwrap();
 

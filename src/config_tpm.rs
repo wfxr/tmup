@@ -9,6 +9,8 @@ use crate::model::{Config, Options, PluginSpec};
 use crate::state::resolve_home_dir;
 
 static TPM_PLUGIN_DECLARATION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    // Keep this intentionally aligned with TPM's current awk matcher:
+    // https://github.com/tmux-plugins/tpm/blob/99469c4a9b1ccf77fade25842dc7bafbc8ce9946/scripts/helpers/plugin_functions.sh#L71-L77
     Regex::new(r"^[ \t]*set(?:-option)? +-g +@plugin(?: +|$)").expect("valid TPM plugin regex")
 });
 
