@@ -407,6 +407,9 @@ pub struct OperationLockGuard {
 mod tests {
     use std::io::{Error, ErrorKind, Result};
     use std::path::Path;
+    use std::sync::{LazyLock, Mutex};
+
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     #[test]
     fn try_write_result_maps_would_block_to_none() {
@@ -436,5 +439,81 @@ mod tests {
             super::xdg_dir_from_env(home, Some("relative/path"), ".local/share"),
             home.join(".local/share")
         );
+    }
+
+    #[test]
+    fn resolve_uses_home_fallback_when_xdg_is_unset() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let previous_data = std::env::var_os("XDG_DATA_HOME");
+        let previous_state = std::env::var_os("XDG_STATE_HOME");
+        let previous_config = std::env::var_os("XDG_CONFIG_HOME");
+        let previous_home = std::env::var_os("HOME");
+
+        remove_env_var("XDG_DATA_HOME");
+        remove_env_var("XDG_STATE_HOME");
+        remove_env_var("XDG_CONFIG_HOME");
+        set_env_var("HOME", &home);
+
+        let paths = super::Paths::resolve_with_config_path(None).unwrap();
+
+        assert_eq!(paths.plugin_root, home.join(".local/share/tmup/plugins"));
+        assert_eq!(paths.lock_path, home.join(".local/state/tmup/operations.lock"));
+        assert_eq!(paths.config_path, home.join(".config/tmux/tmup.kdl"));
+
+        restore_env("XDG_DATA_HOME", previous_data);
+        restore_env("XDG_STATE_HOME", previous_state);
+        restore_env("XDG_CONFIG_HOME", previous_config);
+        restore_env("HOME", previous_home);
+    }
+
+    #[test]
+    fn resolve_uses_absolute_xdg_dirs_without_home() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        let state = dir.path().join("state");
+        let config = dir.path().join("config");
+
+        let previous_data = std::env::var_os("XDG_DATA_HOME");
+        let previous_state = std::env::var_os("XDG_STATE_HOME");
+        let previous_config = std::env::var_os("XDG_CONFIG_HOME");
+        let previous_home = std::env::var_os("HOME");
+
+        set_env_var("XDG_DATA_HOME", &data);
+        set_env_var("XDG_STATE_HOME", &state);
+        set_env_var("XDG_CONFIG_HOME", &config);
+        remove_env_var("HOME");
+
+        let paths = super::Paths::resolve_with_config_path(None).unwrap();
+
+        assert_eq!(paths.plugin_root, data.join("tmup/plugins"));
+        assert_eq!(paths.lock_path, state.join("tmup/operations.lock"));
+        assert_eq!(paths.config_path, config.join("tmux/tmup.kdl"));
+
+        restore_env("XDG_DATA_HOME", previous_data);
+        restore_env("XDG_STATE_HOME", previous_state);
+        restore_env("XDG_CONFIG_HOME", previous_config);
+        restore_env("HOME", previous_home);
+    }
+
+    fn restore_env(key: &str, value: Option<std::ffi::OsString>) {
+        match value {
+            Some(value) => set_env_var(key, value),
+            None => remove_env_var(key),
+        }
+    }
+
+    fn set_env_var(key: &str, value: impl AsRef<std::ffi::OsStr>) {
+        // Test-only environment mutation is serialized via ENV_LOCK in this module.
+        unsafe { std::env::set_var(key, value) }
+    }
+
+    fn remove_env_var(key: &str) {
+        // Test-only environment mutation is serialized via ENV_LOCK in this module.
+        unsafe { std::env::remove_var(key) }
     }
 }

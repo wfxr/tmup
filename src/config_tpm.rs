@@ -112,8 +112,17 @@ fn read_scan_inputs(path: &Path) -> Result<Vec<(PathBuf, String)>> {
     let mut inputs = vec![(path.to_path_buf(), root.clone())];
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
 
-    // Intentionally only scans direct sourced files discovered from the root tmux config,
-    // matching current TPM behavior instead of recursively expanding nested includes.
+    // Intentionally matches current TPM behavior instead of inlining sourced
+    // fragments at the directive position. TPM scans the main config first and
+    // then appends direct sourced files afterward, so mixed-mode ordering here
+    // must preserve that quirk for compatibility.
+    //
+    // TPM reference:
+    // - `_tmux_conf_contents "full"` cats the main config before any sourced files
+    // - `tpm_plugins_list_helper` parses plugin declarations from that combined stream
+    //
+    // Intentionally only scans direct sourced files discovered from the root
+    // tmux config, matching TPM instead of recursively expanding nested includes.
     for sourced in direct_sourced_files(&root) {
         for sourced_path in expand_source_paths(&sourced.path, base_dir)? {
             let content = match std::fs::read_to_string(&sourced_path) {

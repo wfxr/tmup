@@ -278,8 +278,9 @@ Outputs a table with separated **state** and **last-result** columns:
 | `build-failed` | Build command failed (marker recorded) |
 | `none` | No operation attempted yet |
 
-If the lock snapshot is stale relative to `tmup.kdl`, `list` prints a warning
-before the table without mutating `tmup.lock` or plugin state.
+If the lock snapshot is stale relative to the effective configuration for the
+selected `--config-mode`, `list` prints a warning before the table without
+mutating `tmup.lock` or plugin state.
 
 ## Directory Layout
 
