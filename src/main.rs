@@ -159,6 +159,7 @@ fn resolve_explicit_config_path(path: PathBuf) -> Result<PathBuf> {
 struct AppliedConfig {
     paths: Paths,
     config: tmup::model::Config,
+    warnings: Vec<String>,
     tpm_config_path: Option<PathBuf>,
 }
 
@@ -169,7 +170,9 @@ fn emit_config_warnings(warnings: &[String]) {
 }
 
 fn apply_config(paths: &Paths, mode: ConfigMode, create_missing: bool) -> Result<AppliedConfig> {
-    apply_config_with_tpm_path(paths, mode, create_missing, None)
+    let applied = apply_config_with_tpm_path(paths, mode, create_missing, None)?;
+    emit_config_warnings(&applied.warnings);
+    Ok(applied)
 }
 
 fn apply_config_with_tpm_path(
@@ -181,12 +184,19 @@ fn apply_config_with_tpm_path(
     let request =
         config_mode::LoadRequest::from_command(mode, create_missing, explicit_tpm_config_path);
     let loaded = config_mode::load_with_request(paths, request)?;
-    emit_config_warnings(&loaded.warnings);
     Ok(AppliedConfig {
         paths: loaded.paths,
         config: loaded.config,
+        warnings: loaded.warnings,
         tpm_config_path: loaded.tpm_config_path,
     })
+}
+
+fn stale_lock_sync_hint(config_mode: ConfigMode) -> &'static str {
+    match config_mode {
+        ConfigMode::Tmup => "tmup sync",
+        ConfigMode::Mixed => "tmup --config-mode=mixed sync",
+    }
 }
 
 fn load_lockfile(paths: &Paths) -> Result<lockfile::LockFile> {
@@ -311,9 +321,10 @@ async fn run_init_with_ui_mode(
 async fn run_init_parent(config_mode: ConfigMode) -> Result<()> {
     let paths = resolve_runtime_paths()?;
     paths.ensure_dirs()?;
-    let applied = apply_config(&paths, config_mode, false)?;
+    let applied = apply_config_with_tpm_path(&paths, config_mode, false, None)?;
     let paths = applied.paths;
     let cfg = applied.config;
+    let warnings = applied.warnings;
     let tpm_config_path = applied.tpm_config_path;
 
     // Lock-free preview: does this init need visible work?
@@ -323,11 +334,13 @@ async fn run_init_parent(config_mode: ConfigMode) -> Result<()> {
     let needs_ui = sync_preview.needs_work;
 
     if !needs_ui {
+        emit_config_warnings(&warnings);
         return run_init_inline_fast_path(&paths, &cfg).await;
     }
 
     let ui_mode = tmux::init_ui_mode();
     if matches!(ui_mode, tmux::InitUiMode::Inline) {
+        emit_config_warnings(&warnings);
         let guard = OperationLock::acquire(&paths.lock_path)?;
         return run_init_inline(&paths, &cfg, guard).await;
     }
@@ -350,6 +363,7 @@ async fn run_init_parent(config_mode: ConfigMode) -> Result<()> {
     }
 
     let _ = tmux::display_message("tmup: unable to schedule background bootstrap, running inline");
+    emit_config_warnings(&warnings);
     let guard = OperationLock::acquire(&paths.lock_path)?;
     run_init_inline(&paths, &cfg, guard).await
 }
@@ -367,17 +381,20 @@ async fn run_init_bootstrap(
         apply_config_with_tpm_path(&paths, config_mode, false, tpm_config_path.as_deref())?;
     let paths = applied.paths;
     let cfg = applied.config;
+    let warnings = applied.warnings;
     let tpm_config_path = applied.tpm_config_path;
 
     let lock = load_lockfile(&paths)?;
     let sync_preview =
         sync::preview(&cfg, &lock, None, SyncPolicy::init(cfg.options.auto_install), &paths);
     if !sync_preview.needs_work {
+        emit_config_warnings(&warnings);
         return run_init_inline_fast_path(&paths, &cfg).await;
     }
 
     let ui_mode = tmux::init_ui_mode();
     if matches!(ui_mode, tmux::InitUiMode::Inline) {
+        emit_config_warnings(&warnings);
         let guard = OperationLock::acquire(&paths.lock_path)?;
         return run_init_inline(&paths, &cfg, guard).await;
     }
@@ -397,6 +414,7 @@ async fn run_init_bootstrap(
     // Falling through here is intentional: no UI target became available for
     // the chosen tmux UI mode within the probe window.
     let _ = tmux::display_message("tmup: unable to create progress UI, running inline");
+    emit_config_warnings(&warnings);
     let guard = OperationLock::acquire(&paths.lock_path)?;
     run_init_inline(&paths, &cfg, guard).await
 }
@@ -422,6 +440,7 @@ async fn run_init_child(
         apply_config_with_tpm_path(&paths, config_mode, false, tpm_config_path.as_deref())?;
     let paths = applied.paths;
     let cfg = applied.config;
+    emit_config_warnings(&applied.warnings);
 
     let labels = progress::build_display_labels(&cfg, None);
     let reporter = progress::create_reporter(&paths, "init", labels);
@@ -693,7 +712,10 @@ fn run_list(verbose: bool, config_mode: ConfigMode) -> Result<()> {
     let statuses = plugin::list(&cfg, &lock, &paths)?;
 
     if sync::lock_is_stale(&cfg, &lock) {
-        eprintln!("warning: lock metadata is stale relative to config; run `tmup sync`");
+        eprintln!(
+            "warning: lock metadata is stale relative to config; run `{}`",
+            stale_lock_sync_hint(config_mode)
+        );
     }
 
     if verbose {
@@ -837,8 +859,11 @@ mod tests {
 
     use anstream::{AutoStream, ColorChoice};
     use clap::Parser;
+    use tempfile::tempdir;
+    use tmup::config_mode::ConfigMode;
+    use tmup::state::Paths;
 
-    use super::{Cli, Commands, render_table};
+    use super::{Cli, Commands, apply_config_with_tpm_path, render_table};
 
     fn adapt(text: &str, choice: ColorChoice) -> String {
         let mut stream = AutoStream::new(Vec::new(), choice);
@@ -873,6 +898,41 @@ mod tests {
     #[test]
     fn cli_parses_config_mode_before_subcommand() {
         let cli = Cli::try_parse_from(["tmup", "--config-mode", "mixed", "list"]).unwrap();
+        assert_eq!(cli.config_mode, ConfigMode::Mixed);
         assert!(matches!(cli.command, Commands::List { .. }));
+    }
+
+    #[test]
+    fn apply_config_with_tpm_path_returns_warnings_for_init_callers() {
+        let dir = tempdir().unwrap();
+        let config_dir = dir.path().join("config/tmux");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let tmup_config = config_dir.join("tmup.kdl");
+        let tpm_config = config_dir.join("tmux.conf");
+        std::fs::write(&tmup_config, r#"plugin "tmux-plugins/tmux-sensible" branch="feature""#)
+            .unwrap();
+        std::fs::write(
+            &tpm_config,
+            "set -g @plugin 'tmux-plugins/tmux-sensible'\nset -g @plugin 'tmux-plugins/tmux-yank'\n",
+        )
+        .unwrap();
+
+        let paths = Paths::from_runtime_roots(
+            dir.path().join("data"),
+            dir.path().join("state"),
+            tmup_config,
+        )
+        .unwrap();
+
+        let applied = apply_config_with_tpm_path(
+            &paths,
+            ConfigMode::Mixed,
+            false,
+            Some(tpm_config.as_path()),
+        )
+        .unwrap();
+
+        assert_eq!(applied.warnings.len(), 1);
+        assert!(applied.warnings[0].contains("github.com/tmux-plugins/tmux-sensible"));
     }
 }

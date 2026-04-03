@@ -3,7 +3,9 @@
 use std::path::Path;
 
 pub fn write_file(path: &Path, content: &str) {
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
     std::fs::write(path, content).unwrap();
 }
 

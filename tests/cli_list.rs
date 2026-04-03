@@ -149,6 +149,32 @@ fn list_warns_before_table_when_lock_metadata_is_stale() {
 }
 
 #[test]
+fn list_mixed_stale_lock_hint_preserves_config_mode() {
+    let dir = tempdir().unwrap();
+    let config_home = dir.path().join("config");
+    let config_dir = config_home.join("tmux");
+    std::fs::create_dir_all(&config_dir).unwrap();
+
+    std::fs::write(&config_dir.join("tmup.kdl"), "").unwrap();
+    std::fs::write(&config_dir.join("tmux.conf"), "set -g @plugin 'tmux-plugins/tmux-sensible'\n")
+        .unwrap();
+    std::fs::write(&config_dir.join("tmup.lock"), r#"{"version":2,"plugins":{}}"#).unwrap();
+
+    Command::cargo_bin("tmup")
+        .unwrap()
+        .args(["list", "--config-mode=mixed"])
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_DATA_HOME", dir.path().join("data"))
+        .env("XDG_STATE_HOME", dir.path().join("state"))
+        .env("HOME", dir.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "warning: lock metadata is stale relative to config; run `tmup --config-mode=mixed sync`",
+        ));
+}
+
+#[test]
 fn list_does_not_mutate_stale_lockfile() {
     let dir = tempdir().unwrap();
     let config_home = dir.path().join("config");
