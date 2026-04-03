@@ -1,8 +1,12 @@
 mod utils;
 
 use tempfile::tempdir;
-use tmup::config_mode::{ConfigMode, load_from_sources};
+use tmup::config_mode::{
+    ConfigMode, LoadRequest, TmupConfigPolicy, TpmConfigPolicy, load_from_sources,
+    load_with_request,
+};
 use tmup::model::{PluginSource, Tracking};
+use tmup::state::Paths;
 use utils::write_file;
 
 #[test]
@@ -145,4 +149,30 @@ fn config_mode_mixed_supports_empty_sources() {
 
     assert!(loaded.config.plugins.is_empty());
     assert!(loaded.warnings.is_empty());
+}
+
+#[test]
+fn config_mode_load_request_uses_resolved_tpm_path() {
+    let dir = tempdir().unwrap();
+    let data_root = dir.path().join("data");
+    let state_root = dir.path().join("state");
+    let kdl = dir.path().join("config/tmux/tmup.kdl");
+    let tpm = dir.path().join("config/tmux/tmux.conf");
+    write_file(&kdl, "");
+    write_file(&tpm, "set -g @plugin 'tmux-plugins/tmux-yank'\n");
+
+    let paths = Paths::from_runtime_roots(data_root, state_root, kdl.clone()).unwrap();
+    let loaded = load_with_request(
+        &paths,
+        LoadRequest {
+            mode: ConfigMode::Mixed,
+            tmup_policy: TmupConfigPolicy::ReadOnly,
+            tpm_policy: TpmConfigPolicy::Resolved(Some(tpm.clone())),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(loaded.tpm_config_path.as_deref(), Some(tpm.as_path()));
+    assert_eq!(loaded.config.plugins.len(), 1);
+    assert_eq!(loaded.config.plugins[0].remote_id().unwrap(), "github.com/tmux-plugins/tmux-yank");
 }

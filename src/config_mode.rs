@@ -18,6 +18,59 @@ pub enum ConfigMode {
     Mixed,
 }
 
+/// Policy for handling the primary tmup.kdl during config load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TmupConfigPolicy {
+    /// Never write tmup.kdl; use an in-memory default when it is missing.
+    ReadOnly,
+    /// Create the default tmup.kdl on disk when it is missing.
+    CreateIfMissing,
+}
+
+/// Policy for resolving the optional TPM-compatible tmux config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TpmConfigPolicy {
+    /// Do not load any TPM-compatible tmux config.
+    Disabled,
+    /// Discover the TPM-compatible config using the default search order.
+    Discover,
+    /// Use an already-resolved discovery result, including an explicit "not found".
+    Resolved(Option<PathBuf>),
+}
+
+/// Complete request describing how the effective configuration should be loaded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadRequest {
+    /// High-level configuration mode to load.
+    pub mode: ConfigMode,
+    /// How the primary tmup.kdl should be handled if it is missing.
+    pub tmup_policy: TmupConfigPolicy,
+    /// How the optional TPM-compatible tmux config should be sourced.
+    pub tpm_policy: TpmConfigPolicy,
+}
+
+impl LoadRequest {
+    /// Build a request from CLI/runtime loading intent.
+    pub fn from_command(
+        mode: ConfigMode,
+        create_missing: bool,
+        explicit_tpm_config_path: Option<&Path>,
+    ) -> Self {
+        let tmup_policy = if create_missing {
+            TmupConfigPolicy::CreateIfMissing
+        } else {
+            TmupConfigPolicy::ReadOnly
+        };
+        let tpm_policy = match mode {
+            ConfigMode::Tmup => TpmConfigPolicy::Disabled,
+            ConfigMode::Mixed => explicit_tpm_config_path
+                .map(|path| TpmConfigPolicy::Resolved(Some(path.to_path_buf())))
+                .unwrap_or(TpmConfigPolicy::Discover),
+        };
+        Self { mode, tmup_policy, tpm_policy }
+    }
+}
+
 impl fmt::Display for ConfigMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -40,19 +93,9 @@ pub struct LoadedConfig {
     pub tpm_config_path: Option<PathBuf>,
 }
 
-/// Load configuration for the requested mode without creating a missing default tmup.kdl.
-pub fn load(paths: &Paths, mode: ConfigMode) -> Result<LoadedConfig> {
-    load_with_policy(paths, mode, false)
-}
-
-/// Load configuration for the requested mode, creating the default tmup.kdl when needed.
-pub fn load_or_create_default(paths: &Paths, mode: ConfigMode) -> Result<LoadedConfig> {
-    load_with_policy(paths, mode, true)
-}
-
 /// Ensure the active tmup.kdl exists on disk using the default template.
 pub fn ensure_tmup_config_exists(paths: &Paths) -> Result<()> {
-    let path = prepare_tmup_config_path(paths, false)?;
+    let path = prepare_tmup_config_path(paths, TmupConfigPolicy::ReadOnly)?;
     create_default_tmup_config(&path)?;
     Ok(())
 }
@@ -74,6 +117,29 @@ pub fn load_from_sources(
             })
         }
         ConfigMode::Mixed => load_mixed(tmup_path, tpm_path),
+    }
+}
+
+/// Load configuration according to an explicit request.
+pub fn load_with_request(paths: &Paths, request: LoadRequest) -> Result<LoadedConfig> {
+    let tmup_path = prepare_tmup_config_path(paths, request.tmup_policy)?;
+    match request.mode {
+        ConfigMode::Tmup => Ok(LoadedConfig {
+            config: load_tmup_config_for_policy(&tmup_path, request.tmup_policy)?,
+            warnings: Vec::new(),
+            active_config_path: tmup_path,
+            tpm_config_path: None,
+        }),
+        ConfigMode::Mixed => {
+            let (tpm_path, warnings) = resolve_tpm_config_path(request.tpm_policy)?;
+            let mut loaded = load_from_sources(
+                ConfigMode::Mixed,
+                Some(tmup_path.as_path()),
+                tpm_path.as_deref(),
+            )?;
+            loaded.warnings.extend(warnings);
+            Ok(loaded)
+        }
     }
 }
 
@@ -102,27 +168,14 @@ fn load_mixed(tmup_path: Option<&Path>, tpm_path: Option<&Path>) -> Result<Loade
     }
 }
 
-fn load_with_policy(paths: &Paths, mode: ConfigMode, create_missing: bool) -> Result<LoadedConfig> {
-    let tmup_path = prepare_tmup_config_path(paths, create_missing)?;
-    match mode {
-        ConfigMode::Tmup => Ok(LoadedConfig {
-            config: if create_missing || tmup_path.exists() {
-                load_tmup_config(&tmup_path)?
-            } else {
-                default_tmup_config()?
-            },
-            warnings: Vec::new(),
-            active_config_path: tmup_path,
-            tpm_config_path: None,
-        }),
-        ConfigMode::Mixed => {
+fn resolve_tpm_config_path(policy: TpmConfigPolicy) -> Result<(Option<PathBuf>, Vec<String>)> {
+    match policy {
+        TpmConfigPolicy::Disabled => Ok((None, Vec::new())),
+        TpmConfigPolicy::Discover => {
             let resolved = config_tpm::resolve_config_path()?;
-            let mut loaded =
-                load_from_sources(mode, Some(tmup_path.as_path()), resolved.path.as_deref())?;
-            loaded.warnings.extend(resolved.warnings);
-            loaded.tpm_config_path = resolved.path;
-            Ok(loaded)
+            Ok((resolved.path, resolved.warnings))
         }
+        TpmConfigPolicy::Resolved(path) => Ok((path, Vec::new())),
     }
 }
 
@@ -134,6 +187,13 @@ fn load_tmup_config(path: &Path) -> Result<Config> {
 
 fn load_tmup_config_or_default(path: &Path) -> Result<Config> {
     if path.exists() { load_tmup_config(path) } else { default_tmup_config() }
+}
+
+fn load_tmup_config_for_policy(path: &Path, policy: TmupConfigPolicy) -> Result<Config> {
+    match policy {
+        TmupConfigPolicy::ReadOnly => load_tmup_config_or_default(path),
+        TmupConfigPolicy::CreateIfMissing => load_tmup_config(path),
+    }
 }
 
 fn merge_configs(mut kdl: Config, tpm: Config, warnings: &mut Vec<String>) -> Config {
@@ -177,9 +237,9 @@ fn merge_configs(mut kdl: Config, tpm: Config, warnings: &mut Vec<String>) -> Co
     config
 }
 
-fn prepare_tmup_config_path(paths: &Paths, create_missing: bool) -> Result<PathBuf> {
+fn prepare_tmup_config_path(paths: &Paths, policy: TmupConfigPolicy) -> Result<PathBuf> {
     let path = paths.config_path.clone();
-    if create_missing {
+    if matches!(policy, TmupConfigPolicy::CreateIfMissing) {
         create_default_tmup_config(&path)?;
     }
     Ok(path)
