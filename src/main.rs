@@ -8,7 +8,7 @@ use owo_colors::OwoColorize;
 use tabled::builder::Builder;
 use tabled::settings::object::Segment;
 use tabled::settings::{Alignment, Modify, Style};
-use tmup::config_mode::{self, ConfigMode, LoadedConfig};
+use tmup::config_mode::{self, ConfigMode};
 use tmup::planner::{BuildStatus, PluginState, PluginStatus};
 use tmup::progress::{self, NullReporter, OperationStage, ProgressEvent, ProgressReporter};
 use tmup::state::{OperationLock, OperationLockGuard, Paths};
@@ -156,33 +156,6 @@ fn resolve_explicit_config_path(path: PathBuf) -> Result<PathBuf> {
     }
 }
 
-fn load_effective_config(
-    paths: &Paths,
-    mode: ConfigMode,
-    create_missing: bool,
-    explicit_tpm_config_path: Option<&std::path::Path>,
-) -> Result<LoadedConfig> {
-    if create_missing {
-        debug_assert!(
-            explicit_tpm_config_path.is_none(),
-            "explicit TPM config path is only expected for init child/bootstrap flows"
-        );
-        return config_mode::load_or_create_default(paths, mode);
-    }
-
-    if matches!(mode, ConfigMode::Mixed)
-        && let Some(tpm_config_path) = explicit_tpm_config_path
-    {
-        return config_mode::load_from_sources(
-            mode,
-            Some(paths.config_path.as_path()),
-            Some(tpm_config_path),
-        );
-    }
-
-    config_mode::load(paths, mode)
-}
-
 struct AppliedConfig {
     config: tmup::model::Config,
     tpm_config_path: Option<PathBuf>,
@@ -208,7 +181,9 @@ fn apply_config_with_tpm_path(
     create_missing: bool,
     explicit_tpm_config_path: Option<&std::path::Path>,
 ) -> Result<AppliedConfig> {
-    let loaded = load_effective_config(paths, mode, create_missing, explicit_tpm_config_path)?;
+    let request =
+        config_mode::LoadRequest::from_command(mode, create_missing, explicit_tpm_config_path);
+    let loaded = config_mode::load_with_request(paths, request)?;
     paths.set_config_path(loaded.active_config_path)?;
     emit_config_warnings(&loaded.warnings);
     Ok(AppliedConfig { config: loaded.config, tpm_config_path: loaded.tpm_config_path })

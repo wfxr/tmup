@@ -89,6 +89,28 @@ impl Config {
 }
 
 impl PluginSpec {
+    fn build_remote(
+        display_raw: String,
+        source: &str,
+        explicit_name: Option<String>,
+        opt_prefix: String,
+        tracking: Tracking,
+        build: Option<String>,
+        opts: Vec<(String, String)>,
+    ) -> Result<Self> {
+        let (id, clone_url) = normalize_remote_source(source)?;
+        let name =
+            explicit_name.unwrap_or_else(|| id.rsplit('/').next().unwrap_or(&id).to_string());
+        Ok(Self {
+            source: PluginSource::Remote { raw: display_raw, id, clone_url },
+            name,
+            opt_prefix,
+            tracking,
+            build,
+            opts,
+        })
+    }
+
     /// Build a remote plugin spec from a raw source string plus resolved metadata.
     pub fn from_remote(
         raw: String,
@@ -98,17 +120,27 @@ impl PluginSpec {
         build: Option<String>,
         opts: Vec<(String, String)>,
     ) -> Result<Self> {
-        let (id, clone_url) = normalize_remote_source(&raw)?;
-        let name =
-            explicit_name.unwrap_or_else(|| id.rsplit('/').next().unwrap_or(&id).to_string());
-        Ok(Self {
-            source: PluginSource::Remote { raw, id, clone_url },
-            name,
-            opt_prefix,
+        Self::build_remote(raw.clone(), &raw, explicit_name, opt_prefix, tracking, build, opts)
+    }
+
+    /// Build a remote plugin spec from a raw TPM declaration.
+    pub fn from_tpm_remote(raw: &str) -> Result<Self> {
+        let (source, tracking) = match raw.rsplit_once('#') {
+            Some((source, branch)) if !branch.is_empty() => {
+                (source.to_string(), Tracking::Branch(branch.to_string()))
+            }
+            _ => (raw.to_string(), Tracking::DefaultBranch),
+        };
+
+        Self::build_remote(
+            raw.to_string(),
+            &source,
+            None,
+            String::new(),
             tracking,
-            build,
-            opts,
-        })
+            None,
+            Vec::new(),
+        )
     }
 
     /// Returns true if the plugin comes from a remote Git forge.

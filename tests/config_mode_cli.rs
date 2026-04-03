@@ -228,3 +228,37 @@ fn config_mode_cli_sync_mixed_writes_lockfile_next_to_kdl_with_kdl_precedence() 
     assert!(lock.contains(r#""type": "branch""#), "{lock}");
     assert!(lock.contains(r#""value": "feature""#), "{lock}");
 }
+
+#[test]
+fn config_mode_cli_sync_mixed_scaffolds_tmup_kdl_when_only_tpm_config_exists() {
+    let dir = tempdir().unwrap();
+    let bare = make_remote_repo(dir.path());
+    let gitconfig = write_git_rewrite_config(dir.path());
+    let config_home = dir.path().join("config");
+    let config_dir = config_home.join("tmux");
+    write_file(
+        &config_dir.join("tmux.conf"),
+        "set -g @plugin 'https://example.com/test/plugin.git'\n",
+    );
+
+    Command::cargo_bin("tmup")
+        .unwrap()
+        .args(["sync", "--config-mode=mixed"])
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_DATA_HOME", dir.path().join("data"))
+        .env("XDG_STATE_HOME", dir.path().join("state"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", &gitconfig)
+        .env("HOME", dir.path())
+        .assert()
+        .success();
+
+    assert!(bare.exists(), "remote repo should remain available for the sync");
+    assert!(
+        config_dir.join("tmup.kdl").exists(),
+        "mixed sync should scaffold tmup.kdl for the migration write path"
+    );
+
+    let lock = std::fs::read_to_string(config_dir.join("tmup.lock")).unwrap();
+    assert!(lock.contains(r#""example.com/test/plugin""#), "{lock}");
+}

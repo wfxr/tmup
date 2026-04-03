@@ -700,6 +700,10 @@ fn init_parent_bootstrap_uses_resolved_tpm_config_path_in_mixed_mode() {
         log.contains(&format!("'{}'", tpm_config.display())),
         "expected scheduled bootstrap command to use the resolved TPM config path, got log:\n{log}"
     );
+    assert!(
+        log.contains("'--config-mode' 'mixed'"),
+        "expected scheduled bootstrap command to propagate mixed mode, got log:\n{log}"
+    );
 }
 
 #[test]
@@ -733,6 +737,49 @@ fn init_bootstrap_prefers_explicit_config_path_over_tmup_config_env() {
         .assert()
         .success()
         .stderr(predicates::str::contains("failed to parse KDL").not());
+}
+
+#[test]
+fn init_bootstrap_mixed_uses_tpm_plugins_when_tmup_kdl_is_missing() {
+    let dir = tempdir().unwrap();
+    let _bare = make_remote_repo(dir.path());
+    let gitconfig = write_git_rewrite_config(dir.path());
+    let config_dir = dir.path().join("config/tmux");
+    let tmup_config = config_dir.join("tmup.kdl");
+    let tpm_config = config_dir.join("tmux.conf");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(&tpm_config, "set -g @plugin 'https://example.com/test/plugin.git'\n").unwrap();
+    let tmux_log = dir.path().join("tmux.log");
+    let fake_tmux_dir = write_fake_tmux_with_log(dir.path(), &tmux_log);
+    let path = format!("{}:{}", fake_tmux_dir.display(), std::env::var("PATH").unwrap_or_default());
+
+    Command::cargo_bin("tmup")
+        .unwrap()
+        .args([
+            "init",
+            "--bootstrap",
+            "--config-path",
+            tmup_config.to_str().unwrap(),
+            "--tpm-config-path",
+            tpm_config.to_str().unwrap(),
+            "--data-root",
+            dir.path().join("data").to_str().unwrap(),
+            "--state-root",
+            dir.path().join("state").to_str().unwrap(),
+            "--config-mode",
+            "mixed",
+        ])
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", &gitconfig)
+        .env("HOME", dir.path())
+        .env("PATH", path)
+        .assert()
+        .success();
+
+    assert!(tmup_config.exists(), "bootstrap should scaffold a missing tmup.kdl");
+
+    let lock = std::fs::read_to_string(config_dir.join("tmup.lock")).unwrap();
+    assert!(lock.contains(r#""example.com/test/plugin""#), "{lock}");
 }
 
 #[test]

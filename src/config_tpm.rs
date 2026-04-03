@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use glob::glob;
 
-use crate::model::{Config, Options, PluginSpec, Tracking};
+use crate::model::{Config, Options, PluginSpec};
 use crate::state::resolve_home_dir;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,19 +170,7 @@ fn plugin_declaration(line: &str) -> Option<String> {
 }
 
 fn parse_plugin_spec(raw: &str) -> Result<PluginSpec> {
-    let (source, tracking) = match raw.rsplit_once('#') {
-        Some((source, branch)) if !branch.is_empty() => {
-            (source.to_string(), Tracking::Branch(branch.to_string()))
-        }
-        _ => (raw.to_string(), Tracking::DefaultBranch),
-    };
-
-    let mut spec =
-        PluginSpec::from_remote(source, None, String::new(), tracking, None, Vec::new())?;
-    if let crate::model::PluginSource::Remote { raw: stored_raw, .. } = &mut spec.source {
-        *stored_raw = raw.to_string();
-    }
-    Ok(spec)
+    PluginSpec::from_tpm_remote(raw)
 }
 
 fn expand_source_paths(raw: &str, base_dir: &Path) -> Result<Vec<PathBuf>> {
