@@ -215,6 +215,7 @@ impl InitBootstrapSpec {
                 args.push(tpm_config_path.to_string_lossy().into_owned());
             }
             TpmConfigPolicy::Resolved(None) => args.push("--no-tpm-config".into()),
+            // Parent init resolves discovery before constructing child specs.
             TpmConfigPolicy::Disabled | TpmConfigPolicy::Discover => {}
         }
         args.extend([
@@ -265,6 +266,7 @@ impl InitUiChildSpec {
                 format!(" --tpm-config-path {}", shell_quote(&path.to_string_lossy()))
             }
             TpmConfigPolicy::Resolved(None) => " --no-tpm-config".into(),
+            // Parent init resolves discovery before constructing child specs.
             TpmConfigPolicy::Disabled | TpmConfigPolicy::Discover => String::new(),
         };
         format!(

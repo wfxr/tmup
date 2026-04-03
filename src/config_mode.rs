@@ -54,18 +54,12 @@ impl LoadRequest {
     pub fn from_command(
         mode: ConfigMode,
         create_missing: bool,
-        explicit_tpm_config_path: Option<&Path>,
+        tpm_policy: TpmConfigPolicy,
     ) -> Self {
         let tmup_policy = if create_missing {
             TmupConfigPolicy::CreateIfMissing
         } else {
             TmupConfigPolicy::ReadOnly
-        };
-        let tpm_policy = match mode {
-            ConfigMode::Pure => TpmConfigPolicy::Disabled,
-            ConfigMode::Mixed => explicit_tpm_config_path
-                .map(|path| TpmConfigPolicy::Resolved(Some(path.to_path_buf())))
-                .unwrap_or(TpmConfigPolicy::Discover),
         };
         Self { mode, tmup_policy, tpm_policy }
     }
@@ -110,9 +104,7 @@ pub struct LoadedRequest {
 
 /// Ensure the active tmup.kdl exists on disk using the default template.
 pub fn ensure_tmup_config_exists(paths: &Paths) -> Result<()> {
-    let path = prepare_tmup_config_path(paths, TmupConfigPolicy::ReadOnly)?;
-    create_default_tmup_config(&path)?;
-    Ok(())
+    create_default_tmup_config(&paths.config_path)
 }
 
 /// Load configuration for the requested mode from explicit source paths.
