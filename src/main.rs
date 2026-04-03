@@ -18,8 +18,8 @@ use tmup::{loader, lockfile, plugin, termui, tmux};
 #[derive(Debug, Parser)]
 #[command(name = "tmup", about = "Modern tmux plugin manager")]
 struct Cli {
-    #[arg(long = "config-mode", global = true, value_enum, default_value_t = ConfigMode::Tmup)]
-    config_mode: ConfigMode,
+    #[arg(long, global = true, help = "Enable TPM compatibility mode")]
+    tpm: bool,
 
     #[command(subcommand)]
     command: Commands,
@@ -41,6 +41,8 @@ enum Commands {
         tpm_config_path: Option<PathBuf>,
         #[arg(hide = true, long, conflicts_with = "tpm_config_path")]
         no_tpm_config: bool,
+        #[arg(hide = true, long, value_enum, default_value_t = ConfigMode::Pure)]
+        config_mode: ConfigMode,
         #[arg(hide = true, long)]
         data_root: Option<PathBuf>,
         #[arg(hide = true, long)]
@@ -83,6 +85,7 @@ struct InitInvocation {
     config_path: Option<PathBuf>,
     tpm_config_path: Option<PathBuf>,
     no_tpm_config: bool,
+    config_mode: ConfigMode,
     data_root: Option<PathBuf>,
     state_root: Option<PathBuf>,
 }
@@ -90,7 +93,7 @@ struct InitInvocation {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    let config_mode = cli.config_mode;
+    let requested_config_mode = if cli.tpm { ConfigMode::Mixed } else { ConfigMode::Pure };
 
     let result = match cli.command {
         Commands::Init {
@@ -100,6 +103,7 @@ async fn main() -> ExitCode {
             config_path,
             tpm_config_path,
             no_tpm_config,
+            config_mode,
             data_root,
             state_root,
         } => {
@@ -111,19 +115,20 @@ async fn main() -> ExitCode {
                     config_path,
                     tpm_config_path,
                     no_tpm_config,
+                    config_mode,
                     data_root,
                     state_root,
                 },
-                config_mode,
+                requested_config_mode,
             )
             .await
         }
-        Commands::Install { id } => run_install(id, config_mode).await,
-        Commands::Sync { id } => run_sync(id, config_mode).await,
-        Commands::Update { id } => run_update(id, config_mode).await,
-        Commands::Restore { id } => run_restore(id, config_mode).await,
-        Commands::Clean => run_clean(config_mode).await,
-        Commands::List { verbose } => run_list(verbose, config_mode),
+        Commands::Install { id } => run_install(id, requested_config_mode).await,
+        Commands::Sync { id } => run_sync(id, requested_config_mode).await,
+        Commands::Update { id } => run_update(id, requested_config_mode).await,
+        Commands::Restore { id } => run_restore(id, requested_config_mode).await,
+        Commands::Clean => run_clean(requested_config_mode).await,
+        Commands::List { verbose } => run_list(verbose, requested_config_mode),
     };
 
     match result {
@@ -186,7 +191,7 @@ fn init_tpm_config_policy(
     no_tpm_config: bool,
 ) -> TpmConfigPolicy {
     match mode {
-        ConfigMode::Tmup => TpmConfigPolicy::Disabled,
+        ConfigMode::Pure => TpmConfigPolicy::Disabled,
         ConfigMode::Mixed => {
             if no_tpm_config {
                 TpmConfigPolicy::Resolved(None)
@@ -226,8 +231,8 @@ fn apply_config_with_tpm_policy(
 
 fn stale_lock_sync_hint(config_mode: ConfigMode) -> &'static str {
     match config_mode {
-        ConfigMode::Tmup => "tmup sync",
-        ConfigMode::Mixed => "tmup --config-mode=mixed sync",
+        ConfigMode::Pure => "tmup sync",
+        ConfigMode::Mixed => "tmup --tpm sync",
     }
 }
 
@@ -248,20 +253,20 @@ async fn run_init(init: InitInvocation, config_mode: ConfigMode) -> Result<()> {
         return run_init_child(
             init.wait_channel.context("--ui-child requires --wait-channel")?,
             init.config_path.context("--ui-child requires --config-path")?,
-            init_tpm_config_policy(config_mode, init.tpm_config_path, init.no_tpm_config),
+            init_tpm_config_policy(init.config_mode, init.tpm_config_path, init.no_tpm_config),
             init.data_root.context("--ui-child requires --data-root")?,
             init.state_root.context("--ui-child requires --state-root")?,
-            config_mode,
+            init.config_mode,
         )
         .await;
     }
     if init.bootstrap {
         return run_init_bootstrap(
             init.config_path.context("--bootstrap requires --config-path")?,
-            init_tpm_config_policy(config_mode, init.tpm_config_path, init.no_tpm_config),
+            init_tpm_config_policy(init.config_mode, init.tpm_config_path, init.no_tpm_config),
             init.data_root.context("--bootstrap requires --data-root")?,
             init.state_root.context("--bootstrap requires --state-root")?,
-            config_mode,
+            init.config_mode,
         )
         .await;
     }
@@ -918,9 +923,9 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_config_mode_before_subcommand() {
-        let cli = Cli::try_parse_from(["tmup", "--config-mode", "mixed", "list"]).unwrap();
-        assert_eq!(cli.config_mode, ConfigMode::Mixed);
+    fn cli_parses_tpm_flag_before_subcommand() {
+        let cli = Cli::try_parse_from(["tmup", "--tpm", "list"]).unwrap();
+        assert!(cli.tpm);
         assert!(matches!(cli.command, Commands::List { .. }));
     }
 

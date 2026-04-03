@@ -10,14 +10,14 @@ use tmup::state::Paths;
 use utils::write_file;
 
 #[test]
-fn config_mode_tmup_loads_only_kdl() {
+fn config_mode_pure_loads_only_kdl() {
     let dir = tempdir().unwrap();
     let kdl = dir.path().join("tmup.kdl");
     let tpm = dir.path().join("tmux.conf");
     write_file(&kdl, r#"plugin "tmux-plugins/tmux-sensible""#);
     write_file(&tpm, "set -g @plugin 'tmux-plugins/tmux-yank'\n");
 
-    let loaded = load_from_sources(ConfigMode::Tmup, Some(&kdl), Some(&tpm)).unwrap();
+    let loaded = load_from_sources(ConfigMode::Pure, Some(&kdl), Some(&tpm)).unwrap();
 
     assert_eq!(loaded.config.plugins.len(), 1);
     assert_eq!(

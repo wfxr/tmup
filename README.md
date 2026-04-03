@@ -114,14 +114,14 @@ does not exist yet. Read-only commands such as `list` do not create it. When
 
 `tmup.lock` lives next to the active `tmup.kdl`.
 
-tmup supports two config loading modes:
+tmup supports two internal config loading modes:
 
-- `tmup` — load only `tmup.kdl`
+- `pure` — load only `tmup.kdl`
 - `mixed` — load `tmup.kdl` and TPM-style tmux plugin declarations together
 
-Use `--config-mode=mixed` on any command that reads config when you want to
-temporarily combine `tmup.kdl` with existing `set -g @plugin ...` lines from
-your tmux config.
+Use `--tpm` on any command that reads config when you want to temporarily
+combine `tmup.kdl` with existing `set -g @plugin ...` lines from your tmux
+config.
 
 In mixed mode, plugin order starts from the TPM-compatible declarations
 discovered by tmup's TPM scan. KDL-only entries, including local plugins, are
@@ -215,7 +215,8 @@ tmup clean              # Remove undeclared managed remote repos
 tmup list [-v]          # Print plugin status table (`-v` for diagnostic columns)
 ```
 
-Commands that read config also accept `--config-mode=tmup|mixed`.
+Commands that read config also accept `--tpm` to enable mixed loading with
+TPM-style declarations.
 
 ### `init` — startup path
 
@@ -279,8 +280,8 @@ Outputs a table with separated **state** and **last-result** columns:
 | `none` | No operation attempted yet |
 
 If the lock snapshot is stale relative to the effective configuration for the
-selected `--config-mode`, `list` prints a warning before the table without
-mutating `tmup.lock` or plugin state.
+selected mode, `list` prints a warning before the table without mutating
+`tmup.lock` or plugin state.
 
 ## Directory Layout
 
@@ -330,13 +331,12 @@ Plugins that depend on TPM internals will **not** work:
 - Assuming `TMUX_PLUGIN_MANAGER_PATH` has a flat `plugin-name/` layout
 - Calling TPM's internal shell helpers
 - Detecting the TPM repo at `~/.tmux/plugins/tpm/`
-- Relying on TPM keybindings (`prefix + I`, `prefix + U`)
 
 This boundary is intentional, not an oversight.
 
 ## Migrating from TPM
 
-1. Replace the TPM `run` line in `.tmux.conf` with `run-shell "tmup init --config-mode=mixed"`.
+1. Replace the TPM `run` line in `.tmux.conf` with `run-shell "tmup init --tpm"`.
 2. Restart tmux. tmup will read both `tmup.kdl` and existing TPM-style
    `set -g @plugin` declarations, then generate `tmup.lock`.
 3. Move plugins gradually from `.tmux.conf` into `~/.config/tmux/tmup.kdl`.

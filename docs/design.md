@@ -142,16 +142,16 @@ direct children are plugin directories. This is an explicit non-goal.
 
 tmup supports two configuration-loading modes:
 
-- `tmup`: load only `tmup.kdl`
+- `pure`: load only `tmup.kdl`
 - `mixed`: load both sources and merge them
 
 The CLI surface is:
 
 ```text
-tmup <command> --config-mode=tmup|mixed
+tmup <command> [--tpm]
 ```
 
-Default mode is `tmup`.
+Default mode is `pure`. Passing `--tpm` selects `mixed`.
 
 In `mixed` mode:
 
@@ -315,7 +315,7 @@ only. Local plugins do not participate in `sync` / `install` / `update` / `resto
 Every command that consumes configuration also accepts:
 
 ```text
---config-mode=tmup|mixed
+--tpm
 ```
 
 ### 5.2 `init` (tmux startup path)
@@ -326,7 +326,7 @@ and mutation.
 
 ```text
 1. Acquire the global operation lock (blocking).
-2. Load configuration according to `--config-mode`, read `tmup.lock`, and
+2. Load configuration according to the resolved mode (`pure` or `mixed`), read `tmup.lock`, and
    validate the effective configuration.
 3. Run implicit incremental sync as the only remote-plugin reconciliation pass.
    - Install newly declared remote plugins only when auto-install=true.
@@ -461,7 +461,7 @@ Examples:
 
 `list` does not mutate `tmup.lock` or plugin state. If the lock snapshot is
 stale relative to the effective configuration for the selected
-`--config-mode`, it prints a warning before the table.
+mode, it prints a warning before the table.
 
 ## 6. Lock File
 
