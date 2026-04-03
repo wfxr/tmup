@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 anstream = "1"
-base16ct = { version = "0.2", features = ["alloc"] }
+base16ct = { version = "1.0", features = ["alloc"] }
 anyhow = "1"
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 clap = { version = "4", features = ["derive"] }
