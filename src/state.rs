@@ -190,18 +190,7 @@ fn resolve_home_dir_from_env(home: Option<&str>) -> Result<PathBuf> {
 fn xdg_dir(var: &str, fallback_suffix: &str, home: Option<&Path>) -> Result<PathBuf> {
     match std::env::var(var).ok().map(PathBuf::from) {
         Some(path) if path.is_absolute() => Ok(path),
-        _ => Ok(xdg_dir_from_env(
-            home.context("HOME must be set to an absolute path")?,
-            None,
-            fallback_suffix,
-        )),
-    }
-}
-
-fn xdg_dir_from_env(home: &Path, value: Option<&str>, fallback_suffix: &str) -> PathBuf {
-    match value.map(PathBuf::from) {
-        Some(path) if path.is_absolute() => path,
-        _ => home.join(fallback_suffix),
+        _ => Ok(home.context("HOME must be set to an absolute path")?.join(fallback_suffix)),
     }
 }
 
@@ -406,7 +395,6 @@ pub struct OperationLockGuard {
 #[cfg(test)]
 mod tests {
     use std::io::{Error, ErrorKind, Result};
-    use std::path::Path;
     use std::sync::{LazyLock, Mutex};
 
     static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -426,19 +414,6 @@ mod tests {
     #[test]
     fn resolve_home_dir_from_env_rejects_missing_home() {
         assert!(super::resolve_home_dir_from_env(None).is_err());
-    }
-
-    #[test]
-    fn xdg_dir_from_env_falls_back_for_empty_or_relative_values() {
-        let home = Path::new("/tmp/home");
-        assert_eq!(
-            super::xdg_dir_from_env(home, Some(""), ".local/share"),
-            home.join(".local/share")
-        );
-        assert_eq!(
-            super::xdg_dir_from_env(home, Some("relative/path"), ".local/share"),
-            home.join(".local/share")
-        );
     }
 
     #[test]

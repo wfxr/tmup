@@ -210,16 +210,11 @@ fn apply_config_with_tpm_policy(
     create_missing: bool,
     explicit_tpm_policy: Option<TpmConfigPolicy>,
 ) -> Result<AppliedConfig> {
-    let request = config_mode::LoadRequest {
+    let request = config_mode::LoadRequest::from_command(
         mode,
-        tmup_policy: if create_missing {
-            config_mode::TmupConfigPolicy::CreateIfMissing
-        } else {
-            config_mode::TmupConfigPolicy::ReadOnly
-        },
-        tpm_policy: explicit_tpm_policy
-            .unwrap_or_else(|| init_tpm_config_policy(mode, None, false)),
-    };
+        create_missing,
+        explicit_tpm_policy.unwrap_or_else(|| init_tpm_config_policy(mode, None, false)),
+    );
     let loaded = config_mode::load_with_request(paths, request)?;
     Ok(AppliedConfig {
         paths: loaded.paths,
