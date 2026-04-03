@@ -190,6 +190,8 @@ pub struct InitBootstrapSpec {
     pub exe: PathBuf,
     /// Path to the tmup configuration file.
     pub config_path: PathBuf,
+    /// Path to the resolved TPM config file for mixed-mode init, if any.
+    pub tpm_config_path: Option<PathBuf>,
     /// Root directory for persistent data.
     pub data_root: PathBuf,
     /// Root directory for runtime state.
@@ -200,19 +202,26 @@ pub struct InitBootstrapSpec {
 
 impl InitBootstrapSpec {
     fn build_shell_command(&self) -> String {
-        shell_join([
+        let mut args = vec![
             self.exe.to_string_lossy().into_owned(),
             "init".into(),
             "--bootstrap".into(),
             "--config-path".into(),
             self.config_path.to_string_lossy().into_owned(),
+        ];
+        if let Some(tpm_config_path) = &self.tpm_config_path {
+            args.push("--tpm-config-path".into());
+            args.push(tpm_config_path.to_string_lossy().into_owned());
+        }
+        args.extend([
             "--data-root".into(),
             self.data_root.to_string_lossy().into_owned(),
             "--state-root".into(),
             self.state_root.to_string_lossy().into_owned(),
             "--config-mode".into(),
             self.config_mode.to_string(),
-        ])
+        ]);
+        shell_join(args)
     }
 }
 
@@ -222,6 +231,8 @@ pub struct InitUiChildSpec {
     pub exe: PathBuf,
     /// Path to the tmup configuration file.
     pub config_path: PathBuf,
+    /// Path to the resolved TPM config file for mixed-mode init, if any.
+    pub tpm_config_path: Option<PathBuf>,
     /// Root directory for persistent data.
     pub data_root: PathBuf,
     /// Root directory for runtime state.
@@ -245,6 +256,11 @@ impl InitUiChildSpec {
         } else {
             ""
         };
+        let tpm_config_path = self
+            .tpm_config_path
+            .as_ref()
+            .map(|path| format!(" --tpm-config-path {}", shell_quote(&path.to_string_lossy())))
+            .unwrap_or_default();
         format!(
             r#"channel={ch}
 result_file={rf}
@@ -252,7 +268,7 @@ tty_state=
 cleanup() {{ tmux wait-for -S "$channel"; }}
 restore_tty() {{ [ -n "$tty_state" ] && stty "$tty_state" >/dev/null 2>&1 || true; }}
 trap 'restore_tty; cleanup' EXIT INT TERM HUP
-{roe}{exe} init --ui-child --wait-channel {ch} --config-path {cp} --data-root {dr} --state-root {sr} --config-mode {cm}
+{roe}{exe} init --ui-child --wait-channel {ch} --config-path {cp}{tp} --data-root {dr} --state-root {sr} --config-mode {cm}
 rc=$?
 printf '{{"exit_code":%d}}\n' "$rc" > "$result_file"
 if [ -t 0 ]; then
@@ -269,6 +285,7 @@ exit 0"#,
             roe = remain_on_exit,
             exe = shell_quote(&self.exe.to_string_lossy()),
             cp = shell_quote(&self.config_path.to_string_lossy()),
+            tp = tpm_config_path,
             dr = shell_quote(&self.data_root.to_string_lossy()),
             sr = shell_quote(&self.state_root.to_string_lossy()),
             cm = shell_quote(&self.config_mode.to_string()),

@@ -136,6 +136,29 @@ fn config_mode_cli_mixed_without_tpm_config_still_works_without_home() {
 }
 
 #[test]
+fn config_mode_cli_mixed_warns_when_home_is_unavailable_for_tpm_discovery() {
+    let dir = tempdir().unwrap();
+    let config_dir = dir.path().join("alt-config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let config_path = config_dir.join("tmup.kdl");
+    write_file(&config_path, "");
+
+    Command::cargo_bin("tmup")
+        .unwrap()
+        .args(["list", "--config-mode=mixed"])
+        .env("TMUP_CONFIG", &config_path)
+        .env("XDG_DATA_HOME", dir.path().join("data"))
+        .env("XDG_STATE_HOME", dir.path().join("state"))
+        .env_remove("HOME")
+        .env_remove("XDG_CONFIG_HOME")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "warning: HOME is unavailable; skipping default TPM config discovery",
+        ));
+}
+
+#[test]
 fn config_mode_cli_list_mixed_warns_and_prefers_kdl() {
     let dir = tempdir().unwrap();
     let config_home = dir.path().join("config");

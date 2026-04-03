@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use glob::glob;
 
-use crate::config::build_remote_plugin_spec;
 use crate::model::{Config, Options, PluginSpec, Tracking};
 use crate::state::resolve_home_dir;
 
@@ -13,28 +12,40 @@ struct SourcedFile {
     quiet: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Result of discovering the TPM-compatible tmux config path.
+pub struct ResolvedConfigPath {
+    /// The discovered TPM-compatible tmux config path, if one was found.
+    pub path: Option<PathBuf>,
+    /// Non-fatal warnings emitted while attempting to discover the config path.
+    pub warnings: Vec<String>,
+}
+
 /// Resolve the default TPM-style tmux config path from the supported search order.
-pub fn resolve_config_path() -> Result<Option<PathBuf>> {
-    if let Some(xdg_config_home) = std::env::var("XDG_CONFIG_HOME")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-    {
-        let path = xdg_config_home.join("tmux/tmux.conf");
-        if path.exists() {
-            return Ok(Some(path));
-        }
+pub fn resolve_config_path() -> Result<ResolvedConfigPath> {
+    if let Some(path) = xdg_tmux_config_path(std::env::var("XDG_CONFIG_HOME").ok().as_deref()) {
+        return Ok(ResolvedConfigPath { path: Some(path), warnings: Vec::new() });
     }
 
     let home_dir = match resolve_home_dir() {
         Ok(home_dir) => home_dir,
-        Err(_) => return Ok(None),
+        Err(_) => {
+            return Ok(ResolvedConfigPath {
+                path: None,
+                warnings: vec!["HOME is unavailable; skipping default TPM config discovery".into()],
+            });
+        }
     };
-    Ok(resolve_config_path_from_env(std::env::var("XDG_CONFIG_HOME").ok().as_deref(), &home_dir))
+    Ok(ResolvedConfigPath {
+        path: resolve_config_path_from_env(
+            std::env::var("XDG_CONFIG_HOME").ok().as_deref(),
+            &home_dir,
+        ),
+        warnings: Vec::new(),
+    })
 }
 
-fn resolve_config_path_from_env(xdg_config_home: Option<&str>, home_dir: &Path) -> Option<PathBuf> {
+fn xdg_tmux_config_path(xdg_config_home: Option<&str>) -> Option<PathBuf> {
     if let Some(xdg_config_home) = xdg_config_home
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
@@ -44,6 +55,14 @@ fn resolve_config_path_from_env(xdg_config_home: Option<&str>, home_dir: &Path) 
         if path.exists() {
             return Some(path);
         }
+    }
+
+    None
+}
+
+fn resolve_config_path_from_env(xdg_config_home: Option<&str>, home_dir: &Path) -> Option<PathBuf> {
+    if let Some(path) = xdg_tmux_config_path(xdg_config_home) {
+        return Some(path);
     }
 
     let config_home = home_dir.join(".config/tmux/tmux.conf");
@@ -164,7 +183,7 @@ fn parse_plugin_spec(raw: &str) -> Result<PluginSpec> {
         _ => (raw.to_string(), Tracking::DefaultBranch),
     };
 
-    build_remote_plugin_spec(source, None, String::new(), tracking, None, Vec::new())
+    PluginSpec::from_remote(source, None, String::new(), tracking, None, Vec::new())
 }
 
 fn expand_source_paths(raw: &str, base_dir: &Path) -> Result<Vec<PathBuf>> {
