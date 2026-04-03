@@ -23,24 +23,18 @@ pub struct ResolvedConfigPath {
 
 /// Resolve the default TPM-style tmux config path from the supported search order.
 pub fn resolve_config_path() -> Result<ResolvedConfigPath> {
-    if let Some(path) = xdg_tmux_config_path(std::env::var("XDG_CONFIG_HOME").ok().as_deref()) {
-        return Ok(ResolvedConfigPath { path: Some(path), warnings: Vec::new() });
-    }
-
+    let xdg_config_home = std::env::var("XDG_CONFIG_HOME").ok();
     let home_dir = match resolve_home_dir() {
         Ok(home_dir) => home_dir,
         Err(_) => {
             return Ok(ResolvedConfigPath {
-                path: None,
+                path: xdg_tmux_config_path(xdg_config_home.as_deref()),
                 warnings: vec!["HOME is unavailable; skipping default TPM config discovery".into()],
             });
         }
     };
     Ok(ResolvedConfigPath {
-        path: resolve_config_path_from_env(
-            std::env::var("XDG_CONFIG_HOME").ok().as_deref(),
-            &home_dir,
-        ),
+        path: resolve_config_path_from_env(xdg_config_home.as_deref(), &home_dir),
         warnings: Vec::new(),
     })
 }
@@ -183,7 +177,12 @@ fn parse_plugin_spec(raw: &str) -> Result<PluginSpec> {
         _ => (raw.to_string(), Tracking::DefaultBranch),
     };
 
-    PluginSpec::from_remote(source, None, String::new(), tracking, None, Vec::new())
+    let mut spec =
+        PluginSpec::from_remote(source, None, String::new(), tracking, None, Vec::new())?;
+    if let crate::model::PluginSource::Remote { raw: stored_raw, .. } = &mut spec.source {
+        *stored_raw = raw.to_string();
+    }
+    Ok(spec)
 }
 
 fn expand_source_paths(raw: &str, base_dir: &Path) -> Result<Vec<PathBuf>> {

@@ -42,6 +42,28 @@ fn config_mode_mixed_merges_tpm_plugins_into_kdl() {
 }
 
 #[test]
+fn config_mode_mixed_preserves_kdl_options() {
+    let dir = tempdir().unwrap();
+    let kdl = dir.path().join("tmup.kdl");
+    let tpm = dir.path().join("tmux.conf");
+    write_file(
+        &kdl,
+        r#"
+options {
+    auto-install #false
+    concurrency 3
+}
+"#,
+    );
+    write_file(&tpm, "set -g @plugin 'tmux-plugins/tmux-yank'\n");
+
+    let loaded = load_from_sources(ConfigMode::Mixed, Some(&kdl), Some(&tpm)).unwrap();
+
+    assert!(!loaded.config.options.auto_install);
+    assert_eq!(loaded.config.options.concurrency, 3);
+}
+
+#[test]
 fn config_mode_mixed_prefers_kdl_for_duplicate_remote_plugin() {
     let dir = tempdir().unwrap();
     let kdl = dir.path().join("tmup.kdl");
