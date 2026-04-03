@@ -668,6 +668,41 @@ fn init_parent_bootstrap_uses_resolved_tmup_config_path() {
 }
 
 #[test]
+fn init_parent_bootstrap_uses_resolved_tpm_config_path_in_mixed_mode() {
+    let dir = tempdir().unwrap();
+    let config_home = dir.path().join("config");
+    let config_dir = config_home.join("tmux");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let tmup_config = config_dir.join("tmup.kdl");
+    let tpm_config = config_dir.join("tmux.conf");
+    std::fs::write(&tmup_config, "").unwrap();
+    std::fs::write(&tpm_config, "set -g @plugin 'tmux-plugins/tmux-sensible'\n").unwrap();
+
+    let tmux_log = dir.path().join("tmux.log");
+    let fake_tmux_dir = write_fake_tmux_with_log(dir.path(), &tmux_log);
+    let path = format!("{}:{}", fake_tmux_dir.display(), std::env::var("PATH").unwrap_or_default());
+
+    let output = Command::cargo_bin("tmup")
+        .unwrap()
+        .args(["init", "--config-mode=mixed"])
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_DATA_HOME", dir.path().join("data"))
+        .env("XDG_STATE_HOME", dir.path().join("state"))
+        .env("HOME", dir.path())
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "init should succeed after scheduling bootstrap");
+
+    let log = std::fs::read_to_string(&tmux_log).unwrap_or_default();
+    assert!(
+        log.contains(&format!("'{}'", tpm_config.display())),
+        "expected scheduled bootstrap command to use the resolved TPM config path, got log:\n{log}"
+    );
+}
+
+#[test]
 fn init_bootstrap_prefers_explicit_config_path_over_tmup_config_env() {
     let dir = tempdir().unwrap();
     let good_config = dir.path().join("good/good.kdl");

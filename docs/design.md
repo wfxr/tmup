@@ -161,8 +161,10 @@ In `mixed` mode:
   for the same remote plugin ID exists
 - repeated TPM declarations for the same canonical remote plugin ID collapse to
   the first declaration
-- plugin order starts from TPM declaration order; KDL-only plugins are appended
-  afterward, while conflicting entries keep the TPM slot but use the KDL config
+- plugin order starts from the TPM-compatible declarations discovered by tmup's
+  TPM scan; KDL-only entries, including local plugins, are appended afterward
+  in KDL order, while conflicting entries keep the TPM slot but use the KDL
+  config
 - local plugins may come only from `tmup.kdl`
 
 ### 4.1 tmup KDL
@@ -727,9 +729,10 @@ tmup KDL search order:
 2. `$XDG_CONFIG_HOME/tmux/tmup.kdl`
 3. `~/.config/tmux/tmup.kdl`
 
-If the selected default `tmup.kdl` does not exist yet, tmup creates it
-automatically with a minimal commented template before loading configuration.
-When `TMUP_CONFIG` is set explicitly, it must point to an existing file.
+Mutating commands and `init` create the selected default `tmup.kdl` with a
+minimal commented template when it does not exist yet. Read-only commands do
+not create it. When `TMUP_CONFIG` is set explicitly, it must point to an
+existing file.
 
 TPM-compatible tmux config search order:
 

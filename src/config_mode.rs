@@ -36,16 +36,18 @@ pub struct LoadedConfig {
     pub warnings: Vec<String>,
     /// The resolved primary config path that should own the active lockfile.
     pub active_config_path: PathBuf,
+    /// The resolved TPM config path when mixed mode discovered one.
+    pub tpm_config_path: Option<PathBuf>,
 }
 
-/// Load configuration for the requested mode using discovered paths.
+/// Load configuration for the requested mode without creating a missing default tmup.kdl.
 pub fn load(paths: &Paths, mode: ConfigMode) -> Result<LoadedConfig> {
-    load_with_policy(paths, mode, true)
+    load_with_policy(paths, mode, false)
 }
 
-/// Load configuration without creating a missing tmup.kdl on disk.
-pub fn load_read_only(paths: &Paths, mode: ConfigMode) -> Result<LoadedConfig> {
-    load_with_policy(paths, mode, false)
+/// Load configuration for the requested mode, creating the default tmup.kdl when needed.
+pub fn load_or_create_default(paths: &Paths, mode: ConfigMode) -> Result<LoadedConfig> {
+    load_with_policy(paths, mode, true)
 }
 
 /// Ensure the active tmup.kdl exists on disk using the default template.
@@ -70,6 +72,7 @@ pub fn load_from_sources(
                 config: load_tmup_config(path)?,
                 warnings: Vec::new(),
                 active_config_path: path.to_path_buf(),
+                tpm_config_path: None,
             })
         }
         ConfigMode::Mixed => load_mixed(tmup_path, tpm_path),
@@ -85,12 +88,18 @@ fn load_mixed(tmup_path: Option<&Path>, tpm_path: Option<&Path>) -> Result<Loade
     match tpm_config {
         Some(tpm) => {
             let config = merge_configs(tmup_config, tpm, &mut warnings);
-            Ok(LoadedConfig { config, warnings, active_config_path: tmup_path.to_path_buf() })
+            Ok(LoadedConfig {
+                config,
+                warnings,
+                active_config_path: tmup_path.to_path_buf(),
+                tpm_config_path: tpm_path.map(Path::to_path_buf),
+            })
         }
         None => Ok(LoadedConfig {
             config: tmup_config,
             warnings,
             active_config_path: tmup_path.to_path_buf(),
+            tpm_config_path: None,
         }),
     }
 }
@@ -106,10 +115,15 @@ fn load_with_policy(paths: &Paths, mode: ConfigMode, create_missing: bool) -> Re
             },
             warnings: Vec::new(),
             active_config_path: tmup_path,
+            tpm_config_path: None,
         }),
         ConfigMode::Mixed => {
-            let tpm_path = config_tpm::resolve_config_path()?;
-            load_from_sources(mode, Some(tmup_path.as_path()), tpm_path.as_deref())
+            let resolved = config_tpm::resolve_config_path()?;
+            let mut loaded =
+                load_from_sources(mode, Some(tmup_path.as_path()), resolved.path.as_deref())?;
+            loaded.warnings.extend(resolved.warnings);
+            loaded.tpm_config_path = resolved.path;
+            Ok(loaded)
         }
     }
 }

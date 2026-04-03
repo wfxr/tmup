@@ -30,11 +30,21 @@ pub struct Paths {
 impl Paths {
     /// Resolve paths from the XDG base directories of the current user.
     pub fn resolve() -> Result<Self> {
+        Self::resolve_with_config_path(None)
+    }
+
+    /// Resolve paths from the XDG base directories, optionally overriding the config path.
+    pub fn resolve_with_config_path(config_path: Option<PathBuf>) -> Result<Self> {
         let home_dir = resolve_home_dir().ok();
         let data_dir = xdg_dir("XDG_DATA_HOME", ".local/share", home_dir.as_deref())?.join("tmup");
         let state_dir =
             xdg_dir("XDG_STATE_HOME", ".local/state", home_dir.as_deref())?.join("tmup");
-        let config_dir = tmux_config_dir(home_dir.as_deref())?;
+        let config_path = match config_path {
+            Some(path) => path,
+            None => tmux_config_dir(home_dir.as_deref())?.join("tmup.kdl"),
+        };
+        let lockfile_path =
+            config_path.parent().context("config path has no parent directory")?.join("tmup.lock");
 
         Ok(Self {
             plugin_root: data_dir.join("plugins"),
@@ -43,8 +53,8 @@ impl Paths {
             failures_root: state_dir.join("failures"),
             logs_root: state_dir.join("logs"),
             init_results_root: state_dir.join("init-results"),
-            config_path: config_dir.join("tmup.kdl"),
-            lockfile_path: config_dir.join("tmup.lock"),
+            config_path,
+            lockfile_path,
             repo_cache_root: data_dir.join(".repos"),
         })
     }

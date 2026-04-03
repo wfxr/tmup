@@ -108,9 +108,9 @@ tmup uses [KDL v2](https://kdl.dev) syntax. Config file search order:
 2. `$XDG_CONFIG_HOME/tmux/tmup.kdl`
 3. `~/.config/tmux/tmup.kdl`
 
-If the default discovered `tmup.kdl` does not exist yet, tmup will create it
-automatically. When `TMUP_CONFIG` is set explicitly, it must point to an
-existing file.
+Mutating commands and `init` create the default discovered `tmup.kdl` when it
+does not exist yet. Read-only commands such as `list` do not create it. When
+`TMUP_CONFIG` is set explicitly, it must point to an existing file.
 
 `tmup.lock` lives next to the active `tmup.kdl`.
 
@@ -123,8 +123,9 @@ Use `--config-mode=mixed` on any command that reads config when you want to
 temporarily combine `tmup.kdl` with existing `set -g @plugin ...` lines from
 your tmux config.
 
-In mixed mode, plugin order starts from the TPM declarations that were found.
-KDL-only plugins are appended afterward, and if both sources declare the same
+In mixed mode, plugin order starts from the TPM-compatible declarations
+discovered by tmup's TPM scan. KDL-only entries, including local plugins, are
+appended afterward in `tmup.kdl` order, and if both sources declare the same
 remote plugin ID, tmup keeps the TPM position but uses the `tmup.kdl` entry.
 
 ### Full example

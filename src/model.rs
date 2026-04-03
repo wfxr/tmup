@@ -1,3 +1,7 @@
+use anyhow::{Context, Result, bail, ensure};
+
+use crate::state::validate_plugin_id;
+
 /// Top-level configuration holding global options and the list of plugins.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -85,6 +89,28 @@ impl Config {
 }
 
 impl PluginSpec {
+    /// Build a remote plugin spec from a raw source string plus resolved metadata.
+    pub fn from_remote(
+        raw: String,
+        explicit_name: Option<String>,
+        opt_prefix: String,
+        tracking: Tracking,
+        build: Option<String>,
+        opts: Vec<(String, String)>,
+    ) -> Result<Self> {
+        let (id, clone_url) = normalize_remote_source(&raw)?;
+        let name =
+            explicit_name.unwrap_or_else(|| id.rsplit('/').next().unwrap_or(&id).to_string());
+        Ok(Self {
+            source: PluginSource::Remote { raw, id, clone_url },
+            name,
+            opt_prefix,
+            tracking,
+            build,
+            opts,
+        })
+    }
+
     /// Returns true if the plugin comes from a remote Git forge.
     pub fn is_remote(&self) -> bool {
         matches!(self.source, PluginSource::Remote { .. })
@@ -102,4 +128,49 @@ impl PluginSpec {
             PluginSource::Local { .. } => None,
         }
     }
+}
+
+fn normalize_remote_source(raw: &str) -> Result<(String, String)> {
+    if let Some(rest) = raw.strip_prefix("git@") {
+        let (host, path) = rest.split_once(':').context("invalid SSH URL: missing ':'")?;
+        let id = normalize_remote_id(host, path)?;
+        return Ok((id, raw.to_string()));
+    }
+
+    if raw.starts_with("https://") || raw.starts_with("http://") {
+        let without_scheme =
+            raw.strip_prefix("https://").or_else(|| raw.strip_prefix("http://")).unwrap();
+        let (host, path) = without_scheme
+            .split_once('/')
+            .context("invalid remote URL: missing repository path")?;
+        let id = normalize_remote_id(host, path)?;
+        return Ok((id, raw.to_string()));
+    }
+
+    let parts: Vec<&str> = raw.split('/').collect();
+    if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+        let id = format!("github.com/{raw}");
+        validate_plugin_id(&id)?;
+        let clone_url = format!("https://github.com/{raw}.git");
+        return Ok((id, clone_url));
+    }
+
+    bail!("cannot parse remote source: \"{raw}\"")
+}
+
+fn normalize_remote_id(host: &str, path: &str) -> Result<String> {
+    ensure!(
+        !host.is_empty()
+            && host != "."
+            && host != ".."
+            && !host.contains('/')
+            && !host.contains('\\'),
+        "unsafe remote host: {host:?}"
+    );
+    let path = path.trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    ensure!(!path.is_empty(), "invalid remote URL: missing repository path");
+    let id = format!("{host}/{path}");
+    validate_plugin_id(&id)?;
+    Ok(id)
 }
