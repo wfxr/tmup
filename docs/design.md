@@ -699,7 +699,7 @@ guaranteed.
 Users add to `.tmux.conf`:
 
 ```tmux
-set-environment -g TMUP_CONFIG_MODE mixed
+TMUP_CONFIG_MODE=mixed
 run-shell "tmup init"
 ```
 

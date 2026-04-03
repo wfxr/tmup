@@ -89,6 +89,10 @@ fn shell_join(args: impl IntoIterator<Item = String>) -> String {
     args.into_iter().map(|arg| shell_quote(&arg)).collect::<Vec<_>>().join(" ")
 }
 
+fn shell_env_assignment(key: &str, value: &str) -> String {
+    format!("{key}={}", shell_quote(value))
+}
+
 /// Parse a raw `tmux -V` output string into a `TmuxVersion`, returning `None` on failure.
 pub fn parse_tmux_version(raw: &str) -> Option<TmuxVersion> {
     let raw = raw.trim();
@@ -202,6 +206,7 @@ pub struct InitBootstrapSpec {
 
 impl InitBootstrapSpec {
     fn build_shell_command(&self) -> String {
+        let config_mode = shell_env_assignment("TMUP_CONFIG_MODE", &self.config_mode.to_string());
         let mut args = vec![
             self.exe.to_string_lossy().into_owned(),
             "init".into(),
@@ -223,10 +228,8 @@ impl InitBootstrapSpec {
             self.data_root.to_string_lossy().into_owned(),
             "--state-root".into(),
             self.state_root.to_string_lossy().into_owned(),
-            "--config-mode".into(),
-            self.config_mode.to_string(),
         ]);
-        shell_join(args)
+        format!("{config_mode} {}", shell_join(args))
     }
 }
 
@@ -269,6 +272,8 @@ impl InitUiChildSpec {
             // Parent init resolves discovery before constructing child specs.
             TpmConfigPolicy::Disabled | TpmConfigPolicy::Discover => String::new(),
         };
+        let config_mode_env =
+            shell_env_assignment("TMUP_CONFIG_MODE", &self.config_mode.to_string());
         format!(
             r#"channel={ch}
 result_file={rf}
@@ -276,7 +281,7 @@ tty_state=
 cleanup() {{ tmux wait-for -S "$channel"; }}
 restore_tty() {{ [ -n "$tty_state" ] && stty "$tty_state" >/dev/null 2>&1 || true; }}
 trap 'restore_tty; cleanup' EXIT INT TERM HUP
-{roe}{exe} init --ui-child --wait-channel {ch} --config-path {cp}{tp} --data-root {dr} --state-root {sr} --config-mode {cm}
+{roe}{cme} {exe} init --ui-child --wait-channel {ch} --config-path {cp}{tp} --data-root {dr} --state-root {sr}
 rc=$?
 printf '{{"exit_code":%d}}\n' "$rc" > "$result_file"
 if [ -t 0 ]; then
@@ -296,7 +301,7 @@ exit 0"#,
             tp = tpm_config_args,
             dr = shell_quote(&self.data_root.to_string_lossy()),
             sr = shell_quote(&self.state_root.to_string_lossy()),
-            cm = shell_quote(&self.config_mode.to_string()),
+            cme = config_mode_env,
         )
     }
 }
