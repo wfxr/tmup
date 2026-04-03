@@ -30,6 +30,27 @@ fn config_mode_cli_list_mixed_reads_tpm_config_without_scaffolding_tmup_kdl() {
 }
 
 #[test]
+fn config_mode_cli_list_mixed_reads_tilde_sourced_tpm_file() {
+    let dir = tempdir().unwrap();
+    let config_home = dir.path().join("config");
+    let config_dir = config_home.join("tmux");
+    let sourced = dir.path().join("plugins.conf");
+    write_file(&config_dir.join("tmux.conf"), "source-file ~/plugins.conf\n");
+    write_file(&sourced, "set -g @plugin 'tmux-plugins/tmux-sensible'\n");
+
+    Command::cargo_bin("tmup")
+        .unwrap()
+        .args(["list", "--config-mode=mixed"])
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_DATA_HOME", dir.path().join("data"))
+        .env("XDG_STATE_HOME", dir.path().join("state"))
+        .env("HOME", dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("tmux-plugins/tmux-sensible"));
+}
+
+#[test]
 fn config_mode_cli_tmup_list_does_not_auto_create_missing_kdl() {
     let dir = tempdir().unwrap();
     let config_home = dir.path().join("config");

@@ -1,10 +1,16 @@
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use anyhow::{Context, Result};
 use glob::glob;
+use regex::Regex;
 
 use crate::model::{Config, Options, PluginSpec};
 use crate::state::resolve_home_dir;
+
+static TPM_PLUGIN_DECLARATION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[ \t]*set(?:-option)? +-g +@plugin(?: +|$)").expect("valid TPM plugin regex")
+});
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SourcedFile {
@@ -156,17 +162,25 @@ fn is_quiet_source_flag(token: &str) -> bool {
 }
 
 fn plugin_declaration(line: &str) -> Option<String> {
+    // Intentionally mirrors TPM's current parser: only `set -g @plugin ...`
+    // and `set-option -g @plugin ...` forms are treated as plugin declarations.
+    if !TPM_PLUGIN_DECLARATION_RE.is_match(line) {
+        return None;
+    }
+
     let tokens = tokenize_tmux_line(line);
-    if tokens.len() < 2 {
+    if tokens.len() < 4 {
         return None;
     }
 
-    if !matches!(tokens[0].as_str(), "set" | "set-option") {
+    if !matches!(tokens[0].as_str(), "set" | "set-option")
+        || tokens.get(1).map(String::as_str) != Some("-g")
+        || tokens.get(2).map(String::as_str) != Some("@plugin")
+    {
         return None;
     }
 
-    let index = tokens.iter().position(|token| token == "@plugin")?;
-    tokens.get(index + 1).cloned()
+    tokens.get(3).cloned()
 }
 
 fn parse_plugin_spec(raw: &str) -> Result<PluginSpec> {
@@ -225,6 +239,8 @@ fn tokenize_tmux_line(line: &str) -> Vec<String> {
         }
     }
 
+    // Keep TPM-style leniency here: unterminated quotes are treated as part of
+    // the final token instead of rejecting the line with a parse error.
     if !current.is_empty() {
         tokens.push(current);
     }
