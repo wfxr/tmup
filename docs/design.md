@@ -145,13 +145,13 @@ tmup supports two configuration-loading modes:
 - `pure`: load only `tmup.kdl`
 - `mixed`: load both sources and merge them
 
-The CLI surface is:
+The public mode selector is the `TMUP_CONFIG_MODE` environment variable:
 
 ```text
-tmup <command> [--tpm]
+TMUP_CONFIG_MODE=pure|mixed
 ```
 
-Default mode is `pure`. Passing `--tpm` selects `mixed`.
+Default mode is `pure`. Setting `TMUP_CONFIG_MODE=mixed` selects `mixed`.
 
 In `mixed` mode:
 
@@ -312,10 +312,10 @@ tmup list               # list plugin status
 
 The CLI target selector is the **remote plugin ID**. `name` is for display
 only. Local plugins do not participate in `sync` / `install` / `update` / `restore`.
-Every command that consumes configuration also accepts:
+Every public command that consumes configuration also reads:
 
 ```text
---tpm
+TMUP_CONFIG_MODE=pure|mixed
 ```
 
 ### 5.2 `init` (tmux startup path)
@@ -699,11 +699,15 @@ guaranteed.
 Users add to `.tmux.conf`:
 
 ```tmux
+set-environment -g TMUP_CONFIG_MODE mixed
 run-shell "tmup init"
 ```
 
-This is the only required integration point. tmup handles environment
-setup, option application, and plugin loading within the `init` command.
+This is the recommended integration point when adopting TPM compatibility,
+because `tmup init` and interactive `tmup` commands inside tmux will then
+agree on the same resolved mode after the tmux server is restarted. tmup
+still handles environment setup, option application, and plugin loading
+within the `init` command.
 
 ---
 

@@ -292,8 +292,8 @@ fn default_tmup_config_template() -> &'static str {
 // Add plugins here, for example:
 // plugin "tmux-plugins/tmux-sensible"
 //
-// If you are migrating from TPM, you can temporarily use:
-// tmup <command> --tpm
+// If you are migrating from TPM, you can set:
+// TMUP_CONFIG_MODE=mixed
 
 options {
     auto-install #true

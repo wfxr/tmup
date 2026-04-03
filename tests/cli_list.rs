@@ -162,7 +162,8 @@ fn list_mixed_stale_lock_hint_preserves_config_mode() {
 
     Command::cargo_bin("tmup")
         .unwrap()
-        .args(["list", "--tpm"])
+        .arg("list")
+        .env("TMUP_CONFIG_MODE", "mixed")
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -170,7 +171,7 @@ fn list_mixed_stale_lock_hint_preserves_config_mode() {
         .assert()
         .success()
         .stderr(predicate::str::contains(
-            "warning: lock metadata is stale relative to config; run `tmup --tpm sync`",
+            "warning: lock metadata is stale relative to config; run `tmup sync`",
         ));
 }
 
@@ -244,7 +245,8 @@ fn list_mixed_preserves_tpm_branch_suffix_in_source_display() {
 
     Command::cargo_bin("tmup")
         .unwrap()
-        .args(["list", "--tpm"])
+        .arg("list")
+        .env("TMUP_CONFIG_MODE", "mixed")
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
