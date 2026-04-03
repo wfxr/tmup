@@ -684,7 +684,8 @@ fn init_parent_bootstrap_uses_resolved_tpm_config_path_in_mixed_mode() {
 
     let output = Command::cargo_bin("tmup")
         .unwrap()
-        .args(["init", "--tpm"])
+        .arg("init")
+        .env("TMUP_CONFIG_MODE", "mixed")
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -721,7 +722,8 @@ fn init_parent_bootstrap_marks_absent_tpm_config_as_resolved_none() {
 
     let output = Command::cargo_bin("tmup")
         .unwrap()
-        .args(["init", "--tpm"])
+        .arg("init")
+        .env("TMUP_CONFIG_MODE", "mixed")
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))

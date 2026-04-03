@@ -14,7 +14,8 @@ fn config_mode_cli_list_mixed_reads_tpm_config_without_scaffolding_tmup_kdl() {
 
     Command::cargo_bin("tmup")
         .unwrap()
-        .args(["list", "--tpm"])
+        .arg("list")
+        .env("TMUP_CONFIG_MODE", "mixed")
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -40,7 +41,8 @@ fn config_mode_cli_list_mixed_reads_tilde_sourced_tpm_file() {
 
     Command::cargo_bin("tmup")
         .unwrap()
-        .args(["list", "--tpm"])
+        .arg("list")
+        .env("TMUP_CONFIG_MODE", "mixed")
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -81,7 +83,8 @@ fn config_mode_cli_list_mixed_rejects_missing_tmup_config_override() {
 
     Command::cargo_bin("tmup")
         .unwrap()
-        .args(["list", "--tpm"])
+        .arg("list")
+        .env("TMUP_CONFIG_MODE", "mixed")
         .env("TMUP_CONFIG", &override_kdl)
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", dir.path().join("data"))
@@ -128,7 +131,8 @@ fn config_mode_cli_mixed_works_with_absolute_xdg_without_home() {
 
     Command::cargo_bin("tmup")
         .unwrap()
-        .args(["list", "--tpm"])
+        .arg("list")
+        .env("TMUP_CONFIG_MODE", "mixed")
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -146,7 +150,8 @@ fn config_mode_cli_mixed_without_tpm_config_still_works_without_home() {
 
     Command::cargo_bin("tmup")
         .unwrap()
-        .args(["list", "--tpm"])
+        .arg("list")
+        .env("TMUP_CONFIG_MODE", "mixed")
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -166,7 +171,8 @@ fn config_mode_cli_mixed_warns_when_home_is_unavailable_for_tpm_discovery() {
 
     Command::cargo_bin("tmup")
         .unwrap()
-        .args(["list", "--tpm"])
+        .arg("list")
+        .env("TMUP_CONFIG_MODE", "mixed")
         .env("TMUP_CONFIG", &config_path)
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -199,7 +205,8 @@ fn config_mode_cli_list_mixed_warns_and_prefers_kdl() {
 
     Command::cargo_bin("tmup")
         .unwrap()
-        .args(["list", "--tpm"])
+        .arg("list")
+        .env("TMUP_CONFIG_MODE", "mixed")
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -232,7 +239,8 @@ fn config_mode_cli_sync_mixed_writes_lockfile_next_to_kdl_with_kdl_precedence() 
 
     Command::cargo_bin("tmup")
         .unwrap()
-        .args(["sync", "--tpm"])
+        .arg("sync")
+        .env("TMUP_CONFIG_MODE", "mixed")
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -264,7 +272,8 @@ fn config_mode_cli_sync_mixed_scaffolds_tmup_kdl_when_only_tpm_config_exists() {
 
     Command::cargo_bin("tmup")
         .unwrap()
-        .args(["sync", "--tpm"])
+        .arg("sync")
+        .env("TMUP_CONFIG_MODE", "mixed")
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_DATA_HOME", dir.path().join("data"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
@@ -282,4 +291,25 @@ fn config_mode_cli_sync_mixed_scaffolds_tmup_kdl_when_only_tpm_config_exists() {
 
     let lock = std::fs::read_to_string(config_dir.join("tmup.lock")).unwrap();
     assert!(lock.contains(r#""example.com/test/plugin""#), "{lock}");
+}
+
+#[test]
+fn config_mode_cli_rejects_invalid_env_value() {
+    let dir = tempdir().unwrap();
+    let config_home = dir.path().join("config");
+    std::fs::create_dir_all(config_home.join("tmux")).unwrap();
+
+    Command::cargo_bin("tmup")
+        .unwrap()
+        .arg("list")
+        .env("TMUP_CONFIG_MODE", "bogus")
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_DATA_HOME", dir.path().join("data"))
+        .env("XDG_STATE_HOME", dir.path().join("state"))
+        .env("HOME", dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("TMUP_CONFIG_MODE"))
+        .stderr(predicate::str::contains("pure"))
+        .stderr(predicate::str::contains("mixed"));
 }

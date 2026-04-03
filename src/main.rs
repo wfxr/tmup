@@ -18,9 +18,6 @@ use tmup::{loader, lockfile, plugin, termui, tmux};
 #[derive(Debug, Parser)]
 #[command(name = "tmup", about = "Modern tmux plugin manager")]
 struct Cli {
-    #[arg(long, global = true, help = "Enable TPM compatibility mode")]
-    tpm: bool,
-
     #[command(subcommand)]
     command: Commands,
 }
@@ -93,42 +90,43 @@ struct InitInvocation {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    let requested_config_mode = if cli.tpm { ConfigMode::Mixed } else { ConfigMode::Pure };
-
-    let result = match cli.command {
-        Commands::Init {
-            bootstrap,
-            ui_child,
-            wait_channel,
-            config_path,
-            tpm_config_path,
-            no_tpm_config,
-            config_mode,
-            data_root,
-            state_root,
-        } => {
-            run_init(
-                InitInvocation {
-                    bootstrap,
-                    ui_child,
-                    wait_channel,
-                    config_path,
-                    tpm_config_path,
-                    no_tpm_config,
-                    config_mode,
-                    data_root,
-                    state_root,
-                },
-                requested_config_mode,
-            )
-            .await
-        }
-        Commands::Install { id } => run_install(id, requested_config_mode).await,
-        Commands::Sync { id } => run_sync(id, requested_config_mode).await,
-        Commands::Update { id } => run_update(id, requested_config_mode).await,
-        Commands::Restore { id } => run_restore(id, requested_config_mode).await,
-        Commands::Clean => run_clean(requested_config_mode).await,
-        Commands::List { verbose } => run_list(verbose, requested_config_mode),
+    let result = match resolve_requested_config_mode() {
+        Ok(requested_config_mode) => match cli.command {
+            Commands::Init {
+                bootstrap,
+                ui_child,
+                wait_channel,
+                config_path,
+                tpm_config_path,
+                no_tpm_config,
+                config_mode,
+                data_root,
+                state_root,
+            } => {
+                run_init(
+                    InitInvocation {
+                        bootstrap,
+                        ui_child,
+                        wait_channel,
+                        config_path,
+                        tpm_config_path,
+                        no_tpm_config,
+                        config_mode,
+                        data_root,
+                        state_root,
+                    },
+                    requested_config_mode,
+                )
+                .await
+            }
+            Commands::Install { id } => run_install(id, requested_config_mode).await,
+            Commands::Sync { id } => run_sync(id, requested_config_mode).await,
+            Commands::Update { id } => run_update(id, requested_config_mode).await,
+            Commands::Restore { id } => run_restore(id, requested_config_mode).await,
+            Commands::Clean => run_clean(requested_config_mode).await,
+            Commands::List { verbose } => run_list(verbose, requested_config_mode),
+        },
+        Err(e) => Err(e),
     };
 
     match result {
@@ -139,6 +137,27 @@ async fn main() -> ExitCode {
                 eprintln!("tmup: {e:#}");
             }
             ExitCode::FAILURE
+        }
+    }
+}
+
+fn resolve_requested_config_mode() -> Result<ConfigMode> {
+    match std::env::var("TMUP_CONFIG_MODE") {
+        Ok(value) => parse_config_mode_env(&value),
+        Err(std::env::VarError::NotPresent) => Ok(ConfigMode::Pure),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            anyhow::bail!("TMUP_CONFIG_MODE must be valid UTF-8 and one of 'pure' or 'mixed'")
+        }
+    }
+}
+
+fn parse_config_mode_env(value: &str) -> Result<ConfigMode> {
+    let normalized = value.trim();
+    match normalized {
+        "pure" => Ok(ConfigMode::Pure),
+        "mixed" => Ok(ConfigMode::Mixed),
+        _ => {
+            anyhow::bail!("invalid TMUP_CONFIG_MODE={value:?}: expected 'pure' or 'mixed'")
         }
     }
 }
@@ -224,11 +243,8 @@ fn apply_config_with_tpm_policy(
     })
 }
 
-fn stale_lock_sync_hint(config_mode: ConfigMode) -> &'static str {
-    match config_mode {
-        ConfigMode::Pure => "tmup sync",
-        ConfigMode::Mixed => "tmup --tpm sync",
-    }
+fn stale_lock_sync_hint() -> &'static str {
+    "tmup sync"
 }
 
 fn load_lockfile(paths: &Paths) -> Result<lockfile::LockFile> {
@@ -736,7 +752,7 @@ fn run_list(verbose: bool, config_mode: ConfigMode) -> Result<()> {
     if sync::lock_is_stale(&cfg, &lock) {
         eprintln!(
             "warning: lock metadata is stale relative to config; run `{}`",
-            stale_lock_sync_hint(config_mode)
+            stale_lock_sync_hint()
         );
     }
 
@@ -885,7 +901,7 @@ mod tests {
     use tmup::config_mode::{ConfigMode, TpmConfigPolicy};
     use tmup::state::Paths;
 
-    use super::{Cli, Commands, apply_config_with_tpm_policy, render_table};
+    use super::{Cli, Commands, apply_config_with_tpm_policy, parse_config_mode_env, render_table};
 
     fn adapt(text: &str, choice: ColorChoice) -> String {
         let mut stream = AutoStream::new(Vec::new(), choice);
@@ -918,10 +934,24 @@ mod tests {
     }
 
     #[test]
-    fn cli_parses_tpm_flag_before_subcommand() {
-        let cli = Cli::try_parse_from(["tmup", "--tpm", "list"]).unwrap();
-        assert!(cli.tpm);
+    fn cli_parses_list_subcommand_without_public_mode_flags() {
+        let cli = Cli::try_parse_from(["tmup", "list"]).unwrap();
         assert!(matches!(cli.command, Commands::List { .. }));
+    }
+
+    #[test]
+    fn parse_config_mode_env_accepts_supported_values() {
+        assert_eq!(parse_config_mode_env("pure").unwrap(), ConfigMode::Pure);
+        assert_eq!(parse_config_mode_env("mixed").unwrap(), ConfigMode::Mixed);
+        assert_eq!(parse_config_mode_env(" mixed ").unwrap(), ConfigMode::Mixed);
+    }
+
+    #[test]
+    fn parse_config_mode_env_rejects_invalid_values() {
+        let err = parse_config_mode_env("bogus").unwrap_err();
+        assert!(err.to_string().contains("TMUP_CONFIG_MODE"));
+        assert!(err.to_string().contains("pure"));
+        assert!(err.to_string().contains("mixed"));
     }
 
     #[test]
