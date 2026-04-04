@@ -194,12 +194,16 @@ impl<W: Write> LiveRenderer<W> {
             return;
         }
 
-        let up = self.frame_lines.len().saturating_sub(row) as u16;
-        let _ = self.writer.queue(cursor::MoveUp(up));
+        let up = self.frame_lines.len().saturating_sub(row.saturating_add(1)) as u16;
+        if up > 0 {
+            let _ = self.writer.queue(cursor::MoveUp(up));
+        }
         let _ = self.writer.queue(cursor::MoveToColumn(0));
         let _ = self.writer.queue(Clear(ClearType::CurrentLine));
         let _ = self.writer.queue(Print(rendered));
-        let _ = self.writer.queue(cursor::MoveDown(up));
+        if up > 0 {
+            let _ = self.writer.queue(cursor::MoveDown(up));
+        }
         let _ = self.writer.queue(cursor::MoveToColumn(0));
         let _ = self.writer.flush();
     }
@@ -232,6 +236,10 @@ impl LiveRenderer<Vec<u8>> {
 
     fn frozen_for_tests(&self) -> bool {
         self.frozen
+    }
+
+    fn output_for_tests(&self) -> String {
+        String::from_utf8_lossy(&self.writer).to_string()
     }
 }
 
@@ -313,5 +321,22 @@ mod tests {
         let after_finish_lines = transcript.render_lines(&snapshot, &after_finish_event);
         renderer.write_reducer_lines(&snapshot, &after_finish_event, after_finish_lines);
         assert_eq!(renderer.frame_line_for_tests(plugin_a_row).unwrap(), frozen_line);
+    }
+
+    #[test]
+    fn live_renderer_updates_target_row_without_overshoot() {
+        let snapshot = ProgressSnapshot::from_ordered_plugins(vec![
+            ("github.com/acme/a".to_string(), "plugin-a".to_string()),
+            ("github.com/acme/b".to_string(), "plugin-b".to_string()),
+        ]);
+        let mut renderer = LiveRenderer::new_for_tests(Vec::new(), 120);
+        renderer.bootstrap(&snapshot);
+
+        renderer.write_row(1, "updated-row".to_string());
+        let output = renderer.output_for_tests();
+        assert!(output.contains("\u{1b}[1A"), "output: {output:?}");
+        assert!(output.contains("\u{1b}[1B"), "output: {output:?}");
+        assert!(!output.contains("\u{1b}[2A"), "output: {output:?}");
+        assert!(!output.contains("\u{1b}[2B"), "output: {output:?}");
     }
 }
