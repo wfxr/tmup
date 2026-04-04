@@ -3,7 +3,7 @@ use crate::progress::model::{
     TrackingSelector,
 };
 use crate::progress::reducer::{ProgressEvent, ProgressSnapshot};
-use crate::termui::Accent;
+use crate::termui::{self, Accent};
 
 #[cfg(test)]
 const ACTION_WIDTH: usize = 12;
@@ -22,6 +22,11 @@ pub(crate) struct DisplayLine {
 }
 
 impl DisplayLine {
+    /// Render this display line with styled label/message formatting.
+    pub(crate) fn styled(&self, action_width: usize) -> String {
+        termui::format_styled_labeled_line(&self.label, action_width, &self.message, self.accent)
+    }
+
     #[cfg(test)]
     fn plain(&self) -> String {
         crate::termui::format_plain_labeled_line(&self.label, ACTION_WIDTH, &self.message)
