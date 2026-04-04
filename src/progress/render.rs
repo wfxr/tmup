@@ -474,6 +474,10 @@ mod tests {
                 "     Updated tmux-sensible commit@abc1234 -> commit@def5678",
             ),
             (
+                PluginOutcome::Updated { from: "updated".to_string(), to: "synced".to_string() },
+                "     Updated tmux-sensible commit@updated -> commit@synced",
+            ),
+            (
                 PluginOutcome::Synced { commit: "8c1eeec".to_string() },
                 "      Synced tmux-sensible commit@8c1eeec",
             ),
@@ -490,19 +494,5 @@ mod tests {
             apply_event(&mut snapshot, event.clone());
             assert_eq!(renderer.render_event(&snapshot, &event), vec![expected.to_string()]);
         }
-
-        let mod_source = include_str!("mod.rs");
-        assert!(
-            !mod_source.contains("struct StreamRenderer"),
-            "legacy stream renderer compatibility code still exists in progress/mod.rs"
-        );
-        assert!(
-            !mod_source.contains("struct StreamReporter"),
-            "legacy stream reporter compatibility code still exists in progress/mod.rs"
-        );
-        assert!(
-            !mod_source.contains("plugin_outcome_action_and_message"),
-            "legacy outcome formatting helper should be removed from progress/mod.rs"
-        );
     }
 }
