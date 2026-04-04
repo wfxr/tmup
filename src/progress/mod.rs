@@ -175,42 +175,17 @@ pub fn is_reported_error(err: &anyhow::Error) -> bool {
 pub fn create_reporter(
     paths: &Paths,
     command: &'static str,
-    labels: HashMap<String, String>,
+    config: &Config,
+    target_id: Option<&str>,
 ) -> Box<dyn ProgressReporter> {
-    Box::new(reporter::ReducerReporter::new(&paths.logs_root, command, labels))
+    let catalog = DisplayCatalog::from_config(config, target_id);
+    Box::new(reporter::ReducerReporter::new(&paths.logs_root, command, catalog))
 }
 
 /// Build stable display labels before progress output begins.
 pub fn build_display_labels(config: &Config, target_id: Option<&str>) -> HashMap<String, String> {
-    let mut labels = HashMap::new();
-    let mut by_name: HashMap<&str, Vec<&str>> = HashMap::new();
-    let remote_plugins: Vec<_> = config
-        .plugins
-        .iter()
-        .filter_map(|plugin| {
-            let id = plugin.remote_id()?;
-            target_id.is_none_or(|target| target == id).then_some((id, plugin.name.as_str()))
-        })
-        .collect();
-
-    for (id, name) in &remote_plugins {
-        by_name.entry(name).or_default().push(id);
-    }
-
-    for (id, name) in remote_plugins {
-        let colliding_ids = &by_name[name];
-        let label = if colliding_ids.len() == 1 {
-            name.to_string()
-        } else {
-            let short = short_remote_id(id);
-            let short_is_unique =
-                colliding_ids.iter().filter(|other| short_remote_id(other) == short).count() == 1;
-            if short_is_unique { short.to_string() } else { id.to_string() }
-        };
-        labels.insert(id.to_string(), label);
-    }
-
-    labels
+    let catalog = DisplayCatalog::from_config(config, target_id);
+    catalog.iter().map(|plugin| (plugin.id.clone(), plugin.label.clone())).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -267,10 +242,6 @@ pub fn summarize_error(err: &anyhow::Error) -> (String, String) {
     let detail = format!("{err:?}");
     let summary = sanitize_summary(&format!("{err}"), SUMMARY_MAX_LEN);
     (summary, detail)
-}
-
-fn short_remote_id(id: &str) -> &str {
-    id.split_once('/').map(|(_, tail)| tail).unwrap_or(id)
 }
 
 #[cfg(test)]

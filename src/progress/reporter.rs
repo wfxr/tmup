@@ -1,9 +1,7 @@
-use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Mutex;
 
-use crate::model::{Config, Options, PluginSource, PluginSpec, Tracking};
 use crate::progress::catalog::DisplayCatalog;
 use crate::progress::log::DetailLog;
 use crate::progress::reducer::{self, ProgressSnapshot};
@@ -79,8 +77,8 @@ pub(crate) struct ReducerReporter<W: Write + Send> {
 
 impl ReducerReporter<anstream::AutoStream<std::io::Stderr>> {
     /// Create a reducer-driven reporter that writes to stderr.
-    pub(crate) fn new(logs_root: &Path, command: &str, labels: HashMap<String, String>) -> Self {
-        Self::new_with_writer(logs_root, command, labels, anstream::stderr())
+    pub(crate) fn new(logs_root: &Path, command: &str, catalog: DisplayCatalog) -> Self {
+        Self::new_with_writer(logs_root, command, catalog, anstream::stderr())
     }
 }
 
@@ -88,10 +86,9 @@ impl<W: Write + Send> ReducerReporter<W> {
     fn new_with_writer(
         logs_root: &Path,
         command: &str,
-        labels: HashMap<String, String>,
+        catalog: DisplayCatalog,
         writer: W,
     ) -> Self {
-        let catalog = display_catalog_from_labels(&labels);
         let snapshot = snapshot_from_catalog(&catalog);
         Self {
             state: Mutex::new(ReporterState {
@@ -201,31 +198,10 @@ impl<W: Write + Send> Drop for ReducerReporter<W> {
     }
 }
 
-fn display_catalog_from_labels(labels: &HashMap<String, String>) -> DisplayCatalog {
-    let mut entries: Vec<_> = labels.iter().collect();
-    entries.sort_by_key(|(id, _)| *id);
-    let plugins = entries
-        .into_iter()
-        .map(|(id, label)| PluginSpec {
-            source: PluginSource::Remote {
-                raw: id.clone(),
-                id: id.clone(),
-                clone_url: format!("https://{id}.git"),
-            },
-            name: label.clone(),
-            opt_prefix: "@plugin".to_string(),
-            tracking: Tracking::DefaultBranch,
-            build: None,
-            opts: Vec::new(),
-        })
-        .collect();
-    let config = Config { options: Options::default(), plugins };
-    DisplayCatalog::from_config(&config, None)
-}
-
 fn snapshot_from_catalog(catalog: &DisplayCatalog) -> ProgressSnapshot {
-    let labels = catalog.iter().map(|plugin| (plugin.id.clone(), plugin.label.clone())).collect();
-    ProgressSnapshot::from_labels(labels)
+    let plugins =
+        catalog.iter().map(|plugin| (plugin.id.clone(), plugin.label.clone())).collect::<Vec<_>>();
+    ProgressSnapshot::from_ordered_plugins(plugins)
 }
 
 #[cfg(test)]
@@ -233,10 +209,10 @@ impl ReducerReporter<Vec<u8>> {
     fn new_with_writer_for_tests(
         logs_root: &Path,
         command: &str,
-        labels: HashMap<String, String>,
+        catalog: DisplayCatalog,
         writer: Vec<u8>,
     ) -> Self {
-        Self::new_with_writer(logs_root, command, labels, writer)
+        Self::new_with_writer(logs_root, command, catalog, writer)
     }
 
     fn snapshot_and_output_for_tests(&self) -> (ProgressSnapshot, String) {
@@ -248,20 +224,42 @@ impl ReducerReporter<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::ReducerReporter;
+    use crate::model::{Config, Options, PluginSource, PluginSpec, Tracking};
+    use crate::progress::catalog::DisplayCatalog;
     use crate::progress::model::PluginStageDetail;
     use crate::progress::{OperationStage, ProgressEvent, ProgressReporter, Stage};
+
+    fn remote_plugin(raw: &str, id: &str, name: &str) -> PluginSpec {
+        PluginSpec {
+            source: PluginSource::Remote {
+                raw: raw.to_string(),
+                id: id.to_string(),
+                clone_url: format!("https://{id}.git"),
+            },
+            name: name.to_string(),
+            opt_prefix: "@plugin".to_string(),
+            tracking: Tracking::DefaultBranch,
+            build: None,
+            opts: Vec::new(),
+        }
+    }
 
     #[test]
     fn reporter_finishes_once_and_logs_failures() {
         let dir = tempfile::tempdir().unwrap();
-        let mut labels = HashMap::new();
-        labels.insert("github.com/tmux-plugins/tmux-sensible".to_string(), "tmux-sensible".into());
+        let config = Config {
+            options: Options::default(),
+            plugins: vec![remote_plugin(
+                "tmux-plugins/tmux-sensible",
+                "github.com/tmux-plugins/tmux-sensible",
+                "tmux-sensible",
+            )],
+        };
+        let catalog = DisplayCatalog::from_config(&config, None);
 
         let reporter =
-            ReducerReporter::new_with_writer_for_tests(dir.path(), "update", labels, Vec::new());
+            ReducerReporter::new_with_writer_for_tests(dir.path(), "update", catalog, Vec::new());
 
         reporter.report(ProgressEvent::OperationStart { command: "update" });
         reporter.report(ProgressEvent::OperationStage { stage: OperationStage::WaitingForLock });
@@ -309,5 +307,24 @@ mod tests {
             log.contains("clone_url: https://github.com/tmux-plugins/tmux-sensible.git"),
             "log: {log}"
         );
+    }
+
+    #[test]
+    fn reporter_preserves_catalog_slot_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config {
+            options: Options::default(),
+            plugins: vec![
+                remote_plugin("zed/tmux-z", "github.com/zed/tmux-z", "tmux-z"),
+                remote_plugin("alpha/tmux-a", "github.com/alpha/tmux-a", "tmux-a"),
+            ],
+        };
+        let catalog = DisplayCatalog::from_config(&config, None);
+        let reporter =
+            ReducerReporter::new_with_writer_for_tests(dir.path(), "update", catalog, Vec::new());
+
+        let (snapshot, _) = reporter.snapshot_and_output_for_tests();
+        let ordered_ids = snapshot.plugins.iter().map(|p| p.id.as_str()).collect::<Vec<_>>();
+        assert_eq!(ordered_ids, vec!["github.com/zed/tmux-z", "github.com/alpha/tmux-a"]);
     }
 }
