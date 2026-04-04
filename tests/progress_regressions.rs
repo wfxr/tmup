@@ -338,6 +338,22 @@ fn resolve_real_git() -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
+fn assert_no_live_cursor_sequences(stderr: &str) {
+    for (sequence, description) in [
+        ("\x1b[?25l", "hide-cursor"),
+        ("\x1b[?25h", "show-cursor"),
+        ("\x1b[2K", "clear-line"),
+        ("\x1b[A", "cursor-up"),
+        ("\x1b[B", "cursor-down"),
+        ("\r", "carriage-return"),
+    ] {
+        assert!(
+            !stderr.contains(sequence),
+            "captured non-TTY stderr must stay append-only and not include {description} sequences, got:\n{stderr}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn sync_surfaces_lockfile_write_failure() {
@@ -524,8 +540,16 @@ fn init_ui_child_stops_after_sync_failure() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Fetching"), "stderr should show sync started, got:\n{stderr}");
     assert!(
-        !stderr.contains("Loading tmux applying load plan"),
-        "init should not show a tmux-loading stage after sync failure, got:\n{stderr}"
+        stderr.contains("Resolving"),
+        "stderr should include richer structured stage lines, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Checking out"),
+        "stderr should include checkout stage lines, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Loading tmux applying load plan"),
+        "init ui-child should continue into tmux loading for append-only failure reporting, got:\n{stderr}"
     );
     assert!(
         stderr.contains("Failed operation")
@@ -534,6 +558,7 @@ fn init_ui_child_stops_after_sync_failure() {
             || stderr.contains("Permission denied"),
         "stderr should show an operation-level failure, got:\n{stderr}"
     );
+    assert_no_live_cursor_sequences(&stderr);
 }
 
 #[test]
@@ -583,9 +608,14 @@ fn init_ui_child_stops_when_remote_is_missing_during_fetch() {
         "stderr should expose the clone/fetch failure, got:\n{stderr}"
     );
     assert!(
-        !stderr.contains("Loading tmux applying load plan"),
-        "init should skip tmux loading when sync cannot fetch the remote, got:\n{stderr}"
+        stderr.contains("Loading tmux applying load plan"),
+        "init should still emit tmux-loading stage text in append-only mode, got:\n{stderr}"
     );
+    assert!(
+        stderr.contains("Failed plugin"),
+        "stderr should show plugin-level failure lines from structured events, got:\n{stderr}"
+    );
+    assert_no_live_cursor_sequences(&stderr);
 }
 
 #[test]
@@ -1378,9 +1408,10 @@ plugin "https://example.com/test/plugin.git" build="exit 1"
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Fetching"), "stderr:\n{stderr}");
     assert!(
-        !stderr.contains("Loading tmux applying load plan"),
-        "tmux loading stage should stay silent even when init continues after plugin failures, got:\n{stderr}"
+        stderr.contains("Loading tmux applying load plan"),
+        "tmux loading stage should be visible in append-only mode when init continues after plugin failures, got:\n{stderr}"
     );
+    assert_no_live_cursor_sequences(&stderr);
 
     let log = std::fs::read_to_string(&tmux_log).unwrap_or_default();
     let has_plugin_manager_env = log
