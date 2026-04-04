@@ -22,7 +22,7 @@ pub mod planner;
 pub mod plugin;
 /// Bounded concurrent prepare executor for remote plugin operations.
 pub mod prepare;
-/// Progress event types, reporter trait, and stream renderer.
+/// Progress event types plus reducer-driven reporter and renderers.
 pub mod progress;
 /// Persistent repo cache management and staging preparation.
 pub mod repo;

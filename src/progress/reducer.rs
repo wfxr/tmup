@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use crate::progress::model::{OperationStage, PluginOutcome, PluginStage, PluginStageDetail};
@@ -93,6 +91,42 @@ pub(crate) struct ProgressSnapshot {
 }
 
 impl ProgressSnapshot {
+    /// Construct a snapshot with fixed plugin slots from display labels.
+    pub(crate) fn from_labels(labels: HashMap<String, String>) -> Self {
+        let mut pairs: Vec<_> = labels.into_iter().collect();
+        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+        let mut plugins = Vec::with_capacity(pairs.len());
+        let mut plugin_index = HashMap::with_capacity(pairs.len());
+        for (slot, (id, label)) in pairs.into_iter().enumerate() {
+            plugin_index.insert(id.clone(), slot);
+            plugins.push(PluginSnapshot { id, label, slot, state: PluginDisplayState::Pending });
+        }
+
+        Self { operation: OperationSnapshot::default(), plugins, plugin_index }
+    }
+
+    /// Ensure a plugin slot exists for `id`, adding a pending entry if absent.
+    pub(crate) fn ensure_plugin(&mut self, id: &str, label: &str) {
+        if self.plugin_index.contains_key(id) {
+            return;
+        }
+        let slot = self.plugins.len();
+        let id = id.to_string();
+        self.plugin_index.insert(id.clone(), slot);
+        self.plugins.push(PluginSnapshot {
+            id,
+            label: label.to_string(),
+            slot,
+            state: PluginDisplayState::Pending,
+        });
+    }
+
+    /// Return plugin snapshot for `id`.
+    pub(crate) fn plugin(&self, id: &str) -> Option<&PluginSnapshot> {
+        self.plugin_index.get(id).and_then(|idx| self.plugins.get(*idx))
+    }
+
     /// Construct a snapshot with fixed plugin slots for reducer tests.
     #[cfg(test)]
     pub(crate) fn new_for_tests<const N: usize>(plugins: [(&str, &str, usize); N]) -> Self {
