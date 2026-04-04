@@ -471,8 +471,7 @@ async fn run_init_child(
     let cfg = applied.config;
     emit_config_warnings(&applied.warnings);
 
-    let labels = progress::build_display_labels(&cfg, None);
-    let reporter = progress::create_reporter(&paths, "init", labels);
+    let reporter = progress::create_reporter(&paths, "init", &cfg, None);
     reporter.report(ProgressEvent::OperationStart { command: "init" });
     reporter.report(ProgressEvent::OperationStage { stage: OperationStage::WaitingForLock });
 
@@ -579,8 +578,7 @@ async fn run_install(id: Option<String>, config_mode: ConfigMode) -> Result<()> 
     let mut lock = load_lockfile(&paths)?;
     paths.ensure_dirs()?;
 
-    let labels = progress::build_display_labels(&cfg, id.as_deref());
-    let reporter = progress::create_reporter(&paths, "install", labels);
+    let reporter = progress::create_reporter(&paths, "install", &cfg, id.as_deref());
     reporter.report(ProgressEvent::OperationStart { command: "install" });
 
     let result = async {
@@ -614,8 +612,7 @@ async fn run_sync(id: Option<String>, config_mode: ConfigMode) -> Result<()> {
     let mut lock = load_lockfile(&paths)?;
     paths.ensure_dirs()?;
 
-    let labels = progress::build_display_labels(&cfg, id.as_deref());
-    let reporter = progress::create_reporter(&paths, "sync", labels);
+    let reporter = progress::create_reporter(&paths, "sync", &cfg, id.as_deref());
     reporter.report(ProgressEvent::OperationStart { command: "sync" });
 
     let result = async {
@@ -647,8 +644,7 @@ async fn run_update(id: Option<String>, config_mode: ConfigMode) -> Result<()> {
     let mut lock = load_lockfile(&paths)?;
     paths.ensure_dirs()?;
 
-    let labels = progress::build_display_labels(&cfg, id.as_deref());
-    let reporter = progress::create_reporter(&paths, "update", labels);
+    let reporter = progress::create_reporter(&paths, "update", &cfg, id.as_deref());
     reporter.report(ProgressEvent::OperationStart { command: "update" });
 
     let result = async {
@@ -682,8 +678,7 @@ async fn run_restore(id: Option<String>, config_mode: ConfigMode) -> Result<()> 
     let mut lock = load_lockfile(&paths)?;
     paths.ensure_dirs()?;
 
-    let labels = progress::build_display_labels(&cfg, id.as_deref());
-    let reporter = progress::create_reporter(&paths, "restore", labels);
+    let reporter = progress::create_reporter(&paths, "restore", &cfg, id.as_deref());
     reporter.report(ProgressEvent::OperationStart { command: "restore" });
 
     let result = async {
