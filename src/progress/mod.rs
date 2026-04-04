@@ -9,6 +9,22 @@ use crate::model::Config;
 use crate::state::Paths;
 use crate::termui::{self, Accent};
 
+/// Stable plugin display-catalog structures for structured progress.
+pub mod catalog;
+/// Structured progress event/value types for reducer/renderer evolution.
+pub mod model;
+/// Deterministic reducer and snapshot state for structured progress.
+pub mod reducer;
+
+#[allow(unused_imports)]
+pub(crate) use catalog::{DisplayCatalog, DisplayPlugin};
+#[allow(unused_imports)]
+pub(crate) use reducer::{
+    PluginDisplayState as StructuredPluginDisplayState, PluginSnapshot as StructuredPluginSnapshot,
+    ProgressEvent as StructuredProgressEvent, ProgressSnapshot as StructuredProgressSnapshot,
+    apply_event as apply_structured_event,
+};
+
 const SUMMARY_MAX_LEN: usize = 80;
 const ACTION_WIDTH: usize = 12;
 
