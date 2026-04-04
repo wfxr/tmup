@@ -42,8 +42,9 @@ script-friendly behavior with reliable exit codes.
 4. **No implicit updates during init**: startup may install missing plugins
    but never advances existing plugin versions. Known-failed build tuples are
    still recorded, but may be retried during the implicit sync phase.
-5. **No TUI in MVP**: the interactive terminal UI is deferred. CLI commands
-   and `list` output cover all current use cases.
+5. **No full-screen TUI in MVP**: tmup supports a live terminal progress view
+   for long-running operations, but does not provide an interactive full-screen
+   TUI.
 6. **No hooks, registry, or dependency resolution in MVP**: these belong to
    future extensions.
 7. **No support for out-of-band filesystem manipulation inside the managed

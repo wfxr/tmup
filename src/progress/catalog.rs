@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use crate::model::Config;
@@ -73,11 +71,13 @@ impl DisplayCatalog {
     }
 
     /// Resolve the stable slot index for an id.
+    #[cfg(test)]
     pub(crate) fn slot_for(&self, id: &str) -> Option<usize> {
         self.by_id.get(id).copied()
     }
 
     /// Return the number of plugins in this display catalog.
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.plugins.len()
     }
