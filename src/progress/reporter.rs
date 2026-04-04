@@ -3,6 +3,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use crate::progress::catalog::DisplayCatalog;
+use crate::progress::live::LiveRenderer;
 use crate::progress::log::DetailLog;
 use crate::progress::reducer::{self, ProgressSnapshot};
 use crate::progress::render::{DisplayLine, TranscriptRenderer};
@@ -20,12 +21,7 @@ impl<W: Write> TranscriptSink<W> {
 
     fn write_lines(&mut self, lines: Vec<DisplayLine>) {
         for line in lines {
-            let rendered = termui::format_styled_labeled_line(
-                &line.label,
-                ACTION_WIDTH,
-                &line.message,
-                line.accent,
-            );
+            let rendered = line.styled(ACTION_WIDTH);
             let _ = writeln!(self.writer, "{rendered}");
         }
     }
@@ -61,8 +57,58 @@ impl<W: Write> TranscriptSink<W> {
     }
 }
 
+enum ReporterSink<W: Write> {
+    Transcript(TranscriptSink<W>),
+    Live(LiveRenderer<W>),
+}
+
+impl<W: Write> ReporterSink<W> {
+    fn write_reducer_lines(
+        &mut self,
+        snapshot: &ProgressSnapshot,
+        event: &reducer::ProgressEvent,
+        lines: Vec<DisplayLine>,
+    ) {
+        match self {
+            Self::Transcript(sink) => sink.write_lines(lines),
+            Self::Live(renderer) => renderer.write_reducer_lines(snapshot, event, lines),
+        }
+    }
+
+    fn write_operation_failure(&mut self, snapshot: &ProgressSnapshot, summary: &str) {
+        match self {
+            Self::Transcript(sink) => sink.write_operation_failure(summary),
+            Self::Live(renderer) => renderer.write_operation_failure(snapshot, summary),
+        }
+    }
+
+    fn finish(
+        &mut self,
+        snapshot: &ProgressSnapshot,
+        command: Option<&'static str>,
+        details_path: Option<&Path>,
+    ) {
+        match self {
+            Self::Transcript(sink) => {
+                if matches!(command, Some("init")) {
+                    sink.write_init_finished();
+                }
+                if let Some(path) = details_path {
+                    sink.write_details_path(path);
+                }
+            }
+            Self::Live(renderer) => renderer.finish(snapshot, command, details_path),
+        }
+    }
+}
+
+enum SinkMode {
+    Transcript,
+    Live,
+}
+
 struct ReporterState<W: Write> {
-    sink: TranscriptSink<W>,
+    sink: ReporterSink<W>,
     renderer: TranscriptRenderer,
     log: DetailLog,
     snapshot: ProgressSnapshot,
@@ -80,6 +126,11 @@ impl ReducerReporter<anstream::AutoStream<std::io::Stderr>> {
     pub(crate) fn new(logs_root: &Path, command: &str, catalog: DisplayCatalog) -> Self {
         Self::new_with_writer(logs_root, command, catalog, anstream::stderr())
     }
+
+    /// Create a reducer-driven reporter with the live TTY sink.
+    pub(crate) fn new_live(logs_root: &Path, command: &str, catalog: DisplayCatalog) -> Self {
+        Self::new_with_mode(logs_root, command, catalog, anstream::stderr(), SinkMode::Live)
+    }
 }
 
 impl<W: Write + Send> ReducerReporter<W> {
@@ -89,10 +140,24 @@ impl<W: Write + Send> ReducerReporter<W> {
         catalog: DisplayCatalog,
         writer: W,
     ) -> Self {
+        Self::new_with_mode(logs_root, command, catalog, writer, SinkMode::Transcript)
+    }
+
+    fn new_with_mode(
+        logs_root: &Path,
+        command: &str,
+        catalog: DisplayCatalog,
+        writer: W,
+        mode: SinkMode,
+    ) -> Self {
         let snapshot = snapshot_from_catalog(&catalog);
+        let sink = match mode {
+            SinkMode::Transcript => ReporterSink::Transcript(TranscriptSink::new(writer)),
+            SinkMode::Live => ReporterSink::Live(LiveRenderer::new(writer)),
+        };
         Self {
             state: Mutex::new(ReporterState {
-                sink: TranscriptSink::new(writer),
+                sink,
                 renderer: TranscriptRenderer::new(),
                 log: DetailLog::new(logs_root, command),
                 snapshot,
@@ -107,12 +172,8 @@ impl<W: Write + Send> ReducerReporter<W> {
             return;
         }
         inner.finished = true;
-        if matches!(command, Some("init")) {
-            inner.sink.write_init_finished();
-        }
-        if inner.log.has_details() {
-            inner.sink.write_details_path(inner.log.path());
-        }
+        let details_path = inner.log.has_details().then(|| inner.log.path().to_path_buf());
+        inner.sink.finish(&inner.snapshot, command, details_path.as_deref());
     }
 
     fn to_reducer_event(event: &ProgressEvent<'_>) -> Option<reducer::ProgressEvent> {
@@ -167,7 +228,8 @@ impl<W: Write + Send> ProgressReporter for ReducerReporter<W> {
         if let Some(reducer_event) = Self::to_reducer_event(&event) {
             reducer::apply_event(&mut inner.snapshot, reducer_event.clone());
             let lines = inner.renderer.render_lines(&inner.snapshot, &reducer_event);
-            inner.sink.write_lines(lines);
+            let snapshot = inner.snapshot.clone();
+            inner.sink.write_reducer_lines(&snapshot, &reducer_event, lines);
         }
 
         match &event {
@@ -180,7 +242,8 @@ impl<W: Write + Send> ProgressReporter for ReducerReporter<W> {
             ProgressEvent::OperationFailed { summary, detail } => {
                 let summary = super::sanitize_summary(summary, super::SUMMARY_MAX_LEN);
                 inner.log.record_operation_failure(&summary, detail);
-                inner.sink.write_operation_failure(&summary);
+                let snapshot = inner.snapshot.clone();
+                inner.sink.write_operation_failure(&snapshot, &summary);
             }
             ProgressEvent::OperationEnd { command } => {
                 Self::finish(&mut inner, Some(command));
@@ -217,7 +280,10 @@ impl ReducerReporter<Vec<u8>> {
 
     fn snapshot_and_output_for_tests(&self) -> (ProgressSnapshot, String) {
         let state = self.state.lock().unwrap();
-        let output = String::from_utf8_lossy(&state.sink.writer).to_string();
+        let output = match &state.sink {
+            ReporterSink::Transcript(sink) => String::from_utf8_lossy(&sink.writer).to_string(),
+            ReporterSink::Live(_) => String::new(),
+        };
         (state.snapshot.clone(), output)
     }
 }

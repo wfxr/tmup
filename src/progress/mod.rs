@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::IsTerminal;
 #[cfg(test)]
 use std::io::Write;
 #[cfg(test)]
@@ -23,6 +24,8 @@ use crate::termui::Accent;
 
 /// Stable plugin display-catalog structures for structured progress.
 pub mod catalog;
+/// Live fixed-row progress renderer for TTY output.
+pub(crate) mod live;
 /// Shared failure-detail logging primitives.
 pub(crate) mod log;
 /// Structured progress event/value types for reducer/renderer evolution.
@@ -179,7 +182,11 @@ pub fn create_reporter(
     target_id: Option<&str>,
 ) -> Box<dyn ProgressReporter> {
     let catalog = DisplayCatalog::from_config(config, target_id);
-    Box::new(reporter::ReducerReporter::new(&paths.logs_root, command, catalog))
+    if std::io::stderr().is_terminal() {
+        Box::new(reporter::ReducerReporter::new_live(&paths.logs_root, command, catalog))
+    } else {
+        Box::new(reporter::ReducerReporter::new(&paths.logs_root, command, catalog))
+    }
 }
 
 /// Build stable display labels before progress output begins.
