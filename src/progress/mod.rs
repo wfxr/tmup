@@ -15,6 +15,8 @@ pub mod catalog;
 pub mod model;
 /// Deterministic reducer and snapshot state for structured progress.
 pub mod reducer;
+/// Shared progress line rendering from structured snapshot state.
+pub(crate) mod render;
 
 #[allow(unused_imports)]
 pub(crate) use catalog::{DisplayCatalog, DisplayPlugin};
