@@ -8,6 +8,9 @@ use crate::lockfile::{
     write_lockfile_atomic,
 };
 use crate::model::{Config, PluginSource, PluginSpec, Tracking};
+use crate::progress::model::{
+    PluginOutcome, PluginStageDetail, SkipReason, TrackingResolution, TrackingSelector,
+};
 use crate::progress::{ProgressEvent, ProgressReporter, Stage};
 use crate::state::{self, FailureMarker, Paths, build_command_hash, timestamp_now};
 use crate::{git, planner, plugin, prepare, repo, short_hash};
@@ -323,7 +326,7 @@ async fn resolve_desired_plugin(
         id,
         name,
         stage: Stage::Fetching,
-        detail: Some(clone_url.clone()),
+        detail: Some(PluginStageDetail::CloneUrl(clone_url.clone())),
     });
 
     let prep = async {
@@ -348,11 +351,7 @@ async fn resolve_desired_plugin(
                 id,
                 name,
                 stage: Stage::Resolving,
-                detail: Some(repo::describe_tracking_resolution(
-                    &spec.tracking,
-                    &tracking,
-                    &commit,
-                )),
+                detail: Some(tracking_detail(&spec.tracking, &tracking, &commit)),
             });
             tracking
         };
@@ -377,6 +376,31 @@ fn tracks_same_revision(spec: &PluginSpec, locked: &TrackingRecord) -> bool {
         Tracking::Branch(branch) => locked.kind == "branch" && locked.value == *branch,
         Tracking::Tag(tag) => locked.kind == "tag" && locked.value == *tag,
         Tracking::Commit(commit) => locked.kind == "commit" && locked.value == *commit,
+    }
+}
+
+fn tracking_detail(
+    selector: &Tracking,
+    resolved: &TrackingRecord,
+    commit: &str,
+) -> PluginStageDetail {
+    let selector = match selector {
+        Tracking::DefaultBranch => TrackingSelector::DefaultBranch,
+        Tracking::Branch(branch) => TrackingSelector::Branch(branch.clone()),
+        Tracking::Tag(tag) => TrackingSelector::Tag(tag.clone()),
+        Tracking::Commit(commit) => TrackingSelector::Commit(commit.clone()),
+    };
+    let resolved = match resolved.kind.as_str() {
+        "default-branch" => TrackingResolution::DefaultBranch { branch: resolved.value.clone() },
+        "branch" => TrackingResolution::Branch { branch: resolved.value.clone() },
+        "tag" => TrackingResolution::Tag { tag: resolved.value.clone() },
+        "commit" => TrackingResolution::Commit { commit: resolved.value.clone() },
+        _ => TrackingResolution::Commit { commit: resolved.value.clone() },
+    };
+    PluginStageDetail::TrackingResolution {
+        selector,
+        resolved,
+        commit: short_hash(commit).to_string(),
     }
 }
 
@@ -441,19 +465,21 @@ async fn reconcile_plugin(
         let _ = std::fs::remove_dir_all(&staging_dir);
         state::clear_failure_markers(&paths.failures_root, &id)?;
         lock.plugins.insert(id.clone(), entry);
-        reporter.report(ProgressEvent::PluginDone {
+        reporter.report(ProgressEvent::PluginFinished {
             id: &id,
             name,
-            summary: "lock reconciled".to_string(),
+            outcome: PluginOutcome::Reconciled,
         });
         return Ok(());
     }
 
     if should_skip_known_failure(mode, paths, &id, &entry.commit, spec.build.as_deref())? {
-        reporter.report(ProgressEvent::PluginSkipped {
+        reporter.report(ProgressEvent::PluginFinished {
             id: &id,
             name,
-            reason: format!("known build failure at {}", short_hash(&entry.commit)),
+            outcome: PluginOutcome::Skipped {
+                reason: SkipReason::KnownFailure { commit: short_hash(&entry.commit).to_string() },
+            },
         });
         let _ = std::fs::remove_dir_all(&staging_dir);
         return Ok(());
@@ -463,7 +489,7 @@ async fn reconcile_plugin(
         id: &id,
         name,
         stage: Stage::Applying,
-        detail: spec.build.clone(),
+        detail: spec.build.clone().map(PluginStageDetail::BuildCommand),
     });
 
     let build = spec.build.as_deref();
@@ -478,10 +504,10 @@ async fn reconcile_plugin(
             let synced_commit = short_hash(&entry.commit).to_string();
             state::clear_failure_markers(&paths.failures_root, &id)?;
             lock.plugins.insert(id.clone(), entry);
-            reporter.report(ProgressEvent::PluginDone {
+            reporter.report(ProgressEvent::PluginFinished {
                 id: &id,
                 name,
-                summary: format!("synced {synced_commit}"),
+                outcome: PluginOutcome::Synced { commit: synced_commit },
             });
             Ok(())
         }

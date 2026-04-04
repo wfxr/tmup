@@ -155,11 +155,7 @@ fn plugin_stage_message(
             PluginStage::Resolving,
             Some(PluginStageDetail::TrackingResolution { selector, resolved, commit }),
         ) => {
-            format!(
-                "{label} {} -> {}",
-                tracking_selector_text(selector),
-                tracking_resolution_text(resolved, commit)
-            )
+            format!("{label} {}", tracking_detail_text(selector, resolved, commit))
         }
         (PluginStage::Applying, Some(PluginStageDetail::BuildCommand(cmd))) => {
             format!("{label} {cmd}")
@@ -177,13 +173,31 @@ fn tracking_selector_text(selector: &TrackingSelector) -> String {
     }
 }
 
-fn tracking_resolution_text(resolved: &TrackingResolution, commit: &str) -> String {
-    match resolved {
-        TrackingResolution::DefaultBranch { branch } | TrackingResolution::Branch { branch } => {
-            format!("branch@{branch} -> commit@{commit}")
+fn tracking_detail_text(
+    selector: &TrackingSelector,
+    resolved: &TrackingResolution,
+    commit: &str,
+) -> String {
+    match (selector, resolved) {
+        (TrackingSelector::DefaultBranch, TrackingResolution::DefaultBranch { branch })
+        | (TrackingSelector::DefaultBranch, TrackingResolution::Branch { branch }) => {
+            format!("default-branch -> branch@{branch} -> commit@{commit}")
         }
-        TrackingResolution::Tag { tag } => format!("tag@{tag} -> commit@{commit}"),
-        TrackingResolution::Commit { commit } => format!("commit@{commit}"),
+        (TrackingSelector::Branch(branch), _) => format!("branch@{branch} -> commit@{commit}"),
+        (TrackingSelector::Tag(tag), _) => format!("tag@{tag} -> commit@{commit}"),
+        (TrackingSelector::Commit(commit), _) => format!("commit@{commit}"),
+        _ => format!(
+            "{} -> {}",
+            tracking_selector_text(selector),
+            match resolved {
+                TrackingResolution::DefaultBranch { branch }
+                | TrackingResolution::Branch { branch } => {
+                    format!("branch@{branch} -> commit@{commit}")
+                }
+                TrackingResolution::Tag { tag } => format!("tag@{tag} -> commit@{commit}"),
+                TrackingResolution::Commit { commit } => format!("commit@{commit}"),
+            }
+        ),
     }
 }
 
@@ -234,9 +248,10 @@ impl SnapshotLookup for ProgressSnapshot {
 #[cfg(test)]
 mod tests {
     use super::TranscriptRenderer;
+    use crate::progress::ProgressEvent as RuntimeProgressEvent;
     use crate::progress::model::{
-        OperationStage, PluginOutcome, PluginStage, PluginStageDetail, TrackingResolution,
-        TrackingSelector,
+        OperationStage, PluginOutcome, PluginStage, PluginStageDetail, SkipReason,
+        TrackingResolution, TrackingSelector,
     };
     use crate::progress::reducer::{
         PluginDisplayState, ProgressEvent, ProgressSnapshot, apply_event,
@@ -329,5 +344,115 @@ mod tests {
         );
 
         assert!(matches!(snapshot.plugins[0].state, PluginDisplayState::Failed { .. }));
+    }
+
+    #[test]
+    fn transcript_renderer_formats_sync_specific_outcomes() {
+        // Compile-time protocol check for Task 3: runtime progress now carries
+        // structured completion outcomes for sync.
+        let _runtime_reconciled = RuntimeProgressEvent::PluginFinished {
+            id: "github.com/tmux-plugins/tmux-sensible",
+            name: "tmux-sensible",
+            outcome: PluginOutcome::Reconciled,
+        };
+        let _runtime_synced = RuntimeProgressEvent::PluginFinished {
+            id: "github.com/tmux-plugins/tmux-sensible",
+            name: "tmux-sensible",
+            outcome: PluginOutcome::Synced { commit: "8c1eeec".to_string() },
+        };
+
+        let mut snapshot = ProgressSnapshot::new_for_tests([(
+            "github.com/tmux-plugins/tmux-sensible",
+            "tmux-sensible",
+            0,
+        )]);
+        let renderer = TranscriptRenderer::new();
+
+        for (outcome, expected) in [
+            (PluginOutcome::Reconciled, "  Reconciled tmux-sensible"),
+            (
+                PluginOutcome::Synced { commit: "8c1eeec".to_string() },
+                "      Synced tmux-sensible commit@8c1eeec",
+            ),
+        ] {
+            let event = ProgressEvent::PluginFinished {
+                id: "github.com/tmux-plugins/tmux-sensible".to_string(),
+                outcome,
+            };
+            apply_event(&mut snapshot, event.clone());
+            assert_eq!(renderer.render_event(&snapshot, &event), vec![expected.to_string()]);
+        }
+    }
+
+    #[test]
+    fn transcript_renderer_formats_install_update_restore_outcomes() {
+        // Compile-time protocol check for Task 3: runtime progress now carries
+        // structured completion outcomes for install/update/restore + skips.
+        let _runtime_installed = RuntimeProgressEvent::PluginFinished {
+            id: "github.com/tmux-plugins/tmux-sensible",
+            name: "tmux-sensible",
+            outcome: PluginOutcome::Installed { commit: "8c1eeec".to_string() },
+        };
+        let _runtime_updated = RuntimeProgressEvent::PluginFinished {
+            id: "github.com/tmux-plugins/tmux-sensible",
+            name: "tmux-sensible",
+            outcome: PluginOutcome::Updated {
+                from: "8c1eeec".to_string(),
+                to: "def5678".to_string(),
+            },
+        };
+        let _runtime_restored = RuntimeProgressEvent::PluginFinished {
+            id: "github.com/tmux-plugins/tmux-sensible",
+            name: "tmux-sensible",
+            outcome: PluginOutcome::Restored { commit: "8c1eeec".to_string() },
+        };
+        let _runtime_already_restored = RuntimeProgressEvent::PluginFinished {
+            id: "github.com/tmux-plugins/tmux-sensible",
+            name: "tmux-sensible",
+            outcome: PluginOutcome::AlreadyRestored,
+        };
+        let _runtime_skipped = RuntimeProgressEvent::PluginFinished {
+            id: "github.com/tmux-plugins/tmux-sensible",
+            name: "tmux-sensible",
+            outcome: PluginOutcome::Skipped {
+                reason: SkipReason::PinnedTag { tag: "v1.0.0".to_string() },
+            },
+        };
+
+        let mut snapshot = ProgressSnapshot::new_for_tests([(
+            "github.com/tmux-plugins/tmux-sensible",
+            "tmux-sensible",
+            0,
+        )]);
+        let renderer = TranscriptRenderer::new();
+
+        for (outcome, expected) in [
+            (
+                PluginOutcome::Installed { commit: "8c1eeec".to_string() },
+                "   Installed tmux-sensible commit@8c1eeec",
+            ),
+            (
+                PluginOutcome::Updated { from: "8c1eeec".to_string(), to: "def5678".to_string() },
+                "     Updated tmux-sensible commit@8c1eeec -> commit@def5678",
+            ),
+            (
+                PluginOutcome::Restored { commit: "8c1eeec".to_string() },
+                "    Restored tmux-sensible commit@8c1eeec",
+            ),
+            (PluginOutcome::AlreadyRestored, "     Checked tmux-sensible"),
+            (
+                PluginOutcome::Skipped {
+                    reason: SkipReason::PinnedTag { tag: "v1.0.0".to_string() },
+                },
+                "     Skipped tmux-sensible pinned to tag v1.0.0",
+            ),
+        ] {
+            let event = ProgressEvent::PluginFinished {
+                id: "github.com/tmux-plugins/tmux-sensible".to_string(),
+                outcome,
+            };
+            apply_event(&mut snapshot, event.clone());
+            assert_eq!(renderer.render_event(&snapshot, &event), vec![expected.to_string()]);
+        }
     }
 }

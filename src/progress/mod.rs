@@ -3,6 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use model::{PluginOutcome, PluginStageDetail, SkipReason, TrackingResolution, TrackingSelector};
 use owo_colors::OwoColorize;
 
 use crate::model::Config;
@@ -20,6 +21,7 @@ pub(crate) mod render;
 
 #[allow(unused_imports)]
 pub(crate) use catalog::{DisplayCatalog, DisplayPlugin};
+pub use model::{OperationStage, PluginStage as Stage};
 #[allow(unused_imports)]
 pub(crate) use reducer::{
     PluginDisplayState as StructuredPluginDisplayState, PluginSnapshot as StructuredPluginSnapshot,
@@ -33,57 +35,6 @@ const ACTION_WIDTH: usize = 12;
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-/// Plugin-level processing stage.
-#[derive(Debug, Clone, Copy)]
-pub enum Stage {
-    /// Clone the remote repository for the first time.
-    Cloning,
-    /// Fetch updates from the remote repository.
-    Fetching,
-    /// Resolve a branch, tag, or default-branch to a commit.
-    Resolving,
-    /// Check out the resolved commit into the working tree.
-    CheckingOut,
-    /// Run the plugin's build command and publish its files.
-    Applying,
-}
-
-impl std::fmt::Display for Stage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Cloning => write!(f, "cloning"),
-            Self::Fetching => write!(f, "fetching"),
-            Self::Resolving => write!(f, "resolving"),
-            Self::CheckingOut => write!(f, "checking out"),
-            Self::Applying => write!(f, "publishing"),
-        }
-    }
-}
-
-/// Operation-level stage (non-plugin work visible to the user).
-#[derive(Debug, Clone, Copy)]
-pub enum OperationStage {
-    /// Waiting to acquire the exclusive operation lock.
-    WaitingForLock,
-    /// Synchronising all remote plugins in parallel.
-    Syncing,
-    /// Writing resolved plugin contents to the filesystem.
-    ApplyingWrites,
-    /// Applying the load plan inside the running tmux session.
-    LoadingTmux,
-}
-
-impl std::fmt::Display for OperationStage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::WaitingForLock => write!(f, "waiting"),
-            Self::Syncing => write!(f, "syncing"),
-            Self::ApplyingWrites => write!(f, "applying writes"),
-            Self::LoadingTmux => write!(f, "loading tmux"),
-        }
-    }
-}
 
 /// Progress events emitted during command execution.
 pub enum ProgressEvent<'a> {
@@ -105,26 +56,17 @@ pub enum ProgressEvent<'a> {
         name: &'a str,
         /// The new plugin stage.
         stage: Stage,
-        /// Optional stage-specific detail (URL, ref, build command, etc.).
-        detail: Option<String>,
+        /// Optional stage-specific structured detail.
+        detail: Option<PluginStageDetail>,
     },
-    /// A plugin finished successfully with the given summary.
-    PluginDone {
+    /// A plugin reached a terminal outcome.
+    PluginFinished {
         /// Stable remote identifier for the plugin.
         id: &'a str,
         /// Human-readable plugin name.
         name: &'a str,
-        /// Short description of what was done (e.g. `"updated abc -> def"`).
-        summary: String,
-    },
-    /// A plugin was skipped with the given reason.
-    PluginSkipped {
-        /// Stable remote identifier for the plugin.
-        id: &'a str,
-        /// Human-readable plugin name.
-        name: &'a str,
-        /// Explanation of why the plugin was skipped.
-        reason: String,
+        /// Structured completion outcome.
+        outcome: PluginOutcome,
     },
     /// A plugin failed with a short summary and full diagnostic detail.
     PluginFailed {
@@ -331,30 +273,6 @@ fn format_progress_line(action: &str, message: &str) -> String {
     termui::format_plain_labeled_line(action, ACTION_WIDTH, message)
 }
 
-fn split_done_summary(summary: &str) -> (&'static str, String) {
-    let summary = sanitize(summary);
-    for (prefix, action) in
-        [("updated ", "Updated"), ("installed ", "Installed"), ("restored ", "Restored")]
-    {
-        if let Some(rest) = summary.strip_prefix(prefix) {
-            return (action, rest.to_string());
-        }
-    }
-
-    let action = if summary == "up-to-date" || summary == "already restored" {
-        "Checked"
-    } else if summary == "synced" {
-        return ("Synced", String::new());
-    } else if let Some(hash) = summary.strip_prefix("synced ") {
-        return ("Synced", format!("commit@{hash}"));
-    } else if summary == "lock reconciled" {
-        "Reconciled"
-    } else {
-        "Done"
-    };
-    (action, summary)
-}
-
 /// Style reference tokens like `branch@master`, `commit@abc123` by
 /// highlighting the value (after `@`) in magenta.
 fn style_ref_tokens(s: &str) -> String {
@@ -381,6 +299,70 @@ fn operation_message(stage: OperationStage) -> &'static str {
 
 fn format_operation_failure(summary: &str) -> String {
     format!("operation {}", sanitize_summary(summary, SUMMARY_MAX_LEN))
+}
+
+fn tracking_selector_text(selector: &TrackingSelector) -> String {
+    match selector {
+        TrackingSelector::DefaultBranch => "default-branch".to_string(),
+        TrackingSelector::Branch(branch) => format!("branch@{branch}"),
+        TrackingSelector::Tag(tag) => format!("tag@{tag}"),
+        TrackingSelector::Commit(commit) => format!("commit@{commit}"),
+    }
+}
+
+fn tracking_detail_text(
+    selector: &TrackingSelector,
+    resolved: &TrackingResolution,
+    commit: &str,
+) -> String {
+    match (selector, resolved) {
+        (TrackingSelector::DefaultBranch, TrackingResolution::DefaultBranch { branch })
+        | (TrackingSelector::DefaultBranch, TrackingResolution::Branch { branch }) => {
+            format!("default-branch -> branch@{branch} -> commit@{commit}")
+        }
+        (TrackingSelector::Branch(branch), _) => format!("branch@{branch} -> commit@{commit}"),
+        (TrackingSelector::Tag(tag), _) => format!("tag@{tag} -> commit@{commit}"),
+        (TrackingSelector::Commit(commit), _) => format!("commit@{commit}"),
+        _ => format!(
+            "{} -> {}",
+            tracking_selector_text(selector),
+            match resolved {
+                TrackingResolution::DefaultBranch { branch }
+                | TrackingResolution::Branch { branch } => {
+                    format!("branch@{branch} -> commit@{commit}")
+                }
+                TrackingResolution::Tag { tag } => format!("tag@{tag} -> commit@{commit}"),
+                TrackingResolution::Commit { commit } => format!("commit@{commit}"),
+            }
+        ),
+    }
+}
+
+fn plugin_outcome_action_and_message(
+    label: &str,
+    outcome: &PluginOutcome,
+) -> (&'static str, String) {
+    match outcome {
+        PluginOutcome::Installed { commit } => ("Installed", format!("{label} commit@{commit}")),
+        PluginOutcome::Updated { from, to } => {
+            ("Updated", format!("{label} commit@{from} -> commit@{to}"))
+        }
+        PluginOutcome::Synced { commit } => ("Synced", format!("{label} commit@{commit}")),
+        PluginOutcome::Restored { commit } => ("Restored", format!("{label} commit@{commit}")),
+        PluginOutcome::Reconciled => ("Reconciled", label.to_string()),
+        PluginOutcome::CheckedUpToDate | PluginOutcome::AlreadyRestored => {
+            ("Checked", label.to_string())
+        }
+        PluginOutcome::Skipped { reason } => {
+            let reason = match reason {
+                SkipReason::PinnedTag { tag } => format!("pinned to tag {tag}"),
+                SkipReason::PinnedCommit { commit } => format!("pinned to commit {commit}"),
+                SkipReason::KnownFailure { commit } => format!("known build failure at {commit}"),
+                SkipReason::Other(reason) => reason.clone(),
+            };
+            ("Skipped", format!("{label} {reason}"))
+        }
+    }
 }
 
 fn title_case<T: std::fmt::Display>(value: T) -> String {
@@ -455,7 +437,6 @@ enum LineKind {
     Header,
     Stage,
     Success,
-    Warning,
     Failure,
     Muted,
 }
@@ -529,30 +510,14 @@ impl StreamRenderer {
                     vec![RenderedLine::new(
                         LineKind::Stage,
                         action,
-                        self.stage_message(id, name, stage, detail.as_deref()),
+                        self.stage_message(id, name, stage, detail.as_ref()),
                     )]
                 }
             },
-            ProgressEvent::PluginDone { id, name, summary } => {
-                let (action, suffix) = split_done_summary(&summary);
+            ProgressEvent::PluginFinished { id, name, outcome } => {
                 let label = self.label(id, name);
-                let message = if suffix.is_empty() {
-                    label.to_string()
-                } else {
-                    format!("{label} {}", style_ref_tokens(&suffix))
-                };
+                let (action, message) = plugin_outcome_action_and_message(label, &outcome);
                 vec![RenderedLine::new(LineKind::Success, action, message)]
-            }
-            ProgressEvent::PluginSkipped { id, name, reason } => {
-                vec![RenderedLine::new(
-                    LineKind::Warning,
-                    "Skipped",
-                    format!(
-                        "{} {}",
-                        self.label(id, name),
-                        sanitize_summary(&reason, SUMMARY_MAX_LEN)
-                    ),
-                )]
             }
             ProgressEvent::PluginFailed { id, name, summary, .. } => vec![RenderedLine::new(
                 LineKind::Failure,
@@ -577,16 +542,26 @@ impl StreamRenderer {
         self.labels.get(id).map(String::as_str).unwrap_or(name)
     }
 
-    fn stage_message(&self, id: &str, name: &str, stage: Stage, detail: Option<&str>) -> String {
+    fn stage_message(
+        &self,
+        id: &str,
+        name: &str,
+        stage: Stage,
+        detail: Option<&PluginStageDetail>,
+    ) -> String {
         let label = self.label(id, name);
         match (stage, detail) {
-            (Stage::Cloning | Stage::Fetching, Some(url)) => {
+            (Stage::Cloning | Stage::Fetching, Some(PluginStageDetail::CloneUrl(url))) => {
                 format!("{label} {}", url.blue())
             }
-            (Stage::Resolving, Some(detail)) => {
-                format!("{label} {}", style_ref_tokens(detail))
+            (
+                Stage::Resolving,
+                Some(PluginStageDetail::TrackingResolution { selector, resolved, commit }),
+            ) => {
+                let detail = tracking_detail_text(selector, resolved, commit);
+                format!("{label} {}", style_ref_tokens(&detail))
             }
-            (Stage::Applying, Some(build_cmd)) => {
+            (Stage::Applying, Some(PluginStageDetail::BuildCommand(build_cmd))) => {
                 format!("{label} {}", sanitize_summary(build_cmd, SUMMARY_MAX_LEN))
             }
             _ => label.to_string(),
@@ -600,7 +575,6 @@ impl From<LineKind> for Accent {
             LineKind::Header => Accent::Bold,
             LineKind::Stage => Accent::Info,
             LineKind::Success => Accent::Success,
-            LineKind::Warning => Accent::Warning,
             LineKind::Failure => Accent::Error,
             LineKind::Muted => Accent::Muted,
         }
@@ -838,12 +812,15 @@ mod tests {
             vec!["    Fetching tmux-sensible".to_string()]
         );
         assert_eq!(
-            renderer.render(ProgressEvent::PluginDone {
+            renderer.render(ProgressEvent::PluginFinished {
                 id: "github.com/tmux-plugins/tmux-sensible",
                 name: "tmux-sensible",
-                summary: "updated abc1234 -> def5678".to_string(),
+                outcome: PluginOutcome::Updated {
+                    from: "abc1234".to_string(),
+                    to: "def5678".to_string(),
+                },
             }),
-            vec!["     Updated tmux-sensible abc1234 -> def5678".to_string()]
+            vec!["     Updated tmux-sensible commit@abc1234 -> commit@def5678".to_string()]
         );
         assert_eq!(
             renderer.render(ProgressEvent::OperationEnd { command: "update" }),
@@ -862,7 +839,7 @@ mod tests {
                 id: "github.com/tmux-plugins/tmux-sensible",
                 name: "tmux-sensible",
                 stage: Stage::Applying,
-                detail: Some("make build".to_string()),
+                detail: Some(PluginStageDetail::BuildCommand("make build".to_string())),
             }),
             vec!["    Building tmux-sensible make build".to_string()]
         );
@@ -875,10 +852,10 @@ mod tests {
         let renderer = StreamRenderer::new(labels);
 
         assert_eq!(
-            renderer.render(ProgressEvent::PluginDone {
+            renderer.render(ProgressEvent::PluginFinished {
                 id: "github.com/tmux-plugins/tmux-sensible",
                 name: "tmux-sensible",
-                summary: "synced 8c1eeec".to_string(),
+                outcome: PluginOutcome::Synced { commit: "8c1eeec".to_string() },
             }),
             vec!["      Synced tmux-sensible commit@8c1eeec".to_string()]
         );
@@ -936,7 +913,9 @@ mod tests {
                 id: "github.com/tmux-plugins/tmux-sensible",
                 name: "tmux-sensible",
                 stage: Stage::Fetching,
-                detail: Some("https://github.com/tmux-plugins/tmux-sensible".to_string()),
+                detail: Some(PluginStageDetail::CloneUrl(
+                    "https://github.com/tmux-plugins/tmux-sensible".to_string(),
+                )),
             }),
             vec![
                 "    Fetching tmux-sensible https://github.com/tmux-plugins/tmux-sensible"
@@ -955,7 +934,11 @@ mod tests {
                 id: "github.com/tmux-plugins/tmux-sensible",
                 name: "tmux-sensible",
                 stage: Stage::Resolving,
-                detail: Some("tag@v1.0 -> commit@8c1eeec".to_string()),
+                detail: Some(PluginStageDetail::TrackingResolution {
+                    selector: TrackingSelector::Tag("v1.0".to_string()),
+                    resolved: TrackingResolution::Tag { tag: "v1.0".to_string() },
+                    commit: "8c1eeec".to_string(),
+                }),
             }),
             vec!["   Resolving tmux-sensible tag@v1.0 -> commit@8c1eeec".to_string()]
         );
@@ -971,7 +954,11 @@ mod tests {
                 id: "github.com/tmux-plugins/tmux-sensible",
                 name: "tmux-sensible",
                 stage: Stage::Resolving,
-                detail: Some("branch@main -> commit@8c1eeec".to_string()),
+                detail: Some(PluginStageDetail::TrackingResolution {
+                    selector: TrackingSelector::Branch("main".to_string()),
+                    resolved: TrackingResolution::Branch { branch: "main".to_string() },
+                    commit: "8c1eeec".to_string(),
+                }),
             }),
             vec!["   Resolving tmux-sensible branch@main -> commit@8c1eeec".to_string()]
         );
@@ -987,7 +974,11 @@ mod tests {
                 id: "github.com/tmux-plugins/tmux-sensible",
                 name: "tmux-sensible",
                 stage: Stage::Resolving,
-                detail: Some("default-branch -> branch@main -> commit@8c1eeec".to_string()),
+                detail: Some(PluginStageDetail::TrackingResolution {
+                    selector: TrackingSelector::DefaultBranch,
+                    resolved: TrackingResolution::DefaultBranch { branch: "main".to_string() },
+                    commit: "8c1eeec".to_string(),
+                }),
             }),
             vec![
                 "   Resolving tmux-sensible default-branch -> branch@main -> commit@8c1eeec"
@@ -1003,10 +994,12 @@ mod tests {
         let renderer = StreamRenderer::new(labels);
 
         assert_eq!(
-            renderer.render(ProgressEvent::PluginSkipped {
+            renderer.render(ProgressEvent::PluginFinished {
                 id: "github.com/tmux-plugins/tmux-sensible",
                 name: "tmux-sensible",
-                reason: "pinned to tag v1.0.0".to_string(),
+                outcome: PluginOutcome::Skipped {
+                    reason: SkipReason::PinnedTag { tag: "v1.0.0".to_string() },
+                },
             }),
             vec!["     Skipped tmux-sensible pinned to tag v1.0.0".to_string()]
         );
@@ -1042,34 +1035,6 @@ mod tests {
             }),
             vec!["      Failed operation failed to write lockfile".to_string()]
         );
-    }
-
-    #[test]
-    fn split_done_summary_extracts_action_and_suffix() {
-        let (action, suffix) = split_done_summary("updated abc1234 -> def5678");
-        assert_eq!(action, "Updated");
-        assert_eq!(suffix, "abc1234 -> def5678");
-    }
-
-    #[test]
-    fn split_done_summary_preserves_non_prefixed_summaries() {
-        let (action, suffix) = split_done_summary("lock reconciled");
-        assert_eq!(action, "Reconciled");
-        assert_eq!(suffix, "lock reconciled");
-    }
-
-    #[test]
-    fn split_done_summary_omits_duplicate_synced_suffix() {
-        let (action, suffix) = split_done_summary("synced");
-        assert_eq!(action, "Synced");
-        assert!(suffix.is_empty());
-    }
-
-    #[test]
-    fn split_done_summary_formats_synced_hash_as_suffix() {
-        let (action, suffix) = split_done_summary("synced 8c1eeec");
-        assert_eq!(action, "Synced");
-        assert_eq!(suffix, "commit@8c1eeec");
     }
 
     #[test]
