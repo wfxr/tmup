@@ -458,4 +458,51 @@ mod tests {
             assert_eq!(renderer.render_event(&snapshot, &event), vec![expected.to_string()]);
         }
     }
+
+    #[test]
+    fn transcript_renderer_never_parses_summary_strings() {
+        let mut snapshot = ProgressSnapshot::new_for_tests([(
+            "github.com/tmux-plugins/tmux-sensible",
+            "tmux-sensible",
+            0,
+        )]);
+        let renderer = TranscriptRenderer::new();
+
+        for (outcome, expected) in [
+            (
+                PluginOutcome::Updated { from: "abc1234".to_string(), to: "def5678".to_string() },
+                "     Updated tmux-sensible commit@abc1234 -> commit@def5678",
+            ),
+            (
+                PluginOutcome::Synced { commit: "8c1eeec".to_string() },
+                "      Synced tmux-sensible commit@8c1eeec",
+            ),
+            (PluginOutcome::CheckedUpToDate, "     Checked tmux-sensible"),
+            (
+                PluginOutcome::Restored { commit: "8c1eeec".to_string() },
+                "    Restored tmux-sensible commit@8c1eeec",
+            ),
+        ] {
+            let event = ProgressEvent::PluginFinished {
+                id: "github.com/tmux-plugins/tmux-sensible".to_string(),
+                outcome,
+            };
+            apply_event(&mut snapshot, event.clone());
+            assert_eq!(renderer.render_event(&snapshot, &event), vec![expected.to_string()]);
+        }
+
+        let mod_source = include_str!("mod.rs");
+        assert!(
+            !mod_source.contains("struct StreamRenderer"),
+            "legacy stream renderer compatibility code still exists in progress/mod.rs"
+        );
+        assert!(
+            !mod_source.contains("struct StreamReporter"),
+            "legacy stream reporter compatibility code still exists in progress/mod.rs"
+        );
+        assert!(
+            !mod_source.contains("plugin_outcome_action_and_message"),
+            "legacy outcome formatting helper should be removed from progress/mod.rs"
+        );
+    }
 }
