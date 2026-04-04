@@ -5,6 +5,7 @@ use tempfile::tempdir;
 use tmup::lockfile::{LockEntry, LockFile, TrackingRecord};
 use tmup::model::{Config, Options, PluginSource, PluginSpec, Tracking};
 use tmup::plugin;
+use tmup::progress::model::PluginOutcome;
 use tmup::progress::{NullReporter, ProgressEvent, ProgressReporter, Stage};
 use tmup::state::Paths;
 use utils::*;
@@ -61,6 +62,31 @@ impl ProgressReporter for CaptureFailures {
                 stage,
                 context_keys: context.into_iter().map(|(key, _)| key.to_string()).collect(),
             });
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FinishedEvent {
+    id: String,
+    outcome: PluginOutcome,
+}
+
+#[derive(Default)]
+struct CaptureFinished {
+    events: Mutex<Vec<FinishedEvent>>,
+}
+
+impl CaptureFinished {
+    fn take(&self) -> Vec<FinishedEvent> {
+        std::mem::take(&mut *self.events.lock().unwrap())
+    }
+}
+
+impl ProgressReporter for CaptureFinished {
+    fn report(&self, event: ProgressEvent<'_>) {
+        if let ProgressEvent::PluginFinished { id, outcome, .. } = event {
+            self.events.lock().unwrap().push(FinishedEvent { id: id.to_string(), outcome });
         }
     }
 }
@@ -298,6 +324,62 @@ async fn install_build_failure_leaves_no_target_or_lock_entry() {
     assert!(
         !lock.plugins.contains_key("example.com/test/plugin"),
         "failed install must not write a lock entry for the plugin"
+    );
+}
+
+#[tokio::test]
+async fn operations_emit_structured_finished_outcomes() {
+    let dir = tempdir().unwrap();
+    let (bare, commit_a) = make_bare_repo(&dir.path().join("repo"));
+
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let cfg = make_config(&clone_url, None);
+    let mut lock = LockFile::new();
+    let finished = CaptureFinished::default();
+
+    plugin::install(&cfg, &mut lock, &paths, None, false, &finished).await.unwrap();
+    let install_events = finished.take();
+    assert!(
+        install_events.iter().any(|event| matches!(event.outcome, PluginOutcome::Installed { .. })),
+        "install should emit Installed outcome"
+    );
+
+    plugin::update(&cfg, &mut lock, &paths, None, &finished).await.unwrap();
+    let update_events = finished.take();
+    assert!(
+        update_events.iter().any(|event| matches!(event.outcome, PluginOutcome::CheckedUpToDate)),
+        "update should emit CheckedUpToDate outcome when commit is unchanged"
+    );
+
+    let target = paths.plugin_dir("example.com/test/plugin");
+    std::fs::remove_dir_all(&target).unwrap();
+
+    plugin::restore(&cfg, &lock, &paths, None, &finished).await.unwrap();
+    let restore_events = finished.take();
+    assert!(
+        restore_events.iter().any(|event| matches!(event.outcome, PluginOutcome::Restored { .. })),
+        "restore should emit Restored outcome when reinstalling a locked commit"
+    );
+    assert!(
+        restore_events.iter().all(|event| event.id == "example.com/test/plugin"),
+        "all emitted outcomes should target the canonical plugin id"
+    );
+
+    plugin::restore(&cfg, &lock, &paths, None, &finished).await.unwrap();
+    let restore_noop_events = finished.take();
+    assert!(
+        restore_noop_events
+            .iter()
+            .any(|event| matches!(event.outcome, PluginOutcome::AlreadyRestored)),
+        "restore should emit AlreadyRestored outcome on same-commit no-op"
+    );
+
+    assert_eq!(
+        lock.plugins["example.com/test/plugin"].commit, commit_a,
+        "structured outcomes must not mutate the lock unexpectedly"
     );
 }
 
