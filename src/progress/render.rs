@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::progress::model::{
     OperationStage, PluginOutcome, PluginStage, PluginStageDetail, SkipReason, TrackingResolution,
     TrackingSelector,
@@ -7,6 +5,7 @@ use crate::progress::model::{
 use crate::progress::reducer::{ProgressEvent, ProgressSnapshot};
 use crate::termui::Accent;
 
+#[cfg(test)]
 const ACTION_WIDTH: usize = 12;
 
 /// Renderer-neutral display line derived from structured progress state.
@@ -76,7 +75,10 @@ impl TranscriptRenderer {
             ProgressEvent::PluginStageChanged { id, stage, detail } => {
                 let plugin = match snapshot.plugin(id) {
                     Some(plugin) => plugin,
-                    None => return Vec::new(),
+                    None => {
+                        debug_assert!(false, "missing plugin snapshot for id={id}");
+                        return Vec::new();
+                    }
                 };
                 vec![DisplayLine {
                     kind: LineKind::Stage,
@@ -88,7 +90,10 @@ impl TranscriptRenderer {
             ProgressEvent::PluginFinished { id, outcome } => {
                 let plugin = match snapshot.plugin(id) {
                     Some(plugin) => plugin,
-                    None => return Vec::new(),
+                    None => {
+                        debug_assert!(false, "missing plugin snapshot for id={id}");
+                        return Vec::new();
+                    }
                 };
                 let (label, message) = plugin_outcome_message(&plugin.label, outcome);
                 vec![DisplayLine {
@@ -101,7 +106,10 @@ impl TranscriptRenderer {
             ProgressEvent::PluginFailed { id, summary, .. } => {
                 let plugin = match snapshot.plugin(id) {
                     Some(plugin) => plugin,
-                    None => return Vec::new(),
+                    None => {
+                        debug_assert!(false, "missing plugin snapshot for id={id}");
+                        return Vec::new();
+                    }
                 };
                 vec![DisplayLine {
                     kind: LineKind::Failure,
@@ -232,16 +240,6 @@ fn title_case(value: &str) -> String {
     match chars.next() {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
         None => String::new(),
-    }
-}
-
-trait SnapshotLookup {
-    fn plugin(&self, id: &str) -> Option<&crate::progress::reducer::PluginSnapshot>;
-}
-
-impl SnapshotLookup for ProgressSnapshot {
-    fn plugin(&self, id: &str) -> Option<&crate::progress::reducer::PluginSnapshot> {
-        self.plugins.iter().find(|plugin| plugin.id == id)
     }
 }
 

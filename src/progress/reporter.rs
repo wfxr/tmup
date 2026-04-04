@@ -1,0 +1,313 @@
+use std::collections::HashMap;
+use std::io::Write;
+use std::path::Path;
+use std::sync::Mutex;
+
+use crate::model::{Config, Options, PluginSource, PluginSpec, Tracking};
+use crate::progress::catalog::DisplayCatalog;
+use crate::progress::log::DetailLog;
+use crate::progress::reducer::{self, ProgressSnapshot};
+use crate::progress::render::{DisplayLine, TranscriptRenderer};
+use crate::progress::{ACTION_WIDTH, ProgressEvent, ProgressReporter};
+use crate::termui::{self, Accent};
+
+struct TranscriptSink<W: Write> {
+    writer: W,
+}
+
+impl<W: Write> TranscriptSink<W> {
+    fn new(writer: W) -> Self {
+        Self { writer }
+    }
+
+    fn write_lines(&mut self, lines: Vec<DisplayLine>) {
+        for line in lines {
+            let rendered = termui::format_styled_labeled_line(
+                &line.label,
+                ACTION_WIDTH,
+                &line.message,
+                line.accent,
+            );
+            let _ = writeln!(self.writer, "{rendered}");
+        }
+    }
+
+    fn write_operation_failure(&mut self, summary: &str) {
+        let rendered = termui::format_styled_labeled_line(
+            "Failed",
+            ACTION_WIDTH,
+            &format!("operation {summary}"),
+            Accent::Error,
+        );
+        let _ = writeln!(self.writer, "{rendered}");
+    }
+
+    fn write_init_finished(&mut self) {
+        let rendered = termui::format_styled_labeled_line(
+            "Finished",
+            ACTION_WIDTH,
+            "tmup init",
+            Accent::Success,
+        );
+        let _ = writeln!(self.writer, "{rendered}");
+    }
+
+    fn write_details_path(&mut self, path: &Path) {
+        let rendered = termui::format_styled_labeled_line(
+            "Details",
+            ACTION_WIDTH,
+            &path.display().to_string(),
+            Accent::Muted,
+        );
+        let _ = writeln!(self.writer, "{rendered}");
+    }
+}
+
+struct ReporterState<W: Write> {
+    sink: TranscriptSink<W>,
+    renderer: TranscriptRenderer,
+    log: DetailLog,
+    snapshot: ProgressSnapshot,
+    catalog: DisplayCatalog,
+    finished: bool,
+}
+
+/// Runtime reducer-driven reporter implementation.
+pub(crate) struct ReducerReporter<W: Write + Send> {
+    state: Mutex<ReporterState<W>>,
+}
+
+impl ReducerReporter<anstream::AutoStream<std::io::Stderr>> {
+    /// Create a reducer-driven reporter that writes to stderr.
+    pub(crate) fn new(logs_root: &Path, command: &str, labels: HashMap<String, String>) -> Self {
+        Self::new_with_writer(logs_root, command, labels, anstream::stderr())
+    }
+}
+
+impl<W: Write + Send> ReducerReporter<W> {
+    fn new_with_writer(
+        logs_root: &Path,
+        command: &str,
+        labels: HashMap<String, String>,
+        writer: W,
+    ) -> Self {
+        let catalog = display_catalog_from_labels(&labels);
+        let snapshot = snapshot_from_catalog(&catalog);
+        Self {
+            state: Mutex::new(ReporterState {
+                sink: TranscriptSink::new(writer),
+                renderer: TranscriptRenderer::new(),
+                log: DetailLog::new(logs_root, command),
+                snapshot,
+                catalog,
+                finished: false,
+            }),
+        }
+    }
+
+    fn finish(inner: &mut ReporterState<W>, command: Option<&'static str>) {
+        if inner.finished {
+            return;
+        }
+        inner.finished = true;
+        if matches!(command, Some("init")) {
+            inner.sink.write_init_finished();
+        }
+        if inner.log.has_details() {
+            inner.sink.write_details_path(inner.log.path());
+        }
+    }
+
+    fn to_reducer_event(event: &ProgressEvent<'_>) -> Option<reducer::ProgressEvent> {
+        match event {
+            ProgressEvent::OperationStart { .. }
+            | ProgressEvent::OperationFailed { .. }
+            | ProgressEvent::OperationEnd { .. } => None,
+            ProgressEvent::OperationStage { stage } => {
+                Some(reducer::ProgressEvent::OperationStageChanged { stage: *stage })
+            }
+            ProgressEvent::PluginStage { id, stage, detail, .. } => {
+                Some(reducer::ProgressEvent::PluginStageChanged {
+                    id: (*id).to_string(),
+                    stage: *stage,
+                    detail: detail.clone(),
+                })
+            }
+            ProgressEvent::PluginFinished { id, outcome, .. } => {
+                Some(reducer::ProgressEvent::PluginFinished {
+                    id: (*id).to_string(),
+                    outcome: outcome.clone(),
+                })
+            }
+            ProgressEvent::PluginFailed { id, stage, summary, .. } => {
+                Some(reducer::ProgressEvent::PluginFailed {
+                    id: (*id).to_string(),
+                    stage: *stage,
+                    summary: super::sanitize_summary(summary, super::SUMMARY_MAX_LEN),
+                })
+            }
+        }
+    }
+}
+
+impl<W: Write + Send> ProgressReporter for ReducerReporter<W> {
+    fn report(&self, event: ProgressEvent<'_>) {
+        let mut inner = self.state.lock().unwrap();
+        if inner.finished {
+            return;
+        }
+
+        match &event {
+            ProgressEvent::PluginStage { id, name, .. }
+            | ProgressEvent::PluginFinished { id, name, .. }
+            | ProgressEvent::PluginFailed { id, name, .. } => {
+                let label = inner.catalog.label_for(id, name).to_string();
+                inner.snapshot.ensure_plugin(id, &label);
+            }
+            _ => {}
+        }
+
+        if let Some(reducer_event) = Self::to_reducer_event(&event) {
+            reducer::apply_event(&mut inner.snapshot, reducer_event.clone());
+            let lines = inner.renderer.render_lines(&inner.snapshot, &reducer_event);
+            inner.sink.write_lines(lines);
+        }
+
+        match &event {
+            ProgressEvent::PluginFailed { id, name, stage, summary, detail, context } => {
+                let summary = super::sanitize_summary(summary, super::SUMMARY_MAX_LEN);
+                let context: Vec<(&str, &str)> =
+                    context.iter().map(|(k, v)| (*k, v.as_str())).collect();
+                inner.log.record_plugin_failure(id, name, *stage, &summary, detail, &context);
+            }
+            ProgressEvent::OperationFailed { summary, detail } => {
+                let summary = super::sanitize_summary(summary, super::SUMMARY_MAX_LEN);
+                inner.log.record_operation_failure(&summary, detail);
+                inner.sink.write_operation_failure(&summary);
+            }
+            ProgressEvent::OperationEnd { command } => {
+                Self::finish(&mut inner, Some(command));
+            }
+            _ => {}
+        }
+    }
+}
+
+impl<W: Write + Send> Drop for ReducerReporter<W> {
+    fn drop(&mut self) {
+        if let Ok(mut inner) = self.state.lock() {
+            Self::finish(&mut inner, None);
+        }
+    }
+}
+
+fn display_catalog_from_labels(labels: &HashMap<String, String>) -> DisplayCatalog {
+    let mut entries: Vec<_> = labels.iter().collect();
+    entries.sort_by_key(|(id, _)| *id);
+    let plugins = entries
+        .into_iter()
+        .map(|(id, label)| PluginSpec {
+            source: PluginSource::Remote {
+                raw: id.clone(),
+                id: id.clone(),
+                clone_url: format!("https://{id}.git"),
+            },
+            name: label.clone(),
+            opt_prefix: "@plugin".to_string(),
+            tracking: Tracking::DefaultBranch,
+            build: None,
+            opts: Vec::new(),
+        })
+        .collect();
+    let config = Config { options: Options::default(), plugins };
+    DisplayCatalog::from_config(&config, None)
+}
+
+fn snapshot_from_catalog(catalog: &DisplayCatalog) -> ProgressSnapshot {
+    let labels = catalog.iter().map(|plugin| (plugin.id.clone(), plugin.label.clone())).collect();
+    ProgressSnapshot::from_labels(labels)
+}
+
+#[cfg(test)]
+impl ReducerReporter<Vec<u8>> {
+    fn new_with_writer_for_tests(
+        logs_root: &Path,
+        command: &str,
+        labels: HashMap<String, String>,
+        writer: Vec<u8>,
+    ) -> Self {
+        Self::new_with_writer(logs_root, command, labels, writer)
+    }
+
+    fn snapshot_and_output_for_tests(&self) -> (ProgressSnapshot, String) {
+        let state = self.state.lock().unwrap();
+        let output = String::from_utf8_lossy(&state.sink.writer).to_string();
+        (state.snapshot.clone(), output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::ReducerReporter;
+    use crate::progress::model::PluginStageDetail;
+    use crate::progress::{OperationStage, ProgressEvent, ProgressReporter, Stage};
+
+    #[test]
+    fn reporter_finishes_once_and_logs_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut labels = HashMap::new();
+        labels.insert("github.com/tmux-plugins/tmux-sensible".to_string(), "tmux-sensible".into());
+
+        let reporter =
+            ReducerReporter::new_with_writer_for_tests(dir.path(), "update", labels, Vec::new());
+
+        reporter.report(ProgressEvent::OperationStart { command: "update" });
+        reporter.report(ProgressEvent::OperationStage { stage: OperationStage::WaitingForLock });
+        reporter.report(ProgressEvent::PluginStage {
+            id: "github.com/tmux-plugins/tmux-sensible",
+            name: "tmux-sensible",
+            stage: Stage::Fetching,
+            detail: Some(PluginStageDetail::CloneUrl(
+                "https://github.com/tmux-plugins/tmux-sensible.git".to_string(),
+            )),
+        });
+        reporter.report(ProgressEvent::PluginFailed {
+            id: "github.com/tmux-plugins/tmux-sensible",
+            name: "tmux-sensible",
+            stage: Some(Stage::Fetching),
+            summary: "git fetch origin failed".to_string(),
+            detail: "full error output".to_string(),
+            context: vec![(
+                "clone_url",
+                "https://github.com/tmux-plugins/tmux-sensible.git".into(),
+            )],
+        });
+        reporter.report(ProgressEvent::OperationEnd { command: "update" });
+        reporter.report(ProgressEvent::OperationEnd { command: "update" });
+
+        let (snapshot, output) = reporter.snapshot_and_output_for_tests();
+        let output = crate::progress::strip_ansi(&output);
+        assert!(matches!(snapshot.operation.stage, Some(OperationStage::WaitingForLock)));
+        assert_eq!(snapshot.plugins.len(), 1);
+        assert!(
+            output.matches("Details ").count() == 1,
+            "finish epilogue should be written exactly once, output:\n{output}"
+        );
+
+        let log_file = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .find(|e| e.path().extension().is_some_and(|ext| ext == "log"))
+            .expect("log file should exist");
+        let log = std::fs::read_to_string(log_file.path()).unwrap();
+        assert!(log.contains("id=github.com/tmux-plugins/tmux-sensible"), "log: {log}");
+        assert!(log.contains("name=tmux-sensible"), "log: {log}");
+        assert!(log.contains("stage=fetching"), "log: {log}");
+        assert!(
+            log.contains("clone_url: https://github.com/tmux-plugins/tmux-sensible.git"),
+            "log: {log}"
+        );
+    }
+}

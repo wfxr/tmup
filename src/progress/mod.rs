@@ -1,23 +1,38 @@
 use std::collections::HashMap;
+#[cfg(test)]
 use std::io::Write;
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+#[cfg(test)]
 use std::sync::Mutex;
 
-use model::{PluginOutcome, PluginStageDetail, SkipReason, TrackingResolution, TrackingSelector};
+#[cfg(test)]
+use log::DetailLog;
+use model::{PluginOutcome, PluginStageDetail};
+#[cfg(test)]
+use model::{SkipReason, TrackingResolution, TrackingSelector};
+#[cfg(test)]
 use owo_colors::OwoColorize;
 
 use crate::model::Config;
 use crate::state::Paths;
-use crate::termui::{self, Accent};
+#[cfg(test)]
+use crate::termui;
+#[cfg(test)]
+use crate::termui::Accent;
 
 /// Stable plugin display-catalog structures for structured progress.
 pub mod catalog;
+/// Shared failure-detail logging primitives.
+pub(crate) mod log;
 /// Structured progress event/value types for reducer/renderer evolution.
 pub mod model;
 /// Deterministic reducer and snapshot state for structured progress.
 pub mod reducer;
 /// Shared progress line rendering from structured snapshot state.
 pub(crate) mod render;
+/// Reducer-driven runtime reporter core.
+pub(crate) mod reporter;
 
 #[allow(unused_imports)]
 pub(crate) use catalog::{DisplayCatalog, DisplayPlugin};
@@ -162,7 +177,7 @@ pub fn create_reporter(
     command: &'static str,
     labels: HashMap<String, String>,
 ) -> Box<dyn ProgressReporter> {
-    Box::new(StreamReporter::new(&paths.logs_root, command, labels))
+    Box::new(reporter::ReducerReporter::new(&paths.logs_root, command, labels))
 }
 
 /// Build stable display labels before progress output begins.
@@ -254,16 +269,6 @@ pub fn summarize_error(err: &anyhow::Error) -> (String, String) {
     (summary, detail)
 }
 
-/// Generate a log filename for the current operation.
-fn log_filename(command: &str) -> String {
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let pid = std::process::id();
-    format!("{ts}-{pid}-{command}.log")
-}
-
 fn short_remote_id(id: &str) -> &str {
     id.split_once('/').map(|(_, tail)| tail).unwrap_or(id)
 }
@@ -275,6 +280,7 @@ fn format_progress_line(action: &str, message: &str) -> String {
 
 /// Style reference tokens like `branch@master`, `commit@abc123` by
 /// highlighting the value (after `@`) in magenta.
+#[cfg(test)]
 fn style_ref_tokens(s: &str) -> String {
     s.split(' ')
         .map(|token| {
@@ -288,6 +294,7 @@ fn style_ref_tokens(s: &str) -> String {
         .join(" ")
 }
 
+#[cfg(test)]
 fn operation_message(stage: OperationStage) -> &'static str {
     match stage {
         OperationStage::WaitingForLock => "lock",
@@ -297,10 +304,12 @@ fn operation_message(stage: OperationStage) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn format_operation_failure(summary: &str) -> String {
     format!("operation {}", sanitize_summary(summary, SUMMARY_MAX_LEN))
 }
 
+#[cfg(test)]
 fn tracking_selector_text(selector: &TrackingSelector) -> String {
     match selector {
         TrackingSelector::DefaultBranch => "default-branch".to_string(),
@@ -310,6 +319,7 @@ fn tracking_selector_text(selector: &TrackingSelector) -> String {
     }
 }
 
+#[cfg(test)]
 fn tracking_detail_text(
     selector: &TrackingSelector,
     resolved: &TrackingResolution,
@@ -338,6 +348,7 @@ fn tracking_detail_text(
     }
 }
 
+#[cfg(test)]
 fn plugin_outcome_action_and_message(
     label: &str,
     outcome: &PluginOutcome,
@@ -365,55 +376,13 @@ fn plugin_outcome_action_and_message(
     }
 }
 
+#[cfg(test)]
 fn title_case<T: std::fmt::Display>(value: T) -> String {
     let value = value.to_string();
     let mut chars = value.chars();
     match chars.next() {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
         None => String::new(),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// DetailLog — shared lazy-create log file used by both reporters.
-// ---------------------------------------------------------------------------
-
-struct DetailLog {
-    logs_root: PathBuf,
-    log_path: PathBuf,
-    file: Option<std::fs::File>,
-}
-
-impl DetailLog {
-    fn new(logs_root: &Path, command: &str) -> Self {
-        Self {
-            logs_root: logs_root.to_path_buf(),
-            log_path: logs_root.join(log_filename(command)),
-            file: None,
-        }
-    }
-
-    fn has_details(&self) -> bool {
-        self.file.is_some()
-    }
-
-    fn write(&mut self, section: &str, summary: &str, detail: &str, context: &[(&str, &str)]) {
-        if self.file.is_none() {
-            let _ = std::fs::create_dir_all(&self.logs_root);
-            if let Ok(f) = std::fs::File::create(&self.log_path) {
-                self.file = Some(f);
-            }
-        }
-        if let Some(ref mut f) = self.file {
-            let _ = writeln!(f, "== {section} ==");
-            let _ = writeln!(f, "summary: {summary}");
-            for (key, value) in context {
-                let _ = writeln!(f, "{key}: {value}");
-            }
-            let _ = writeln!(f);
-            let _ = writeln!(f, "{detail}");
-            let _ = writeln!(f);
-        }
     }
 }
 
@@ -433,6 +402,7 @@ impl ProgressReporter for NullReporter {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 enum LineKind {
     Header,
     Stage,
@@ -441,12 +411,14 @@ enum LineKind {
     Muted,
 }
 
+#[cfg(test)]
 struct RenderedLine {
     kind: LineKind,
     action: String,
     message: String,
 }
 
+#[cfg(test)]
 impl RenderedLine {
     fn new(kind: LineKind, action: impl Into<String>, message: impl Into<String>) -> Self {
         Self { kind, action: action.into(), message: message.into() }
@@ -474,10 +446,12 @@ impl RenderedLine {
     }
 }
 
+#[cfg(test)]
 struct StreamRenderer {
     labels: HashMap<String, String>,
 }
 
+#[cfg(test)]
 impl StreamRenderer {
     fn new(labels: HashMap<String, String>) -> Self {
         Self { labels }
@@ -569,6 +543,7 @@ impl StreamRenderer {
     }
 }
 
+#[cfg(test)]
 impl From<LineKind> for Accent {
     fn from(value: LineKind) -> Self {
         match value {
@@ -585,10 +560,12 @@ impl From<LineKind> for Accent {
 // Stream reporter
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 struct StreamReporter<W: Write + Send> {
     state: Mutex<StreamReporterInner<W>>,
 }
 
+#[cfg(test)]
 struct StreamReporterInner<W: Write> {
     writer: W,
     renderer: StreamRenderer,
@@ -596,12 +573,7 @@ struct StreamReporterInner<W: Write> {
     finished: bool,
 }
 
-impl StreamReporter<anstream::AutoStream<std::io::Stderr>> {
-    fn new(logs_root: &Path, command: &str, labels: HashMap<String, String>) -> Self {
-        Self::new_with_writer(logs_root, command, labels, anstream::stderr())
-    }
-}
-
+#[cfg(test)]
 impl<W: Write + Send> StreamReporter<W> {
     fn new_with_writer(
         logs_root: &Path,
@@ -628,13 +600,14 @@ impl<W: Write + Send> StreamReporter<W> {
             let line = RenderedLine::new(
                 LineKind::Muted,
                 "Details",
-                inner.log.log_path.display().to_string(),
+                inner.log.path().display().to_string(),
             );
             let _ = writeln!(inner.writer, "{}", line.styled());
         }
     }
 }
 
+#[cfg(test)]
 impl<W: Write + Send> ProgressReporter for StreamReporter<W> {
     fn report(&self, event: ProgressEvent<'_>) {
         let mut inner = self.state.lock().unwrap();
@@ -642,18 +615,13 @@ impl<W: Write + Send> ProgressReporter for StreamReporter<W> {
         match &event {
             ProgressEvent::PluginFailed { id, name, stage, summary, detail, context } => {
                 let summary = sanitize_summary(summary, SUMMARY_MAX_LEN);
-                let mut section = format!("plugin id={id} name={name}");
-                if let Some(stage) = stage {
-                    use std::fmt::Write;
-                    let _ = write!(section, " stage={stage}");
-                }
                 let ctx: Vec<(&str, &str)> =
                     context.iter().map(|(k, v)| (*k, v.as_str())).collect();
-                inner.log.write(&section, &summary, detail, &ctx);
+                inner.log.record_plugin_failure(id, name, *stage, &summary, detail, &ctx);
             }
             ProgressEvent::OperationFailed { summary, detail } => {
                 let summary = sanitize_summary(summary, SUMMARY_MAX_LEN);
-                inner.log.write("operation", &summary, detail, &[]);
+                inner.log.record_operation_failure(&summary, detail);
             }
             _ => {}
         }
@@ -668,6 +636,7 @@ impl<W: Write + Send> ProgressReporter for StreamReporter<W> {
     }
 }
 
+#[cfg(test)]
 impl<W: Write + Send> Drop for StreamReporter<W> {
     fn drop(&mut self) {
         if let Ok(mut inner) = self.state.lock() {
