@@ -397,6 +397,21 @@ mod tests {
     }
 
     #[test]
+    fn live_renderer_operation_failure_rewrites_operation_row() {
+        let snapshot = ProgressSnapshot::from_ordered_plugins(vec![(
+            "github.com/acme/a".to_string(),
+            "plugin-a".to_string(),
+        )]);
+        let mut renderer = LiveRenderer::new_for_tests(Vec::new(), 120);
+
+        renderer.bootstrap(&snapshot);
+        renderer.write_operation_failure(&snapshot, "sync failed");
+
+        let row = crate::progress::strip_ansi(renderer.frame_line_for_tests(0).unwrap());
+        assert!(row.contains("Failed operation sync failed"), "row: {row:?}");
+    }
+
+    #[test]
     fn live_renderer_clamps_rows_for_narrow_widths() {
         let mut snapshot = ProgressSnapshot::from_ordered_plugins(vec![(
             "github.com/acme/a".to_string(),

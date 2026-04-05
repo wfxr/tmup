@@ -405,4 +405,31 @@ mod tests {
             super::PluginDisplayState::Failed { stage: Some(PluginStage::Fetching), .. }
         ));
     }
+
+    #[test]
+    fn reducer_does_not_reopen_failed_plugin_after_stage_change() {
+        let mut snapshot = ProgressSnapshot::new_for_tests([("github.com/acme/a", "plugin-a", 0)]);
+
+        apply_event(
+            &mut snapshot,
+            &SnapshotUpdate::PluginFailed {
+                id: "github.com/acme/a".to_string(),
+                stage: Some(PluginStage::Fetching),
+                summary: "fetch failed".to_string(),
+            },
+        );
+        apply_event(
+            &mut snapshot,
+            &SnapshotUpdate::PluginStageChanged {
+                id: "github.com/acme/a".to_string(),
+                stage: PluginStage::Resolving,
+                detail: None,
+            },
+        );
+
+        assert!(matches!(
+            snapshot.plugins[0].state,
+            super::PluginDisplayState::Failed { stage: Some(PluginStage::Fetching), .. }
+        ));
+    }
 }

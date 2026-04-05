@@ -68,53 +68,6 @@ enum ReporterSink<W: Write> {
     Live(LiveRenderer<W>),
 }
 
-impl<W: Write> ReporterSink<W> {
-    fn write_reducer_lines(
-        &mut self,
-        snapshot: &ProgressSnapshot,
-        event: &SnapshotUpdate,
-        lines: Vec<DisplayLine>,
-    ) {
-        match self {
-            Self::Transcript(sink) => sink.write_lines(lines),
-            Self::Live(renderer) => renderer.write_reducer_lines(snapshot, event, lines),
-        }
-    }
-
-    fn write_operation_failure(&mut self, snapshot: &ProgressSnapshot, summary: &str) {
-        match self {
-            Self::Transcript(sink) => sink.write_operation_failure(summary),
-            Self::Live(renderer) => renderer.write_operation_failure(snapshot, summary),
-        }
-    }
-
-    fn finish(
-        &mut self,
-        snapshot: &ProgressSnapshot,
-        command: Option<&'static str>,
-        success: bool,
-        details_path: Option<&Path>,
-        warnings: &[String],
-    ) {
-        match self {
-            Self::Transcript(sink) => {
-                if matches!(command, Some("init")) && success {
-                    sink.write_init_finished();
-                }
-                if let Some(path) = details_path {
-                    sink.write_details_path(path);
-                }
-                for warning in warnings {
-                    sink.write_warning(warning);
-                }
-            }
-            Self::Live(renderer) => {
-                renderer.finish(snapshot, command, success, details_path, warnings)
-            }
-        }
-    }
-}
-
 enum SinkMode {
     Transcript,
     Live,
@@ -128,6 +81,62 @@ struct ReporterState<W: Write> {
     catalog: DisplayCatalog,
     deferred_warnings: Vec<String>,
     finished: bool,
+}
+
+impl<W: Write> ReporterState<W> {
+    fn ensure_plugin_slot(&mut self, id: &str, name: &str) {
+        let label = self.catalog.label_for(id, name).to_string();
+        self.snapshot.ensure_plugin(id, &label);
+    }
+
+    fn apply_snapshot_update(&mut self, snapshot_update: SnapshotUpdate) {
+        reducer::apply_event(&mut self.snapshot, &snapshot_update);
+        let lines = self.renderer.render_lines(&self.snapshot, &snapshot_update);
+
+        let snapshot = &self.snapshot;
+        match &mut self.sink {
+            ReporterSink::Transcript(sink) => sink.write_lines(lines),
+            ReporterSink::Live(renderer) => {
+                renderer.write_reducer_lines(snapshot, &snapshot_update, lines)
+            }
+        }
+    }
+
+    fn write_operation_failure(&mut self, summary: &str) {
+        let snapshot = &self.snapshot;
+        match &mut self.sink {
+            ReporterSink::Transcript(sink) => sink.write_operation_failure(summary),
+            ReporterSink::Live(renderer) => renderer.write_operation_failure(snapshot, summary),
+        }
+    }
+
+    fn finish(&mut self, command: Option<&'static str>, success: bool) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+
+        let details_path = self.log.has_details().then(|| self.log.path().to_path_buf());
+        let snapshot = &self.snapshot;
+        let warnings = &self.deferred_warnings;
+
+        match &mut self.sink {
+            ReporterSink::Transcript(sink) => {
+                if matches!(command, Some("init")) && success {
+                    sink.write_init_finished();
+                }
+                if let Some(path) = details_path.as_deref() {
+                    sink.write_details_path(path);
+                }
+                for warning in warnings {
+                    sink.write_warning(warning);
+                }
+            }
+            ReporterSink::Live(renderer) => {
+                renderer.finish(snapshot, command, success, details_path.as_deref(), warnings)
+            }
+        }
+    }
 }
 
 /// Runtime reducer-driven reporter implementation.
@@ -187,18 +196,7 @@ impl<W: Write + Send> ReducerReporter<W> {
     }
 
     fn finish(inner: &mut ReporterState<W>, command: Option<&'static str>, success: bool) {
-        if inner.finished {
-            return;
-        }
-        inner.finished = true;
-        let details_path = inner.log.has_details().then(|| inner.log.path().to_path_buf());
-        inner.sink.finish(
-            &inner.snapshot,
-            command,
-            success,
-            details_path.as_deref(),
-            &inner.deferred_warnings,
-        );
+        inner.finish(command, success);
     }
 
     /// Convert public borrowed progress events into an owned reducer event so the
@@ -249,19 +247,13 @@ impl<W: Write + Send> ProgressReporter for ReducerReporter<W> {
             ProgressEvent::PluginStage { id, name, .. }
             | ProgressEvent::PluginFinished { id, name, .. }
             | ProgressEvent::PluginFailed { id, name, .. } => {
-                let label = inner.catalog.label_for(id, name).to_string();
-                inner.snapshot.ensure_plugin(id, &label);
+                inner.ensure_plugin_slot(id, name);
             }
             _ => {}
         }
 
         if let Some(snapshot_update) = Self::to_snapshot_update(&event) {
-            reducer::apply_event(&mut inner.snapshot, &snapshot_update);
-            let lines = inner.renderer.render_lines(&inner.snapshot, &snapshot_update);
-            // TODO: avoid cloning the whole snapshot once the sink API can render
-            // directly from a borrowed reporter state without fighting the mutex borrow.
-            let snapshot = inner.snapshot.clone();
-            inner.sink.write_reducer_lines(&snapshot, &snapshot_update, lines);
+            inner.apply_snapshot_update(snapshot_update);
         }
 
         match &event {
@@ -280,8 +272,7 @@ impl<W: Write + Send> ProgressReporter for ReducerReporter<W> {
                 if let Some(warning) = inner.log.take_warning() {
                     inner.deferred_warnings.push(warning);
                 }
-                let snapshot = inner.snapshot.clone();
-                inner.sink.write_operation_failure(&snapshot, &summary);
+                inner.write_operation_failure(&summary);
             }
             ProgressEvent::OperationEnd { command, success } => {
                 Self::finish(&mut inner, Some(command), *success);
