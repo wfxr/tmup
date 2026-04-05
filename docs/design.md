@@ -41,7 +41,8 @@ script-friendly behavior with reliable exit codes.
    layout**: e.g. plugins that enumerate `$TMUX_PLUGIN_MANAGER_PATH` children.
 4. **No implicit updates during init**: startup may install missing plugins
    but never advances existing plugin versions. Known-failed build tuples are
-   still recorded, but may be retried during the implicit sync phase.
+   still recorded, and init-mode implicit sync suppresses exact-tuple retries
+   until the `(plugin-id, commit, build-command-hash)` changes.
 5. **No full-screen TUI in MVP**: tmup supports a live terminal progress view
    for long-running operations, but does not provide an interactive full-screen
    TUI.

@@ -6,7 +6,7 @@ use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{QueueableCommand, cursor};
 
 use crate::progress::ACTION_WIDTH;
-use crate::progress::reducer::{ProgressSnapshot, ReducerEvent};
+use crate::progress::reducer::{ProgressSnapshot, SnapshotUpdate};
 use crate::progress::render::DisplayLine;
 use crate::termui::{self, Accent};
 
@@ -75,7 +75,7 @@ impl<W: Write> LiveRenderer<W> {
     pub(crate) fn write_reducer_lines(
         &mut self,
         snapshot: &ProgressSnapshot,
-        event: &ReducerEvent,
+        event: &SnapshotUpdate,
         lines: Vec<DisplayLine>,
     ) {
         if self.frozen {
@@ -94,7 +94,7 @@ impl<W: Write> LiveRenderer<W> {
             ACTION_WIDTH,
             &line.message,
             line.accent,
-            self.terminal_width,
+            self.render_width(),
         );
         self.write_row(row, rendered);
     }
@@ -110,7 +110,7 @@ impl<W: Write> LiveRenderer<W> {
             ACTION_WIDTH,
             &format!("operation {summary}"),
             Accent::Error,
-            self.terminal_width,
+            self.render_width(),
         );
         self.write_row(0, rendered);
     }
@@ -135,7 +135,7 @@ impl<W: Write> LiveRenderer<W> {
                 ACTION_WIDTH,
                 "tmup init",
                 Accent::Success,
-                self.terminal_width,
+                self.render_width(),
             );
             self.write_row(0, rendered);
         }
@@ -145,7 +145,7 @@ impl<W: Write> LiveRenderer<W> {
                 ACTION_WIDTH,
                 &path.display().to_string(),
                 Accent::Muted,
-                self.terminal_width,
+                self.render_width(),
             );
             let _ = writeln!(self.writer, "{details_line}");
         }
@@ -155,7 +155,7 @@ impl<W: Write> LiveRenderer<W> {
                 ACTION_WIDTH,
                 warning,
                 Accent::Warning,
-                self.terminal_width,
+                self.render_width(),
             );
             let _ = writeln!(self.writer, "{warning_line}");
         }
@@ -183,7 +183,7 @@ impl<W: Write> LiveRenderer<W> {
             ACTION_WIDTH,
             "pending",
             Accent::Muted,
-            self.terminal_width,
+            self.render_width(),
         )
     }
 
@@ -193,8 +193,12 @@ impl<W: Write> LiveRenderer<W> {
             ACTION_WIDTH,
             label,
             Accent::Muted,
-            self.terminal_width,
+            self.render_width(),
         )
+    }
+
+    fn render_width(&self) -> usize {
+        self.terminal_width.saturating_sub(1).max(1)
     }
 
     fn write_row(&mut self, row: usize, rendered: String) {
@@ -221,12 +225,12 @@ impl<W: Write> LiveRenderer<W> {
     }
 }
 
-fn row_for_event(snapshot: &ProgressSnapshot, event: &ReducerEvent) -> Option<usize> {
+fn row_for_event(snapshot: &ProgressSnapshot, event: &SnapshotUpdate) -> Option<usize> {
     match event {
-        ReducerEvent::OperationStageChanged { .. } => Some(0),
-        ReducerEvent::PluginStageChanged { id, .. }
-        | ReducerEvent::PluginFinished { id, .. }
-        | ReducerEvent::PluginFailed { id, .. } => {
+        SnapshotUpdate::OperationStageChanged { .. } => Some(0),
+        SnapshotUpdate::PluginStageChanged { id, .. }
+        | SnapshotUpdate::PluginFinished { id, .. }
+        | SnapshotUpdate::PluginFailed { id, .. } => {
             snapshot.plugin(id).map(|plugin| plugin.slot + 1)
         }
     }
@@ -261,7 +265,7 @@ mod tests {
 
     use super::LiveRenderer;
     use crate::progress::model::{OperationStage, PluginOutcome, PluginStage, PluginStageDetail};
-    use crate::progress::reducer::{ProgressSnapshot, ReducerEvent, apply_event};
+    use crate::progress::reducer::{ProgressSnapshot, SnapshotUpdate, apply_event};
     use crate::progress::render::TranscriptRenderer;
 
     #[test]
@@ -279,23 +283,23 @@ mod tests {
         let plugin_a_row = snapshot.plugin("github.com/acme/a").unwrap().slot + 1;
         let plugin_b_row = snapshot.plugin("github.com/acme/b").unwrap().slot + 1;
 
-        let plugin_a_event = ReducerEvent::PluginStageChanged {
+        let plugin_a_event = SnapshotUpdate::PluginStageChanged {
             id: "github.com/acme/a".to_string(),
             stage: PluginStage::Fetching,
             detail: Some(PluginStageDetail::CloneUrl("https://example.com/a.git".to_string())),
         };
-        apply_event(&mut snapshot, plugin_a_event.clone());
+        apply_event(&mut snapshot, &plugin_a_event);
         let plugin_a_lines = transcript.render_lines(&snapshot, &plugin_a_event);
         renderer.write_reducer_lines(&snapshot, &plugin_a_event, plugin_a_lines);
         let plugin_a_line_after_a =
             renderer.frame_line_for_tests(plugin_a_row).unwrap().to_string();
 
-        let plugin_b_event = ReducerEvent::PluginStageChanged {
+        let plugin_b_event = SnapshotUpdate::PluginStageChanged {
             id: "github.com/acme/b".to_string(),
             stage: PluginStage::Fetching,
             detail: Some(PluginStageDetail::CloneUrl("https://example.com/b.git".to_string())),
         };
-        apply_event(&mut snapshot, plugin_b_event.clone());
+        apply_event(&mut snapshot, &plugin_b_event);
         let plugin_b_lines = transcript.render_lines(&snapshot, &plugin_b_event);
         renderer.write_reducer_lines(&snapshot, &plugin_b_event, plugin_b_lines);
 
@@ -305,19 +309,19 @@ mod tests {
         );
         assert!(renderer.frame_line_for_tests(plugin_b_row).unwrap().contains("plugin-b"));
 
-        let finished_event = ReducerEvent::PluginFinished {
+        let finished_event = SnapshotUpdate::PluginFinished {
             id: "github.com/acme/a".to_string(),
             outcome: PluginOutcome::Installed { commit: "abc1234".to_string() },
         };
-        apply_event(&mut snapshot, finished_event.clone());
+        apply_event(&mut snapshot, &finished_event);
         let finished_lines = transcript.render_lines(&snapshot, &finished_event);
         renderer.write_reducer_lines(&snapshot, &finished_event, finished_lines);
         let finished_line = renderer.frame_line_for_tests(plugin_a_row).unwrap().to_string();
         assert!(finished_line.contains("Installed"));
 
         let operation_event =
-            ReducerEvent::OperationStageChanged { stage: OperationStage::WaitingForLock };
-        apply_event(&mut snapshot, operation_event.clone());
+            SnapshotUpdate::OperationStageChanged { stage: OperationStage::WaitingForLock };
+        apply_event(&mut snapshot, &operation_event);
         let operation_lines = transcript.render_lines(&snapshot, &operation_event);
         renderer.write_reducer_lines(&snapshot, &operation_event, operation_lines);
         assert_eq!(renderer.frame_line_for_tests(plugin_a_row).unwrap(), finished_line);
@@ -326,12 +330,12 @@ mod tests {
         assert!(renderer.frozen_for_tests());
         let frozen_line = renderer.frame_line_for_tests(plugin_a_row).unwrap().to_string();
 
-        let after_finish_event = ReducerEvent::PluginStageChanged {
+        let after_finish_event = SnapshotUpdate::PluginStageChanged {
             id: "github.com/acme/a".to_string(),
             stage: PluginStage::Resolving,
             detail: None,
         };
-        apply_event(&mut snapshot, after_finish_event.clone());
+        apply_event(&mut snapshot, &after_finish_event);
         let after_finish_lines = transcript.render_lines(&snapshot, &after_finish_event);
         renderer.write_reducer_lines(&snapshot, &after_finish_event, after_finish_lines);
         assert_eq!(renderer.frame_line_for_tests(plugin_a_row).unwrap(), frozen_line);
@@ -400,19 +404,46 @@ mod tests {
         )]);
         let mut renderer = LiveRenderer::new_for_tests(Vec::new(), 12);
         let transcript = TranscriptRenderer::new();
-        let event = ReducerEvent::PluginStageChanged {
+        let event = SnapshotUpdate::PluginStageChanged {
             id: "github.com/acme/a".to_string(),
             stage: PluginStage::CheckingOut,
             detail: None,
         };
 
         renderer.bootstrap(&snapshot);
-        apply_event(&mut snapshot, event.clone());
+        apply_event(&mut snapshot, &event);
         let lines = transcript.render_lines(&snapshot, &event);
         renderer.write_reducer_lines(&snapshot, &event, lines);
 
         let row = snapshot.plugin("github.com/acme/a").unwrap().slot + 1;
         let plain = crate::progress::strip_ansi(renderer.frame_line_for_tests(row).unwrap());
         assert!(UnicodeWidthStr::width(plain.as_str()) <= 12, "plain line: {plain:?}");
+    }
+
+    #[test]
+    fn live_renderer_keeps_rows_strictly_within_terminal_width() {
+        let mut snapshot = ProgressSnapshot::from_ordered_plugins(vec![(
+            "github.com/acme/a".to_string(),
+            "plugin-a".to_string(),
+        )]);
+        let mut renderer = LiveRenderer::new_for_tests(Vec::new(), 12);
+        let transcript = TranscriptRenderer::new();
+        let event = SnapshotUpdate::PluginStageChanged {
+            id: "github.com/acme/a".to_string(),
+            stage: PluginStage::CheckingOut,
+            detail: None,
+        };
+
+        renderer.bootstrap(&snapshot);
+        apply_event(&mut snapshot, &event);
+        let lines = transcript.render_lines(&snapshot, &event);
+        renderer.write_reducer_lines(&snapshot, &event, lines);
+
+        let row = snapshot.plugin("github.com/acme/a").unwrap().slot + 1;
+        let plain = crate::progress::strip_ansi(renderer.frame_line_for_tests(row).unwrap());
+        assert!(
+            UnicodeWidthStr::width(plain.as_str()) < 12,
+            "live rows must leave one spare column to avoid terminal autowrap: {plain:?}"
+        );
     }
 }

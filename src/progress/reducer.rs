@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use crate::progress::model::{OperationStage, PluginOutcome, PluginStage, PluginStageDetail};
 
-/// Minimal structured events consumed by the reducer in Task 1.
+/// Narrowed snapshot updates derived from public progress events.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ReducerEvent {
+pub(crate) enum SnapshotUpdate {
     /// Operation-level stage transition.
     OperationStageChanged {
         /// New operation stage.
@@ -144,14 +144,16 @@ impl ProgressSnapshot {
 }
 
 /// Apply one structured progress event to a mutable snapshot.
-pub(crate) fn apply_event(snapshot: &mut ProgressSnapshot, event: ReducerEvent) {
+pub(crate) fn apply_event(snapshot: &mut ProgressSnapshot, event: &SnapshotUpdate) {
     match event {
-        ReducerEvent::OperationStageChanged { stage } => {
-            snapshot.operation.stage = Some(stage);
+        SnapshotUpdate::OperationStageChanged { stage } => {
+            snapshot.operation.stage = Some(*stage);
         }
-        ReducerEvent::PluginStageChanged { id, stage, detail } => {
-            if let Some(plugin) =
-                snapshot.plugin_index.get(&id).and_then(|idx| snapshot.plugins.get_mut(*idx))
+        SnapshotUpdate::PluginStageChanged { id, stage, detail } => {
+            if let Some(plugin) = snapshot
+                .plugin_index
+                .get(id.as_str())
+                .and_then(|idx| snapshot.plugins.get_mut(*idx))
             {
                 if matches!(
                     plugin.state,
@@ -159,21 +161,39 @@ pub(crate) fn apply_event(snapshot: &mut ProgressSnapshot, event: ReducerEvent) 
                 ) {
                     return;
                 }
-                plugin.state = PluginDisplayState::Running { stage, detail };
+                plugin.state =
+                    PluginDisplayState::Running { stage: *stage, detail: detail.clone() };
             }
         }
-        ReducerEvent::PluginFinished { id, outcome } => {
-            if let Some(plugin) =
-                snapshot.plugin_index.get(&id).and_then(|idx| snapshot.plugins.get_mut(*idx))
+        SnapshotUpdate::PluginFinished { id, outcome } => {
+            if let Some(plugin) = snapshot
+                .plugin_index
+                .get(id.as_str())
+                .and_then(|idx| snapshot.plugins.get_mut(*idx))
             {
-                plugin.state = PluginDisplayState::Finished(outcome);
+                if matches!(
+                    plugin.state,
+                    PluginDisplayState::Finished(_) | PluginDisplayState::Failed { .. }
+                ) {
+                    return;
+                }
+                plugin.state = PluginDisplayState::Finished(outcome.clone());
             }
         }
-        ReducerEvent::PluginFailed { id, stage, summary } => {
-            if let Some(plugin) =
-                snapshot.plugin_index.get(&id).and_then(|idx| snapshot.plugins.get_mut(*idx))
+        SnapshotUpdate::PluginFailed { id, stage, summary } => {
+            if let Some(plugin) = snapshot
+                .plugin_index
+                .get(id.as_str())
+                .and_then(|idx| snapshot.plugins.get_mut(*idx))
             {
-                plugin.state = PluginDisplayState::Failed { stage, summary };
+                if matches!(
+                    plugin.state,
+                    PluginDisplayState::Finished(_) | PluginDisplayState::Failed { .. }
+                ) {
+                    return;
+                }
+                plugin.state =
+                    PluginDisplayState::Failed { stage: *stage, summary: summary.clone() };
             }
         }
     }
@@ -181,7 +201,7 @@ pub(crate) fn apply_event(snapshot: &mut ProgressSnapshot, event: ReducerEvent) 
 
 #[cfg(test)]
 mod tests {
-    use super::{ProgressSnapshot, ReducerEvent, apply_event};
+    use super::{ProgressSnapshot, SnapshotUpdate, apply_event};
     use crate::progress::model::{
         OperationStage, PluginOutcome, PluginStage, PluginStageDetail, SkipReason,
     };
@@ -192,13 +212,13 @@ mod tests {
 
         apply_event(
             &mut snapshot,
-            ReducerEvent::OperationStageChanged { stage: OperationStage::Syncing },
+            &SnapshotUpdate::OperationStageChanged { stage: OperationStage::Syncing },
         );
         assert_eq!(snapshot.operation.stage, Some(OperationStage::Syncing));
 
         apply_event(
             &mut snapshot,
-            ReducerEvent::PluginStageChanged {
+            &SnapshotUpdate::PluginStageChanged {
                 id: "github.com/acme/a".to_string(),
                 stage: PluginStage::Fetching,
                 detail: Some(PluginStageDetail::CloneUrl(
@@ -213,7 +233,7 @@ mod tests {
 
         apply_event(
             &mut snapshot,
-            ReducerEvent::PluginStageChanged {
+            &SnapshotUpdate::PluginStageChanged {
                 id: "github.com/acme/a".to_string(),
                 stage: PluginStage::Resolving,
                 detail: None,
@@ -226,7 +246,7 @@ mod tests {
 
         apply_event(
             &mut snapshot,
-            ReducerEvent::PluginStageChanged {
+            &SnapshotUpdate::PluginStageChanged {
                 id: "github.com/acme/a".to_string(),
                 stage: PluginStage::Applying,
                 detail: Some(PluginStageDetail::BuildCommand("make build".to_string())),
@@ -239,7 +259,7 @@ mod tests {
 
         apply_event(
             &mut snapshot,
-            ReducerEvent::PluginFinished {
+            &SnapshotUpdate::PluginFinished {
                 id: "github.com/acme/a".to_string(),
                 outcome: PluginOutcome::Skipped {
                     reason: SkipReason::Other("not selected".to_string()),
@@ -254,7 +274,7 @@ mod tests {
 
         apply_event(
             &mut snapshot,
-            ReducerEvent::PluginFailed {
+            &SnapshotUpdate::PluginFailed {
                 id: "github.com/acme/a".to_string(),
                 stage: Some(PluginStage::Applying),
                 summary: "build failed".to_string(),
@@ -263,7 +283,7 @@ mod tests {
         assert_eq!(snapshot.plugins[0].slot, 0);
         assert!(matches!(
             snapshot.plugins[0].state,
-            super::PluginDisplayState::Failed { stage: Some(PluginStage::Applying), .. }
+            super::PluginDisplayState::Finished(PluginOutcome::Skipped { .. })
         ));
     }
 
@@ -276,7 +296,7 @@ mod tests {
 
         apply_event(
             &mut snapshot,
-            ReducerEvent::PluginStageChanged {
+            &SnapshotUpdate::PluginStageChanged {
                 id: "github.com/acme/a".to_string(),
                 stage: PluginStage::Fetching,
                 detail: None,
@@ -284,14 +304,14 @@ mod tests {
         );
         apply_event(
             &mut snapshot,
-            ReducerEvent::PluginFinished {
+            &SnapshotUpdate::PluginFinished {
                 id: "github.com/acme/b".to_string(),
                 outcome: PluginOutcome::Installed { commit: "abc1234".to_string() },
             },
         );
         apply_event(
             &mut snapshot,
-            ReducerEvent::PluginFailed {
+            &SnapshotUpdate::PluginFailed {
                 id: "github.com/acme/a".to_string(),
                 stage: Some(PluginStage::Resolving),
                 summary: "fetch failed".to_string(),
@@ -316,14 +336,14 @@ mod tests {
 
         apply_event(
             &mut snapshot,
-            ReducerEvent::PluginFinished {
+            &SnapshotUpdate::PluginFinished {
                 id: "github.com/acme/missing".to_string(),
                 outcome: PluginOutcome::CheckedUpToDate,
             },
         );
         apply_event(
             &mut snapshot,
-            ReducerEvent::PluginFailed {
+            &SnapshotUpdate::PluginFailed {
                 id: "github.com/acme/missing".to_string(),
                 stage: Some(PluginStage::Fetching),
                 summary: "missing".to_string(),
@@ -340,14 +360,14 @@ mod tests {
 
         apply_event(
             &mut snapshot,
-            ReducerEvent::PluginFinished {
+            &SnapshotUpdate::PluginFinished {
                 id: "github.com/acme/a".to_string(),
                 outcome: PluginOutcome::Installed { commit: "abc1234".to_string() },
             },
         );
         apply_event(
             &mut snapshot,
-            ReducerEvent::PluginStageChanged {
+            &SnapshotUpdate::PluginStageChanged {
                 id: "github.com/acme/a".to_string(),
                 stage: PluginStage::Resolving,
                 detail: None,
@@ -357,6 +377,32 @@ mod tests {
         assert!(matches!(
             snapshot.plugins[0].state,
             super::PluginDisplayState::Finished(PluginOutcome::Installed { .. })
+        ));
+    }
+
+    #[test]
+    fn reducer_keeps_first_terminal_state() {
+        let mut snapshot = ProgressSnapshot::new_for_tests([("github.com/acme/a", "plugin-a", 0)]);
+
+        apply_event(
+            &mut snapshot,
+            &SnapshotUpdate::PluginFailed {
+                id: "github.com/acme/a".to_string(),
+                stage: Some(PluginStage::Fetching),
+                summary: "fetch failed".to_string(),
+            },
+        );
+        apply_event(
+            &mut snapshot,
+            &SnapshotUpdate::PluginFinished {
+                id: "github.com/acme/a".to_string(),
+                outcome: PluginOutcome::Installed { commit: "abc1234".to_string() },
+            },
+        );
+
+        assert!(matches!(
+            snapshot.plugins[0].state,
+            super::PluginDisplayState::Failed { stage: Some(PluginStage::Fetching), .. }
         ));
     }
 }

@@ -194,3 +194,74 @@ impl std::fmt::Display for PluginStage {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{PluginStageDetail, TrackingResolution, TrackingSelector};
+    use crate::lockfile::TrackingRecord;
+    use crate::model::Tracking;
+
+    #[test]
+    fn from_tracking_maps_declared_selectors() {
+        for (tracking, expected) in [
+            (Tracking::DefaultBranch, TrackingSelector::DefaultBranch),
+            (Tracking::Branch("main".to_string()), TrackingSelector::Branch("main".to_string())),
+            (Tracking::Tag("v1.2.3".to_string()), TrackingSelector::Tag("v1.2.3".to_string())),
+            (
+                Tracking::Commit("abcdef1234567890".to_string()),
+                TrackingSelector::Commit("abcdef1234567890".to_string()),
+            ),
+        ] {
+            let detail = PluginStageDetail::from_tracking(
+                &tracking,
+                &TrackingRecord { kind: "commit".to_string(), value: "1234567".to_string() },
+                "abcdef1234567890",
+            );
+            assert!(matches!(
+                detail,
+                PluginStageDetail::TrackingResolution {
+                    selector,
+                    resolved: TrackingResolution::Commit { .. },
+                    commit,
+                } if selector == expected && commit == "abcdef1"
+            ));
+        }
+    }
+
+    #[test]
+    fn from_tracking_maps_resolved_tracking_records() {
+        for (kind, value, expected) in [
+            (
+                "default-branch",
+                "main",
+                TrackingResolution::DefaultBranch { branch: "main".to_string() },
+            ),
+            ("branch", "develop", TrackingResolution::Branch { branch: "develop".to_string() }),
+            ("tag", "v1.0.0", TrackingResolution::Tag { tag: "v1.0.0".to_string() }),
+            (
+                "commit",
+                "0123456789abcdef",
+                TrackingResolution::Commit { commit: "0123456789abcdef".to_string() },
+            ),
+            (
+                "unexpected-kind",
+                "fedcba9876543210",
+                TrackingResolution::Commit { commit: "fedcba9876543210".to_string() },
+            ),
+        ] {
+            let detail = PluginStageDetail::from_tracking(
+                &Tracking::DefaultBranch,
+                &TrackingRecord { kind: kind.to_string(), value: value.to_string() },
+                "abcdef1234567890",
+            );
+            assert!(matches!(
+                detail,
+                PluginStageDetail::TrackingResolution {
+                    selector: TrackingSelector::DefaultBranch,
+                    resolved,
+                    commit,
+                } if resolved == expected && commit == "abcdef1"
+            ));
+        }
+    }
+}
