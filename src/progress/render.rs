@@ -78,6 +78,11 @@ impl TranscriptRenderer {
                 message: operation_message(*stage).to_string(),
             }],
             ProgressEvent::PluginStageChanged { id, stage, detail } => {
+                if matches!(stage, PluginStage::Applying)
+                    && !matches!(detail, Some(PluginStageDetail::BuildCommand(_)))
+                {
+                    return Vec::new();
+                }
                 let plugin = match snapshot.plugin(id) {
                     Some(plugin) => plugin,
                     None => {
@@ -494,5 +499,22 @@ mod tests {
             apply_event(&mut snapshot, event.clone());
             assert_eq!(renderer.render_event(&snapshot, &event), vec![expected.to_string()]);
         }
+    }
+
+    #[test]
+    fn transcript_renderer_skips_applying_stage_without_build_command() {
+        let mut snapshot = ProgressSnapshot::new_for_tests([(
+            "github.com/tmux-plugins/tmux-sensible",
+            "tmux-sensible",
+            0,
+        )]);
+        let renderer = TranscriptRenderer::new();
+        let event = ProgressEvent::PluginStageChanged {
+            id: "github.com/tmux-plugins/tmux-sensible".to_string(),
+            stage: PluginStage::Applying,
+            detail: None,
+        };
+        apply_event(&mut snapshot, event.clone());
+        assert_eq!(renderer.render_event(&snapshot, &event), Vec::<String>::new());
     }
 }

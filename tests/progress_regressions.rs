@@ -343,8 +343,7 @@ fn assert_no_live_cursor_sequences(stderr: &str) {
         ("\x1b[?25l", "hide-cursor"),
         ("\x1b[?25h", "show-cursor"),
         ("\x1b[2K", "clear-line"),
-        ("\x1b[A", "cursor-up"),
-        ("\x1b[B", "cursor-down"),
+        ("\x1b[", "cursor-control"),
         ("\r", "carriage-return"),
     ] {
         assert!(

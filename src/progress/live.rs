@@ -120,6 +120,7 @@ impl<W: Write> LiveRenderer<W> {
         &mut self,
         snapshot: &ProgressSnapshot,
         command: Option<&'static str>,
+        success: bool,
         details_path: Option<&Path>,
     ) {
         if self.frozen {
@@ -127,7 +128,7 @@ impl<W: Write> LiveRenderer<W> {
         }
         self.bootstrap(snapshot);
 
-        if matches!(command, Some("init")) {
+        if matches!(command, Some("init")) && success {
             let rendered = termui::format_styled_labeled_line_clamped(
                 "Finished",
                 ACTION_WIDTH,
@@ -194,7 +195,7 @@ impl<W: Write> LiveRenderer<W> {
             return;
         }
 
-        let up = self.frame_lines.len().saturating_sub(row.saturating_add(1)) as u16;
+        let up = self.frame_lines.len().saturating_sub(row) as u16;
         if up > 0 {
             let _ = self.writer.queue(cursor::MoveUp(up));
         }
@@ -238,7 +239,7 @@ impl LiveRenderer<Vec<u8>> {
         self.frozen
     }
 
-    fn output_for_tests(&self) -> String {
+    pub(crate) fn output_for_tests(&self) -> String {
         String::from_utf8_lossy(&self.writer).to_string()
     }
 }
@@ -308,7 +309,7 @@ mod tests {
         renderer.write_reducer_lines(&snapshot, &operation_event, operation_lines);
         assert_eq!(renderer.frame_line_for_tests(plugin_a_row).unwrap(), finished_line);
 
-        renderer.finish(&snapshot, Some("update"), None);
+        renderer.finish(&snapshot, Some("update"), true, None);
         assert!(renderer.frozen_for_tests());
         let frozen_line = renderer.frame_line_for_tests(plugin_a_row).unwrap().to_string();
 
@@ -334,9 +335,9 @@ mod tests {
 
         renderer.write_row(1, "updated-row".to_string());
         let output = renderer.output_for_tests();
-        assert!(output.contains("\u{1b}[1A"), "output: {output:?}");
-        assert!(output.contains("\u{1b}[1B"), "output: {output:?}");
-        assert!(!output.contains("\u{1b}[2A"), "output: {output:?}");
-        assert!(!output.contains("\u{1b}[2B"), "output: {output:?}");
+        assert!(output.contains("\u{1b}[2A"), "output: {output:?}");
+        assert!(output.contains("\u{1b}[2B"), "output: {output:?}");
+        assert!(!output.contains("\u{1b}[1A"), "output: {output:?}");
+        assert!(!output.contains("\u{1b}[1B"), "output: {output:?}");
     }
 }

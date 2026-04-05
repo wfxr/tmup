@@ -478,11 +478,11 @@ async fn run_init_child(
     let _guard = OperationLock::acquire(&paths.lock_path)?;
     match run_init_core(&cfg, &paths, &*reporter).await {
         Ok(InitCoreResult::Success) => {
-            reporter.report(ProgressEvent::OperationEnd { command: "init" });
+            reporter.report(ProgressEvent::OperationEnd { command: "init", success: true });
             Ok(())
         }
         Ok(InitCoreResult::WriteFailures(_)) => {
-            reporter.report(ProgressEvent::OperationEnd { command: "init" });
+            reporter.report(ProgressEvent::OperationEnd { command: "init", success: false });
             Err(progress::reported_error())
         }
         Err(e) => {
@@ -490,7 +490,7 @@ async fn run_init_child(
                 let (summary, detail) = progress::summarize_error(&e);
                 reporter.report(ProgressEvent::OperationFailed { summary, detail });
             }
-            reporter.report(ProgressEvent::OperationEnd { command: "init" });
+            reporter.report(ProgressEvent::OperationEnd { command: "init", success: false });
             Err(progress::reported_error())
         }
     }
@@ -858,17 +858,17 @@ fn finish_visible_operation(
 ) -> Result<()> {
     match result {
         Ok(()) => {
-            reporter.report(ProgressEvent::OperationEnd { command });
+            reporter.report(ProgressEvent::OperationEnd { command, success: true });
             Ok(())
         }
         Err(e) if progress::is_progress_failure(&e) => {
-            reporter.report(ProgressEvent::OperationEnd { command });
+            reporter.report(ProgressEvent::OperationEnd { command, success: false });
             Err(progress::reported_error())
         }
         Err(e) => {
             let (summary, detail) = progress::summarize_error(&e);
             reporter.report(ProgressEvent::OperationFailed { summary, detail });
-            reporter.report(ProgressEvent::OperationEnd { command });
+            reporter.report(ProgressEvent::OperationEnd { command, success: false });
             Err(progress::reported_error())
         }
     }

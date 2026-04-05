@@ -83,6 +83,8 @@ pub enum ProgressEvent<'a> {
     OperationEnd {
         /// The subcommand name (e.g. `"init"`, `"update"`).
         command: &'static str,
+        /// Whether the operation completed successfully.
+        success: bool,
     },
 }
 
@@ -254,6 +256,6 @@ mod tests {
     fn null_reporter_accepts_events() {
         let reporter = NullReporter;
         reporter.report(ProgressEvent::OperationStart { command: "test" });
-        reporter.report(ProgressEvent::OperationEnd { command: "test" });
+        reporter.report(ProgressEvent::OperationEnd { command: "test", success: true });
     }
 }
