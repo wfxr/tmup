@@ -206,11 +206,14 @@ impl<W: Write + Send> ReducerReporter<W> {
     /// plugin-terminal events.
     fn to_snapshot_update(event: &ProgressEvent<'_>) -> Option<SnapshotUpdate> {
         match event {
-            ProgressEvent::OperationStart { .. }
-            | ProgressEvent::OperationFailed { .. }
-            | ProgressEvent::OperationEnd { .. } => None,
+            ProgressEvent::OperationStart { .. } | ProgressEvent::OperationEnd { .. } => None,
             ProgressEvent::OperationStage { stage } => {
                 Some(SnapshotUpdate::OperationStageChanged { stage: *stage })
+            }
+            ProgressEvent::OperationFailed { summary, .. } => {
+                Some(SnapshotUpdate::OperationFailed {
+                    summary: super::sanitize_summary(summary, super::SUMMARY_MAX_LEN),
+                })
             }
             ProgressEvent::PluginStage { id, stage, detail, .. } => {
                 Some(SnapshotUpdate::PluginStageChanged {
@@ -341,6 +344,7 @@ mod tests {
     use crate::model::{Config, Options, PluginSource, PluginSpec, Tracking};
     use crate::progress::catalog::DisplayCatalog;
     use crate::progress::model::PluginStageDetail;
+    use crate::progress::reducer::OperationTerminalState;
     use crate::progress::{OperationStage, PluginStage, ProgressEvent, ProgressReporter};
 
     fn remote_plugin(raw: &str, id: &str, name: &str) -> PluginSpec {
@@ -467,6 +471,36 @@ mod tests {
         let output = crate::progress::strip_ansi(&output);
         assert!(output.contains("Failed operation sync failed"), "output:\n{output}");
         assert!(!output.contains("Finished tmup init"), "output:\n{output}");
+    }
+
+    #[test]
+    fn reporter_records_operation_failure_in_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config {
+            options: Options::default(),
+            plugins: vec![remote_plugin(
+                "tmux-plugins/tmux-sensible",
+                "github.com/tmux-plugins/tmux-sensible",
+                "tmux-sensible",
+            )],
+        };
+        let catalog = DisplayCatalog::from_config(&config, None);
+        let reporter =
+            ReducerReporter::new_with_writer_for_tests(dir.path(), "init", catalog, Vec::new());
+
+        reporter.report(ProgressEvent::OperationStart { command: "init" });
+        reporter.report(ProgressEvent::OperationStage { stage: OperationStage::WaitingForLock });
+        reporter.report(ProgressEvent::OperationFailed {
+            summary: "sync failed".to_string(),
+            detail: "full error".to_string(),
+        });
+
+        let (snapshot, _) = reporter.snapshot_and_output_for_tests();
+        assert_eq!(snapshot.operation.stage, Some(OperationStage::WaitingForLock));
+        assert!(matches!(
+            snapshot.operation.terminal,
+            Some(OperationTerminalState::Failed { ref summary }) if summary == "sync failed"
+        ));
     }
 
     #[test]
