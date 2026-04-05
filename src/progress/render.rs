@@ -2,7 +2,7 @@ use crate::progress::model::{
     OperationStage, PluginOutcome, PluginStage, PluginStageDetail, SkipReason, TrackingResolution,
     TrackingSelector,
 };
-use crate::progress::reducer::{ProgressSnapshot, ReducerEvent};
+use crate::progress::reducer::{ProgressSnapshot, SnapshotUpdate};
 use crate::termui::{self, Accent};
 
 #[cfg(test)]
@@ -61,7 +61,7 @@ impl TranscriptRenderer {
     pub(crate) fn render_event(
         &self,
         snapshot: &ProgressSnapshot,
-        event: &ReducerEvent,
+        event: &SnapshotUpdate,
     ) -> Vec<String> {
         self.render_lines(snapshot, event).into_iter().map(|line| line.plain()).collect()
     }
@@ -70,16 +70,16 @@ impl TranscriptRenderer {
     pub(crate) fn render_lines(
         &self,
         snapshot: &ProgressSnapshot,
-        event: &ReducerEvent,
+        event: &SnapshotUpdate,
     ) -> Vec<DisplayLine> {
         match event {
-            ReducerEvent::OperationStageChanged { stage } => vec![DisplayLine {
+            SnapshotUpdate::OperationStageChanged { stage } => vec![DisplayLine {
                 kind: LineKind::Stage,
                 accent: Accent::Info,
-                label: title_case(operation_label(*stage)),
+                label: title_case(&stage.to_string()),
                 message: operation_message(*stage).to_string(),
             }],
-            ReducerEvent::PluginStageChanged { id, stage, detail } => {
+            SnapshotUpdate::PluginStageChanged { id, stage, detail } => {
                 if matches!(stage, PluginStage::Applying)
                     && !matches!(detail, Some(PluginStageDetail::BuildCommand(_)))
                 {
@@ -99,7 +99,7 @@ impl TranscriptRenderer {
                     message: plugin_stage_message(&plugin.label, *stage, detail.as_ref()),
                 }]
             }
-            ReducerEvent::PluginFinished { id, outcome } => {
+            SnapshotUpdate::PluginFinished { id, outcome } => {
                 let plugin = match snapshot.plugin(id) {
                     Some(plugin) => plugin,
                     None => {
@@ -110,7 +110,7 @@ impl TranscriptRenderer {
                 let (kind, accent, label, message) = plugin_outcome_message(&plugin.label, outcome);
                 vec![DisplayLine { kind, accent, label: label.to_string(), message }]
             }
-            ReducerEvent::PluginFailed { id, summary, .. } => {
+            SnapshotUpdate::PluginFailed { id, summary, .. } => {
                 let plugin = match snapshot.plugin(id) {
                     Some(plugin) => plugin,
                     None => {
@@ -126,15 +126,6 @@ impl TranscriptRenderer {
                 }]
             }
         }
-    }
-}
-
-fn operation_label(stage: OperationStage) -> &'static str {
-    match stage {
-        OperationStage::WaitingForLock => "waiting",
-        OperationStage::Syncing => "syncing",
-        OperationStage::ApplyingWrites => "applying writes",
-        OperationStage::LoadingTmux => "loading tmux",
     }
 }
 
@@ -283,7 +274,7 @@ mod tests {
         TrackingResolution, TrackingSelector,
     };
     use crate::progress::reducer::{
-        PluginDisplayState, ProgressSnapshot, ReducerEvent, apply_event,
+        PluginDisplayState, ProgressSnapshot, SnapshotUpdate, apply_event,
     };
 
     #[test]
@@ -296,21 +287,21 @@ mod tests {
         let renderer = TranscriptRenderer::new();
 
         let operation_event =
-            ReducerEvent::OperationStageChanged { stage: OperationStage::WaitingForLock };
-        apply_event(&mut snapshot, operation_event.clone());
+            SnapshotUpdate::OperationStageChanged { stage: OperationStage::WaitingForLock };
+        apply_event(&mut snapshot, &operation_event);
         assert_eq!(
             renderer.render_event(&snapshot, &operation_event),
             vec!["     Waiting lock".to_string()]
         );
 
-        let fetching_event = ReducerEvent::PluginStageChanged {
+        let fetching_event = SnapshotUpdate::PluginStageChanged {
             id: "github.com/tmux-plugins/tmux-sensible".to_string(),
             stage: PluginStage::Fetching,
             detail: Some(PluginStageDetail::CloneUrl(
                 "https://github.com/tmux-plugins/tmux-sensible.git".to_string(),
             )),
         };
-        apply_event(&mut snapshot, fetching_event.clone());
+        apply_event(&mut snapshot, &fetching_event);
         assert_eq!(
             renderer.render_event(&snapshot, &fetching_event),
             vec![
@@ -319,7 +310,7 @@ mod tests {
             ]
         );
 
-        let resolving_event = ReducerEvent::PluginStageChanged {
+        let resolving_event = SnapshotUpdate::PluginStageChanged {
             id: "github.com/tmux-plugins/tmux-sensible".to_string(),
             stage: PluginStage::Resolving,
             detail: Some(PluginStageDetail::TrackingResolution {
@@ -328,7 +319,7 @@ mod tests {
                 commit: "8c1eeec".to_string(),
             }),
         };
-        apply_event(&mut snapshot, resolving_event.clone());
+        apply_event(&mut snapshot, &resolving_event);
         assert_eq!(
             renderer.render_event(&snapshot, &resolving_event),
             vec![
@@ -353,31 +344,34 @@ mod tests {
             (PluginOutcome::Reconciled, "  Reconciled tmux-sensible"),
             (PluginOutcome::CheckedUpToDate, "     Checked tmux-sensible"),
         ] {
-            let event = ReducerEvent::PluginFinished {
+            let event = SnapshotUpdate::PluginFinished {
                 id: "github.com/tmux-plugins/tmux-sensible".to_string(),
                 outcome,
             };
-            apply_event(&mut snapshot, event.clone());
+            apply_event(&mut snapshot, &event);
             assert_eq!(renderer.render_event(&snapshot, &event), vec![expected.to_string()]);
         }
 
-        let failed_event = ReducerEvent::PluginFailed {
+        let failed_event = SnapshotUpdate::PluginFailed {
             id: "github.com/tmux-plugins/tmux-sensible".to_string(),
             stage: Some(PluginStage::Applying),
             summary: "build failed".to_string(),
         };
-        apply_event(&mut snapshot, failed_event.clone());
+        apply_event(&mut snapshot, &failed_event);
         assert_eq!(
             renderer.render_event(&snapshot, &failed_event),
             vec!["      Failed tmux-sensible build failed".to_string()]
         );
 
-        assert!(matches!(snapshot.plugins[0].state, PluginDisplayState::Failed { .. }));
+        assert!(matches!(
+            snapshot.plugins[0].state,
+            PluginDisplayState::Finished(PluginOutcome::Installed { .. })
+        ));
     }
 
     #[test]
     fn transcript_renderer_formats_sync_specific_outcomes() {
-        // Compile-time protocol check for Task 3: runtime progress now carries
+        // Compile-time protocol check: runtime progress carries
         // structured completion outcomes for sync.
         let _runtime_reconciled = ProgressEvent::PluginFinished {
             id: "github.com/tmux-plugins/tmux-sensible",
@@ -404,18 +398,18 @@ mod tests {
                 "      Synced tmux-sensible commit@8c1eeec",
             ),
         ] {
-            let event = ReducerEvent::PluginFinished {
+            let event = SnapshotUpdate::PluginFinished {
                 id: "github.com/tmux-plugins/tmux-sensible".to_string(),
                 outcome,
             };
-            apply_event(&mut snapshot, event.clone());
+            apply_event(&mut snapshot, &event);
             assert_eq!(renderer.render_event(&snapshot, &event), vec![expected.to_string()]);
         }
     }
 
     #[test]
     fn transcript_renderer_formats_install_update_restore_outcomes() {
-        // Compile-time protocol check for Task 3: runtime progress now carries
+        // Compile-time protocol check: runtime progress carries
         // structured completion outcomes for install/update/restore + skips.
         let _runtime_installed = ProgressEvent::PluginFinished {
             id: "github.com/tmux-plugins/tmux-sensible",
@@ -476,11 +470,11 @@ mod tests {
                 "     Skipped tmux-sensible pinned to tag v1.0.0",
             ),
         ] {
-            let event = ReducerEvent::PluginFinished {
+            let event = SnapshotUpdate::PluginFinished {
                 id: "github.com/tmux-plugins/tmux-sensible".to_string(),
                 outcome,
             };
-            apply_event(&mut snapshot, event.clone());
+            apply_event(&mut snapshot, &event);
             assert_eq!(renderer.render_event(&snapshot, &event), vec![expected.to_string()]);
         }
     }
@@ -513,11 +507,11 @@ mod tests {
                 "    Restored tmux-sensible commit@8c1eeec",
             ),
         ] {
-            let event = ReducerEvent::PluginFinished {
+            let event = SnapshotUpdate::PluginFinished {
                 id: "github.com/tmux-plugins/tmux-sensible".to_string(),
                 outcome,
             };
-            apply_event(&mut snapshot, event.clone());
+            apply_event(&mut snapshot, &event);
             assert_eq!(renderer.render_event(&snapshot, &event), vec![expected.to_string()]);
         }
     }
@@ -530,12 +524,12 @@ mod tests {
             0,
         )]);
         let renderer = TranscriptRenderer::new();
-        let event = ReducerEvent::PluginStageChanged {
+        let event = SnapshotUpdate::PluginStageChanged {
             id: "github.com/tmux-plugins/tmux-sensible".to_string(),
             stage: PluginStage::Applying,
             detail: None,
         };
-        apply_event(&mut snapshot, event.clone());
+        apply_event(&mut snapshot, &event);
         assert_eq!(renderer.render_event(&snapshot, &event), Vec::<String>::new());
     }
 
@@ -547,7 +541,7 @@ mod tests {
             0,
         )]);
         let renderer = TranscriptRenderer::new();
-        let event = ReducerEvent::PluginStageChanged {
+        let event = SnapshotUpdate::PluginStageChanged {
             id: "github.com/tmux-plugins/tmux-sensible".to_string(),
             stage: PluginStage::Applying,
             detail: Some(PluginStageDetail::BuildCommand(format!(
@@ -556,7 +550,7 @@ mod tests {
             ))),
         };
 
-        apply_event(&mut snapshot, event.clone());
+        apply_event(&mut snapshot, &event);
         let rendered = renderer.render_event(&snapshot, &event);
         assert_eq!(rendered.len(), 1);
         assert!(rendered[0].contains("Building"));
@@ -578,14 +572,14 @@ mod tests {
         )]);
         let renderer = TranscriptRenderer::new();
 
-        let cloning_event = ReducerEvent::PluginStageChanged {
+        let cloning_event = SnapshotUpdate::PluginStageChanged {
             id: "github.com/tmux-plugins/tmux-sensible".to_string(),
             stage: PluginStage::Cloning,
             detail: Some(PluginStageDetail::CloneUrl(
                 "https://github.com/tmux-plugins/tmux-sensible.git".to_string(),
             )),
         };
-        apply_event(&mut snapshot, cloning_event.clone());
+        apply_event(&mut snapshot, &cloning_event);
         assert_eq!(
             renderer.render_event(&snapshot, &cloning_event),
             vec![
@@ -594,12 +588,12 @@ mod tests {
             ]
         );
 
-        let checkout_event = ReducerEvent::PluginStageChanged {
+        let checkout_event = SnapshotUpdate::PluginStageChanged {
             id: "github.com/tmux-plugins/tmux-sensible".to_string(),
             stage: PluginStage::CheckingOut,
             detail: None,
         };
-        apply_event(&mut snapshot, checkout_event.clone());
+        apply_event(&mut snapshot, &checkout_event);
         assert_eq!(
             renderer.render_event(&snapshot, &checkout_event),
             vec!["Checking out tmux-sensible".to_string()]
@@ -626,11 +620,11 @@ mod tests {
             ),
             (SkipReason::Other("not selected".to_string()), "tmux-sensible not selected"),
         ] {
-            let event = ReducerEvent::PluginFinished {
+            let event = SnapshotUpdate::PluginFinished {
                 id: "github.com/tmux-plugins/tmux-sensible".to_string(),
                 outcome: PluginOutcome::Skipped { reason },
             };
-            apply_event(&mut snapshot, event.clone());
+            apply_event(&mut snapshot, &event);
             let lines = renderer.render_lines(&snapshot, &event);
             assert_eq!(lines.len(), 1);
             assert_eq!(lines[0].kind, LineKind::Warning);

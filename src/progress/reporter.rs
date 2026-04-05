@@ -5,7 +5,7 @@ use std::sync::{Mutex, MutexGuard};
 use crate::progress::catalog::DisplayCatalog;
 use crate::progress::live::LiveRenderer;
 use crate::progress::log::DetailLog;
-use crate::progress::reducer::{self, ProgressSnapshot, ReducerEvent};
+use crate::progress::reducer::{self, ProgressSnapshot, SnapshotUpdate};
 use crate::progress::render::{DisplayLine, TranscriptRenderer};
 use crate::progress::{ACTION_WIDTH, ProgressEvent, ProgressReporter};
 use crate::termui::{self, Accent};
@@ -72,7 +72,7 @@ impl<W: Write> ReporterSink<W> {
     fn write_reducer_lines(
         &mut self,
         snapshot: &ProgressSnapshot,
-        event: &ReducerEvent,
+        event: &SnapshotUpdate,
         lines: Vec<DisplayLine>,
     ) {
         match self {
@@ -206,26 +206,29 @@ impl<W: Write + Send> ReducerReporter<W> {
     /// `OperationStart` / `OperationEnd` stay in the public API for external
     /// reporters, but the reducer itself only needs state transitions and
     /// plugin-terminal events.
-    fn to_reducer_event(event: &ProgressEvent<'_>) -> Option<ReducerEvent> {
+    fn to_snapshot_update(event: &ProgressEvent<'_>) -> Option<SnapshotUpdate> {
         match event {
             ProgressEvent::OperationStart { .. }
             | ProgressEvent::OperationFailed { .. }
             | ProgressEvent::OperationEnd { .. } => None,
             ProgressEvent::OperationStage { stage } => {
-                Some(ReducerEvent::OperationStageChanged { stage: *stage })
+                Some(SnapshotUpdate::OperationStageChanged { stage: *stage })
             }
             ProgressEvent::PluginStage { id, stage, detail, .. } => {
-                Some(ReducerEvent::PluginStageChanged {
+                Some(SnapshotUpdate::PluginStageChanged {
                     id: id.to_string(),
                     stage: *stage,
                     detail: detail.clone(),
                 })
             }
             ProgressEvent::PluginFinished { id, outcome, .. } => {
-                Some(ReducerEvent::PluginFinished { id: id.to_string(), outcome: outcome.clone() })
+                Some(SnapshotUpdate::PluginFinished {
+                    id: id.to_string(),
+                    outcome: outcome.clone(),
+                })
             }
             ProgressEvent::PluginFailed { id, stage, summary, .. } => {
-                Some(ReducerEvent::PluginFailed {
+                Some(SnapshotUpdate::PluginFailed {
                     id: id.to_string(),
                     stage: *stage,
                     summary: super::sanitize_summary(summary, super::SUMMARY_MAX_LEN),
@@ -252,13 +255,13 @@ impl<W: Write + Send> ProgressReporter for ReducerReporter<W> {
             _ => {}
         }
 
-        if let Some(reducer_event) = Self::to_reducer_event(&event) {
-            reducer::apply_event(&mut inner.snapshot, reducer_event.clone());
-            let lines = inner.renderer.render_lines(&inner.snapshot, &reducer_event);
+        if let Some(snapshot_update) = Self::to_snapshot_update(&event) {
+            reducer::apply_event(&mut inner.snapshot, &snapshot_update);
+            let lines = inner.renderer.render_lines(&inner.snapshot, &snapshot_update);
             // TODO: avoid cloning the whole snapshot once the sink API can render
             // directly from a borrowed reporter state without fighting the mutex borrow.
             let snapshot = inner.snapshot.clone();
-            inner.sink.write_reducer_lines(&snapshot, &reducer_event, lines);
+            inner.sink.write_reducer_lines(&snapshot, &snapshot_update, lines);
         }
 
         match &event {
