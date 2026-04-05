@@ -173,7 +173,10 @@ fn plugin_stage_message(
             format!("{label} {}", tracking_detail_text(selector, resolved, commit))
         }
         (PluginStage::Applying, Some(PluginStageDetail::BuildCommand(cmd))) => {
-            format!("{label} {cmd}")
+            format!(
+                "{label} {}",
+                crate::progress::sanitize_summary(cmd, crate::progress::SUMMARY_MAX_LEN)
+            )
         }
         _ => label.to_string(),
     }
@@ -534,6 +537,73 @@ mod tests {
         };
         apply_event(&mut snapshot, event.clone());
         assert_eq!(renderer.render_event(&snapshot, &event), Vec::<String>::new());
+    }
+
+    #[test]
+    fn transcript_renderer_sanitizes_build_command_detail() {
+        let mut snapshot = ProgressSnapshot::new_for_tests([(
+            "github.com/tmux-plugins/tmux-sensible",
+            "tmux-sensible",
+            0,
+        )]);
+        let renderer = TranscriptRenderer::new();
+        let event = ReducerEvent::PluginStageChanged {
+            id: "github.com/tmux-plugins/tmux-sensible".to_string(),
+            stage: PluginStage::Applying,
+            detail: Some(PluginStageDetail::BuildCommand(format!(
+                "printf 'hello\n{}\tworld{}'",
+                '\x1b', '\x1b'
+            ))),
+        };
+
+        apply_event(&mut snapshot, event.clone());
+        let rendered = renderer.render_event(&snapshot, &event);
+        assert_eq!(rendered.len(), 1);
+        assert!(rendered[0].contains("Building"));
+        assert!(rendered[0].contains("tmux-sensible"));
+        assert!(!rendered[0].contains('\n'), "rendered line must stay single-line");
+        assert!(
+            !rendered[0].contains('\x1b'),
+            "rendered line must not leak ANSI escapes: {:?}",
+            rendered[0]
+        );
+    }
+
+    #[test]
+    fn transcript_renderer_formats_clone_and_checkout_stages() {
+        let mut snapshot = ProgressSnapshot::new_for_tests([(
+            "github.com/tmux-plugins/tmux-sensible",
+            "tmux-sensible",
+            0,
+        )]);
+        let renderer = TranscriptRenderer::new();
+
+        let cloning_event = ReducerEvent::PluginStageChanged {
+            id: "github.com/tmux-plugins/tmux-sensible".to_string(),
+            stage: PluginStage::Cloning,
+            detail: Some(PluginStageDetail::CloneUrl(
+                "https://github.com/tmux-plugins/tmux-sensible.git".to_string(),
+            )),
+        };
+        apply_event(&mut snapshot, cloning_event.clone());
+        assert_eq!(
+            renderer.render_event(&snapshot, &cloning_event),
+            vec![
+                "     Cloning tmux-sensible https://github.com/tmux-plugins/tmux-sensible.git"
+                    .to_string()
+            ]
+        );
+
+        let checkout_event = ReducerEvent::PluginStageChanged {
+            id: "github.com/tmux-plugins/tmux-sensible".to_string(),
+            stage: PluginStage::CheckingOut,
+            detail: None,
+        };
+        apply_event(&mut snapshot, checkout_event.clone());
+        assert_eq!(
+            renderer.render_event(&snapshot, &checkout_event),
+            vec!["Checking out tmux-sensible".to_string()]
+        );
     }
 
     #[test]

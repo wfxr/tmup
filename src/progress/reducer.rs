@@ -153,6 +153,12 @@ pub(crate) fn apply_event(snapshot: &mut ProgressSnapshot, event: ReducerEvent) 
             if let Some(plugin) =
                 snapshot.plugin_index.get(&id).and_then(|idx| snapshot.plugins.get_mut(*idx))
             {
+                if matches!(
+                    plugin.state,
+                    PluginDisplayState::Finished(_) | PluginDisplayState::Failed { .. }
+                ) {
+                    return;
+                }
                 plugin.state = PluginDisplayState::Running { stage, detail };
             }
         }
@@ -326,5 +332,31 @@ mod tests {
 
         assert!(matches!(snapshot.plugins[0].state, super::PluginDisplayState::Pending));
         assert_eq!(snapshot.plugins.len(), 1);
+    }
+
+    #[test]
+    fn reducer_does_not_reopen_plugin_after_terminal_state() {
+        let mut snapshot = ProgressSnapshot::new_for_tests([("github.com/acme/a", "plugin-a", 0)]);
+
+        apply_event(
+            &mut snapshot,
+            ReducerEvent::PluginFinished {
+                id: "github.com/acme/a".to_string(),
+                outcome: PluginOutcome::Installed { commit: "abc1234".to_string() },
+            },
+        );
+        apply_event(
+            &mut snapshot,
+            ReducerEvent::PluginStageChanged {
+                id: "github.com/acme/a".to_string(),
+                stage: PluginStage::Resolving,
+                detail: None,
+            },
+        );
+
+        assert!(matches!(
+            snapshot.plugins[0].state,
+            super::PluginDisplayState::Finished(PluginOutcome::Installed { .. })
+        ));
     }
 }
