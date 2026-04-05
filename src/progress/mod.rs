@@ -20,7 +20,7 @@ pub(crate) mod render;
 /// Reducer-driven runtime reporter core.
 pub(crate) mod reporter;
 
-pub use model::{OperationStage, PluginStage as Stage};
+pub use model::{OperationStage, PluginStage};
 
 pub(crate) const SUMMARY_MAX_LEN: usize = 80;
 pub(crate) const ACTION_WIDTH: usize = 12;
@@ -44,7 +44,7 @@ pub enum ProgressEvent<'a> {
         /// Human-readable plugin name.
         name: &'a str,
         /// The new plugin stage.
-        stage: Stage,
+        stage: PluginStage,
         /// Optional stage-specific structured detail.
         detail: Option<PluginStageDetail>,
     },
@@ -64,7 +64,7 @@ pub enum ProgressEvent<'a> {
         /// Human-readable plugin name.
         name: &'a str,
         /// The processing stage at which the failure occurred.
-        stage: Option<Stage>,
+        stage: Option<PluginStage>,
         /// One-line failure summary suitable for terminal output.
         summary: String,
         /// Full diagnostic text written to the log file.
@@ -163,7 +163,7 @@ pub fn create_reporter(
 }
 
 /// Strip ANSI escape sequences and non-printable control characters.
-fn strip_ansi(s: &str) -> String {
+pub(crate) fn strip_ansi(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut in_escape = false;
     let mut in_csi = false;

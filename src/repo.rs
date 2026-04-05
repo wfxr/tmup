@@ -2,10 +2,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
+use crate::git;
 use crate::lockfile::TrackingRecord;
 use crate::model::Tracking;
 use crate::state::Paths;
-use crate::{git, short_hash};
 
 const CACHE_FILTER: Option<git::ObjectFilter> = Some(git::ObjectFilter::BlobNone);
 
@@ -95,23 +95,6 @@ pub async fn resolve_tracking(
             let commit = git::resolve_remote_branch(repo, &branch).await?;
             Ok((commit, TrackingRecord { kind: "default-branch".into(), value: branch }))
         }
-    }
-}
-
-/// Format a human-readable description of how a tracking spec resolved to a commit.
-pub fn describe_tracking_resolution(
-    tracking: &Tracking,
-    record: &TrackingRecord,
-    commit: &str,
-) -> String {
-    let commit = short_hash(commit);
-    match tracking {
-        Tracking::Tag(tag) => format!("tag@{tag} -> commit@{commit}"),
-        Tracking::Branch(branch) => format!("branch@{branch} -> commit@{commit}"),
-        Tracking::DefaultBranch => {
-            format!("default-branch -> branch@{} -> commit@{commit}", record.value)
-        }
-        Tracking::Commit(commit) => format!("commit@{}", short_hash(commit)),
     }
 }
 

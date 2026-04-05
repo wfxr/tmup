@@ -6,7 +6,7 @@ use tmup::lockfile::{LockEntry, LockFile, TrackingRecord};
 use tmup::model::{Config, Options, PluginSource, PluginSpec, Tracking};
 use tmup::plugin;
 use tmup::progress::model::PluginOutcome;
-use tmup::progress::{NullReporter, ProgressEvent, ProgressReporter, Stage};
+use tmup::progress::{NullReporter, PluginStage, ProgressEvent, ProgressReporter};
 use tmup::state::Paths;
 use utils::*;
 
@@ -40,7 +40,7 @@ fn make_config_with_tracking(clone_url: &str, tracking: Tracking, build: Option<
 
 #[derive(Debug)]
 struct FailedEvent {
-    stage: Option<Stage>,
+    stage: Option<PluginStage>,
     context_keys: Vec<String>,
 }
 
@@ -235,7 +235,7 @@ async fn install_failure_reports_stage_and_context_metadata() {
 
     let events = reporter.take();
     assert_eq!(events.len(), 1, "expected exactly one failure event");
-    assert!(matches!(events[0].stage, Some(Stage::Fetching)));
+    assert!(matches!(events[0].stage, Some(PluginStage::Fetching)));
     assert!(events[0].context_keys.contains(&"clone_url".to_string()));
     assert!(events[0].context_keys.contains(&"tracking".to_string()));
     assert!(events[0].context_keys.contains(&"target_dir".to_string()));
@@ -263,7 +263,7 @@ async fn update_failure_reports_stage_and_context_metadata() {
 
     let events = reporter.take();
     assert_eq!(events.len(), 1, "expected exactly one failure event");
-    assert!(matches!(events[0].stage, Some(Stage::Applying)));
+    assert!(matches!(events[0].stage, Some(PluginStage::Applying)));
     assert!(events[0].context_keys.contains(&"clone_url".to_string()));
     assert!(events[0].context_keys.contains(&"tracking".to_string()));
     assert!(events[0].context_keys.contains(&"target_dir".to_string()));
@@ -297,7 +297,7 @@ async fn restore_failure_reports_stage_and_context_metadata() {
 
     let events = reporter.take();
     assert_eq!(events.len(), 1, "expected exactly one failure event");
-    assert!(matches!(events[0].stage, Some(Stage::Applying)));
+    assert!(matches!(events[0].stage, Some(PluginStage::Applying)));
     assert!(events[0].context_keys.contains(&"clone_url".to_string()));
     assert!(events[0].context_keys.contains(&"tracking".to_string()));
     assert!(events[0].context_keys.contains(&"target_dir".to_string()));

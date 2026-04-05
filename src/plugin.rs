@@ -9,10 +9,8 @@ use crate::lockfile::{
 };
 use crate::model::{Config, PluginSource, Tracking};
 use crate::planner::{self, PluginStatus, collect_failed_builds};
-use crate::progress::model::{
-    PluginOutcome, PluginStageDetail, SkipReason, TrackingResolution, TrackingSelector,
-};
-use crate::progress::{self, ProgressEvent, ProgressReporter, Stage};
+use crate::progress::model::{PluginOutcome, PluginStageDetail, SkipReason};
+use crate::progress::{self, PluginStage, ProgressEvent, ProgressReporter};
 use crate::state::{self, FailureKey, FailureMarker, Paths, build_command_hash, timestamp_now};
 use crate::{git, prepare, repo, short_hash};
 
@@ -72,7 +70,7 @@ pub async fn install(
                 reporter.report(ProgressEvent::PluginStage {
                     id,
                     name: &spec.name,
-                    stage: Stage::Fetching,
+                    stage: PluginStage::Fetching,
                     detail: Some(PluginStageDetail::CloneUrl(clone_url.clone())),
                 });
                 if let Some(entry) = lock_ref.plugins.get(id.as_str()) {
@@ -98,8 +96,12 @@ pub async fn install(
                     reporter.report(ProgressEvent::PluginStage {
                         id,
                         name: &spec.name,
-                        stage: Stage::Resolving,
-                        detail: Some(tracking_detail(&spec.tracking, &record, &commit)),
+                        stage: PluginStage::Resolving,
+                        detail: Some(PluginStageDetail::from_tracking(
+                            &spec.tracking,
+                            &record,
+                            &commit,
+                        )),
                     });
                     Ok((prepared.staging_dir, commit, record))
                 }
@@ -121,7 +123,7 @@ pub async fn install(
                     reporter,
                     id,
                     name,
-                    Stage::Fetching,
+                    PluginStage::Fetching,
                     &e,
                     context,
                 ));
@@ -148,7 +150,7 @@ pub async fn install(
         reporter.report(ProgressEvent::PluginStage {
             id,
             name,
-            stage: Stage::Applying,
+            stage: PluginStage::Applying,
             detail: spec.build.clone().map(PluginStageDetail::BuildCommand),
         });
 
@@ -172,7 +174,7 @@ pub async fn install(
                     reporter,
                     id,
                     name,
-                    Stage::Applying,
+                    PluginStage::Applying,
                     &e,
                     context,
                 ));
@@ -254,7 +256,7 @@ pub async fn update(
                 reporter.report(ProgressEvent::PluginStage {
                     id,
                     name: &spec.name,
-                    stage: Stage::Fetching,
+                    stage: PluginStage::Fetching,
                     detail: Some(PluginStageDetail::CloneUrl(clone_url.clone())),
                 });
                 let revision =
@@ -266,8 +268,12 @@ pub async fn update(
                 reporter.report(ProgressEvent::PluginStage {
                     id,
                     name: &spec.name,
-                    stage: Stage::Resolving,
-                    detail: Some(tracking_detail(&spec.tracking, &record, &new_commit)),
+                    stage: PluginStage::Resolving,
+                    detail: Some(PluginStageDetail::from_tracking(
+                        &spec.tracking,
+                        &record,
+                        &new_commit,
+                    )),
                 });
                 let disk_commit = if target_dir.exists() {
                     git::head_commit(&target_dir).await.ok()
@@ -300,7 +306,7 @@ pub async fn update(
                     reporter,
                     id,
                     name,
-                    Stage::Fetching,
+                    PluginStage::Fetching,
                     &e,
                     context,
                 ));
@@ -332,7 +338,7 @@ pub async fn update(
         reporter.report(ProgressEvent::PluginStage {
             id,
             name,
-            stage: Stage::Applying,
+            stage: PluginStage::Applying,
             detail: spec.build.clone().map(PluginStageDetail::BuildCommand),
         });
 
@@ -374,7 +380,7 @@ pub async fn update(
                     reporter,
                     id,
                     name,
-                    Stage::Applying,
+                    PluginStage::Applying,
                     &e,
                     context,
                 ));
@@ -455,7 +461,7 @@ pub async fn restore(
                 reporter.report(ProgressEvent::PluginStage {
                     id,
                     name: &spec.name,
-                    stage: Stage::Fetching,
+                    stage: PluginStage::Fetching,
                     detail: Some(PluginStageDetail::CloneUrl(clone_url.clone())),
                 });
                 let revision =
@@ -483,7 +489,7 @@ pub async fn restore(
                     reporter,
                     id,
                     name,
-                    Stage::Fetching,
+                    PluginStage::Fetching,
                     &e,
                     context,
                 ));
@@ -494,7 +500,7 @@ pub async fn restore(
         reporter.report(ProgressEvent::PluginStage {
             id,
             name,
-            stage: Stage::Applying,
+            stage: PluginStage::Applying,
             detail: spec.build.clone().map(PluginStageDetail::BuildCommand),
         });
 
@@ -509,7 +515,14 @@ pub async fn restore(
         ) {
             let mut context = remote_failure_context(spec, paths);
             context.push(("locked_commit", entry.commit.clone()));
-            failures.push(report_plugin_failure(reporter, id, name, Stage::Applying, &e, context));
+            failures.push(report_plugin_failure(
+                reporter,
+                id,
+                name,
+                PluginStage::Applying,
+                &e,
+                context,
+            ));
         } else {
             reporter.report(ProgressEvent::PluginFinished {
                 id,
@@ -629,7 +642,7 @@ pub(crate) fn report_plugin_failure(
     reporter: &dyn ProgressReporter,
     id: &str,
     name: &str,
-    stage: Stage,
+    stage: PluginStage,
     err: &anyhow::Error,
     context: Vec<(&'static str, String)>,
 ) -> String {
@@ -643,31 +656,6 @@ pub(crate) fn report_plugin_failure(
         context,
     });
     format!("{id}: {err}")
-}
-
-fn tracking_detail(
-    selector: &Tracking,
-    resolved: &TrackingRecord,
-    commit: &str,
-) -> PluginStageDetail {
-    let selector = match selector {
-        Tracking::DefaultBranch => TrackingSelector::DefaultBranch,
-        Tracking::Branch(branch) => TrackingSelector::Branch(branch.clone()),
-        Tracking::Tag(tag) => TrackingSelector::Tag(tag.clone()),
-        Tracking::Commit(commit) => TrackingSelector::Commit(commit.clone()),
-    };
-    let resolved = match resolved.kind.as_str() {
-        "default-branch" => TrackingResolution::DefaultBranch { branch: resolved.value.clone() },
-        "branch" => TrackingResolution::Branch { branch: resolved.value.clone() },
-        "tag" => TrackingResolution::Tag { tag: resolved.value.clone() },
-        "commit" => TrackingResolution::Commit { commit: resolved.value.clone() },
-        _ => TrackingResolution::Commit { commit: resolved.value.clone() },
-    };
-    PluginStageDetail::TrackingResolution {
-        selector,
-        resolved,
-        commit: short_hash(commit).to_string(),
-    }
 }
 
 fn tracking_selector(tracking: &Tracking) -> String {
