@@ -86,18 +86,19 @@ impl<W: Write> ReporterSink<W> {
         &mut self,
         snapshot: &ProgressSnapshot,
         command: Option<&'static str>,
+        success: bool,
         details_path: Option<&Path>,
     ) {
         match self {
             Self::Transcript(sink) => {
-                if matches!(command, Some("init")) {
+                if matches!(command, Some("init")) && success {
                     sink.write_init_finished();
                 }
                 if let Some(path) = details_path {
                     sink.write_details_path(path);
                 }
             }
-            Self::Live(renderer) => renderer.finish(snapshot, command, details_path),
+            Self::Live(renderer) => renderer.finish(snapshot, command, success, details_path),
         }
     }
 }
@@ -167,13 +168,13 @@ impl<W: Write + Send> ReducerReporter<W> {
         }
     }
 
-    fn finish(inner: &mut ReporterState<W>, command: Option<&'static str>) {
+    fn finish(inner: &mut ReporterState<W>, command: Option<&'static str>, success: bool) {
         if inner.finished {
             return;
         }
         inner.finished = true;
         let details_path = inner.log.has_details().then(|| inner.log.path().to_path_buf());
-        inner.sink.finish(&inner.snapshot, command, details_path.as_deref());
+        inner.sink.finish(&inner.snapshot, command, success, details_path.as_deref());
     }
 
     fn to_reducer_event(event: &ProgressEvent<'_>) -> Option<reducer::ProgressEvent> {
@@ -245,8 +246,8 @@ impl<W: Write + Send> ProgressReporter for ReducerReporter<W> {
                 let snapshot = inner.snapshot.clone();
                 inner.sink.write_operation_failure(&snapshot, &summary);
             }
-            ProgressEvent::OperationEnd { command } => {
-                Self::finish(&mut inner, Some(command));
+            ProgressEvent::OperationEnd { command, success } => {
+                Self::finish(&mut inner, Some(command), *success);
             }
             _ => {}
         }
@@ -256,7 +257,7 @@ impl<W: Write + Send> ProgressReporter for ReducerReporter<W> {
 impl<W: Write + Send> Drop for ReducerReporter<W> {
     fn drop(&mut self) {
         if let Ok(mut inner) = self.state.lock() {
-            Self::finish(&mut inner, None);
+            Self::finish(&mut inner, None, false);
         }
     }
 }
@@ -283,6 +284,24 @@ impl ReducerReporter<Vec<u8>> {
         let output = match &state.sink {
             ReporterSink::Transcript(sink) => String::from_utf8_lossy(&sink.writer).to_string(),
             ReporterSink::Live(_) => String::new(),
+        };
+        (state.snapshot.clone(), output)
+    }
+
+    fn new_live_with_writer_for_tests(
+        logs_root: &Path,
+        command: &str,
+        catalog: DisplayCatalog,
+        writer: Vec<u8>,
+    ) -> Self {
+        Self::new_with_mode(logs_root, command, catalog, writer, SinkMode::Live)
+    }
+
+    fn snapshot_and_live_output_for_tests(&self) -> (ProgressSnapshot, String) {
+        let state = self.state.lock().unwrap();
+        let output = match &state.sink {
+            ReporterSink::Live(renderer) => renderer.output_for_tests(),
+            ReporterSink::Transcript(_) => String::new(),
         };
         (state.snapshot.clone(), output)
     }
@@ -348,8 +367,8 @@ mod tests {
                 "https://github.com/tmux-plugins/tmux-sensible.git".into(),
             )],
         });
-        reporter.report(ProgressEvent::OperationEnd { command: "update" });
-        reporter.report(ProgressEvent::OperationEnd { command: "update" });
+        reporter.report(ProgressEvent::OperationEnd { command: "update", success: true });
+        reporter.report(ProgressEvent::OperationEnd { command: "update", success: true });
 
         let (snapshot, output) = reporter.snapshot_and_output_for_tests();
         let output = crate::progress::strip_ansi(&output);
@@ -392,5 +411,66 @@ mod tests {
         let (snapshot, _) = reporter.snapshot_and_output_for_tests();
         let ordered_ids = snapshot.plugins.iter().map(|p| p.id.as_str()).collect::<Vec<_>>();
         assert_eq!(ordered_ids, vec!["github.com/zed/tmux-z", "github.com/alpha/tmux-a"]);
+    }
+
+    #[test]
+    fn reporter_does_not_mark_failed_init_as_finished_in_transcript_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config {
+            options: Options::default(),
+            plugins: vec![remote_plugin(
+                "tmux-plugins/tmux-sensible",
+                "github.com/tmux-plugins/tmux-sensible",
+                "tmux-sensible",
+            )],
+        };
+        let catalog = DisplayCatalog::from_config(&config, None);
+        let reporter =
+            ReducerReporter::new_with_writer_for_tests(dir.path(), "init", catalog, Vec::new());
+
+        reporter.report(ProgressEvent::OperationStart { command: "init" });
+        reporter.report(ProgressEvent::OperationFailed {
+            summary: "sync failed".to_string(),
+            detail: "full error".to_string(),
+        });
+        reporter.report(ProgressEvent::OperationEnd { command: "init", success: false });
+
+        let (_, output) = reporter.snapshot_and_output_for_tests();
+        let output = crate::progress::strip_ansi(&output);
+        assert!(output.contains("Failed operation sync failed"), "output:\n{output}");
+        assert!(!output.contains("Finished tmup init"), "output:\n{output}");
+    }
+
+    #[test]
+    fn reporter_does_not_overwrite_failed_init_row_in_live_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config {
+            options: Options::default(),
+            plugins: vec![remote_plugin(
+                "tmux-plugins/tmux-sensible",
+                "github.com/tmux-plugins/tmux-sensible",
+                "tmux-sensible",
+            )],
+        };
+        let catalog = DisplayCatalog::from_config(&config, None);
+        let reporter = ReducerReporter::new_live_with_writer_for_tests(
+            dir.path(),
+            "init",
+            catalog,
+            Vec::new(),
+        );
+
+        reporter.report(ProgressEvent::OperationStart { command: "init" });
+        reporter.report(ProgressEvent::OperationStage { stage: OperationStage::WaitingForLock });
+        reporter.report(ProgressEvent::OperationFailed {
+            summary: "sync failed".to_string(),
+            detail: "full error".to_string(),
+        });
+        reporter.report(ProgressEvent::OperationEnd { command: "init", success: false });
+
+        let (_, output) = reporter.snapshot_and_live_output_for_tests();
+        let output = crate::progress::strip_ansi(&output);
+        assert!(output.contains("Failed operation sync failed"), "output:\n{output}");
+        assert!(!output.contains("Finished tmup init"), "output:\n{output}");
     }
 }
