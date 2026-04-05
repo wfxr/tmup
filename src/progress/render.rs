@@ -79,6 +79,7 @@ impl TranscriptRenderer {
                 label: title_case(&stage.to_string()),
                 message: operation_message(*stage).to_string(),
             }],
+            SnapshotUpdate::OperationFailed { .. } => Vec::new(),
             SnapshotUpdate::PluginStageChanged { id, stage, detail } => {
                 if matches!(stage, PluginStage::Applying)
                     && !matches!(detail, Some(PluginStageDetail::BuildCommand(_)))

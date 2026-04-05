@@ -10,6 +10,11 @@ pub(crate) enum SnapshotUpdate {
         /// New operation stage.
         stage: OperationStage,
     },
+    /// Final operation failure state.
+    OperationFailed {
+        /// One-line failure summary.
+        summary: String,
+    },
     /// Plugin stage transition.
     PluginStageChanged {
         /// Canonical plugin id.
@@ -42,6 +47,18 @@ pub(crate) enum SnapshotUpdate {
 pub(crate) struct OperationSnapshot {
     /// Last known operation stage.
     pub(crate) stage: Option<OperationStage>,
+    /// Terminal state once the operation has failed.
+    pub(crate) terminal: Option<OperationTerminalState>,
+}
+
+/// Terminal operation state captured by the reducer snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OperationTerminalState {
+    /// Operation failed with a one-line summary.
+    Failed {
+        /// One-line failure summary.
+        summary: String,
+    },
 }
 
 /// Plugin-level reducer snapshot.
@@ -149,6 +166,12 @@ pub(crate) fn apply_event(snapshot: &mut ProgressSnapshot, event: &SnapshotUpdat
         SnapshotUpdate::OperationStageChanged { stage } => {
             snapshot.operation.stage = Some(*stage);
         }
+        SnapshotUpdate::OperationFailed { summary } => {
+            if snapshot.operation.terminal.is_none() {
+                snapshot.operation.terminal =
+                    Some(OperationTerminalState::Failed { summary: summary.clone() });
+            }
+        }
         SnapshotUpdate::PluginStageChanged { id, stage, detail } => {
             if let Some(plugin) = snapshot
                 .plugin_index
@@ -215,6 +238,7 @@ mod tests {
             &SnapshotUpdate::OperationStageChanged { stage: OperationStage::Syncing },
         );
         assert_eq!(snapshot.operation.stage, Some(OperationStage::Syncing));
+        assert_eq!(snapshot.operation.terminal, None);
 
         apply_event(
             &mut snapshot,
@@ -430,6 +454,27 @@ mod tests {
         assert!(matches!(
             snapshot.plugins[0].state,
             super::PluginDisplayState::Failed { stage: Some(PluginStage::Fetching), .. }
+        ));
+    }
+
+    #[test]
+    fn reducer_records_operation_failure_terminal_state() {
+        let mut snapshot = ProgressSnapshot::new_for_tests([("github.com/acme/a", "plugin-a", 0)]);
+
+        apply_event(
+            &mut snapshot,
+            &SnapshotUpdate::OperationStageChanged { stage: OperationStage::Syncing },
+        );
+        apply_event(
+            &mut snapshot,
+            &SnapshotUpdate::OperationFailed { summary: "sync failed".to_string() },
+        );
+
+        assert_eq!(snapshot.operation.stage, Some(OperationStage::Syncing));
+        assert!(matches!(
+            snapshot.operation.terminal,
+            Some(super::OperationTerminalState::Failed { ref summary })
+                if summary == "sync failed"
         ));
     }
 }

@@ -227,7 +227,9 @@ impl<W: Write> LiveRenderer<W> {
 
 fn row_for_event(snapshot: &ProgressSnapshot, event: &SnapshotUpdate) -> Option<usize> {
     match event {
-        SnapshotUpdate::OperationStageChanged { .. } => Some(0),
+        SnapshotUpdate::OperationStageChanged { .. } | SnapshotUpdate::OperationFailed { .. } => {
+            Some(0)
+        }
         SnapshotUpdate::PluginStageChanged { id, .. }
         | SnapshotUpdate::PluginFinished { id, .. }
         | SnapshotUpdate::PluginFailed { id, .. } => {
