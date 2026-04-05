@@ -110,33 +110,6 @@ pub fn truncate_display_width(text: &str, max_width: usize) -> String {
 mod tests {
     use super::{Accent, format_styled_labeled_line_clamped, truncate_display_width};
 
-    fn strip_ansi(s: &str) -> String {
-        let mut out = String::new();
-        let mut in_escape = false;
-        let mut in_csi = false;
-        for ch in s.chars() {
-            if in_csi {
-                if ch.is_ascii() && (ch as u8) >= 0x40 && (ch as u8) <= 0x7e {
-                    in_csi = false;
-                }
-                continue;
-            }
-            if in_escape {
-                in_escape = false;
-                if ch == '[' {
-                    in_csi = true;
-                }
-                continue;
-            }
-            if ch == '\x1b' {
-                in_escape = true;
-                continue;
-            }
-            out.push(ch);
-        }
-        out
-    }
-
     #[test]
     fn truncate_single_line_respects_display_width() {
         assert_eq!(truncate_display_width("abcdef", 4), "abc…");
@@ -153,7 +126,7 @@ mod tests {
             Accent::Info,
             16,
         );
-        let plain = strip_ansi(&line);
+        let plain = crate::progress::strip_ansi(&line);
         assert!(plain.chars().count() <= 16);
     }
 }

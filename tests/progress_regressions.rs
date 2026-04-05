@@ -339,11 +339,14 @@ fn resolve_real_git() -> String {
 }
 
 fn assert_no_live_cursor_sequences(stderr: &str) {
+    // Keep specific sequences for clearer failure messages, then use
+    // "\x1b[" as a catch-all guard against any CSI escape leaking into
+    // captured non-TTY stderr.
     for (sequence, description) in [
         ("\x1b[?25l", "hide-cursor"),
         ("\x1b[?25h", "show-cursor"),
         ("\x1b[2K", "clear-line"),
-        ("\x1b[", "cursor-control"),
+        ("\x1b[", "csi-escape"),
         ("\r", "carriage-return"),
     ] {
         assert!(

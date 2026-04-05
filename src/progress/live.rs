@@ -6,7 +6,7 @@ use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{QueueableCommand, cursor};
 
 use crate::progress::ACTION_WIDTH;
-use crate::progress::reducer::{self, ProgressSnapshot};
+use crate::progress::reducer::{ProgressSnapshot, ReducerEvent};
 use crate::progress::render::DisplayLine;
 use crate::termui::{self, Accent};
 
@@ -75,7 +75,7 @@ impl<W: Write> LiveRenderer<W> {
     pub(crate) fn write_reducer_lines(
         &mut self,
         snapshot: &ProgressSnapshot,
-        event: &reducer::ProgressEvent,
+        event: &ReducerEvent,
         lines: Vec<DisplayLine>,
     ) {
         if self.frozen {
@@ -210,12 +210,12 @@ impl<W: Write> LiveRenderer<W> {
     }
 }
 
-fn row_for_event(snapshot: &ProgressSnapshot, event: &reducer::ProgressEvent) -> Option<usize> {
+fn row_for_event(snapshot: &ProgressSnapshot, event: &ReducerEvent) -> Option<usize> {
     match event {
-        reducer::ProgressEvent::OperationStageChanged { .. } => Some(0),
-        reducer::ProgressEvent::PluginStageChanged { id, .. }
-        | reducer::ProgressEvent::PluginFinished { id, .. }
-        | reducer::ProgressEvent::PluginFailed { id, .. } => {
+        ReducerEvent::OperationStageChanged { .. } => Some(0),
+        ReducerEvent::PluginStageChanged { id, .. }
+        | ReducerEvent::PluginFinished { id, .. }
+        | ReducerEvent::PluginFailed { id, .. } => {
             snapshot.plugin(id).map(|plugin| plugin.slot + 1)
         }
     }
@@ -248,7 +248,7 @@ impl LiveRenderer<Vec<u8>> {
 mod tests {
     use super::LiveRenderer;
     use crate::progress::model::{OperationStage, PluginOutcome, PluginStage, PluginStageDetail};
-    use crate::progress::reducer::{ProgressEvent, ProgressSnapshot, apply_event};
+    use crate::progress::reducer::{ProgressSnapshot, ReducerEvent, apply_event};
     use crate::progress::render::TranscriptRenderer;
 
     #[test]
@@ -266,7 +266,7 @@ mod tests {
         let plugin_a_row = snapshot.plugin("github.com/acme/a").unwrap().slot + 1;
         let plugin_b_row = snapshot.plugin("github.com/acme/b").unwrap().slot + 1;
 
-        let plugin_a_event = ProgressEvent::PluginStageChanged {
+        let plugin_a_event = ReducerEvent::PluginStageChanged {
             id: "github.com/acme/a".to_string(),
             stage: PluginStage::Fetching,
             detail: Some(PluginStageDetail::CloneUrl("https://example.com/a.git".to_string())),
@@ -277,7 +277,7 @@ mod tests {
         let plugin_a_line_after_a =
             renderer.frame_line_for_tests(plugin_a_row).unwrap().to_string();
 
-        let plugin_b_event = ProgressEvent::PluginStageChanged {
+        let plugin_b_event = ReducerEvent::PluginStageChanged {
             id: "github.com/acme/b".to_string(),
             stage: PluginStage::Fetching,
             detail: Some(PluginStageDetail::CloneUrl("https://example.com/b.git".to_string())),
@@ -292,7 +292,7 @@ mod tests {
         );
         assert!(renderer.frame_line_for_tests(plugin_b_row).unwrap().contains("plugin-b"));
 
-        let finished_event = ProgressEvent::PluginFinished {
+        let finished_event = ReducerEvent::PluginFinished {
             id: "github.com/acme/a".to_string(),
             outcome: PluginOutcome::Installed { commit: "abc1234".to_string() },
         };
@@ -303,7 +303,7 @@ mod tests {
         assert!(finished_line.contains("Installed"));
 
         let operation_event =
-            ProgressEvent::OperationStageChanged { stage: OperationStage::WaitingForLock };
+            ReducerEvent::OperationStageChanged { stage: OperationStage::WaitingForLock };
         apply_event(&mut snapshot, operation_event.clone());
         let operation_lines = transcript.render_lines(&snapshot, &operation_event);
         renderer.write_reducer_lines(&snapshot, &operation_event, operation_lines);
@@ -313,7 +313,7 @@ mod tests {
         assert!(renderer.frozen_for_tests());
         let frozen_line = renderer.frame_line_for_tests(plugin_a_row).unwrap().to_string();
 
-        let after_finish_event = ProgressEvent::PluginStageChanged {
+        let after_finish_event = ReducerEvent::PluginStageChanged {
             id: "github.com/acme/a".to_string(),
             stage: PluginStage::Resolving,
             detail: None,
@@ -339,5 +339,43 @@ mod tests {
         assert!(output.contains("\u{1b}[2B"), "output: {output:?}");
         assert!(!output.contains("\u{1b}[1A"), "output: {output:?}");
         assert!(!output.contains("\u{1b}[1B"), "output: {output:?}");
+    }
+
+    #[test]
+    fn live_renderer_bootstrap_expands_for_new_plugin_slots() {
+        let mut snapshot = ProgressSnapshot::from_ordered_plugins(vec![(
+            "github.com/acme/a".to_string(),
+            "plugin-a".to_string(),
+        )]);
+        let mut renderer = LiveRenderer::new_for_tests(Vec::new(), 120);
+
+        renderer.bootstrap(&snapshot);
+        assert_eq!(renderer.frame_len_for_tests(), 2);
+
+        snapshot.ensure_plugin("github.com/acme/b", "plugin-b");
+        renderer.bootstrap(&snapshot);
+
+        assert_eq!(renderer.frame_len_for_tests(), 3);
+        assert!(renderer.frame_line_for_tests(2).unwrap().contains("plugin-b"));
+    }
+
+    #[test]
+    fn live_renderer_finish_writes_details_and_restores_cursor() {
+        let snapshot = ProgressSnapshot::from_ordered_plugins(vec![(
+            "github.com/acme/a".to_string(),
+            "plugin-a".to_string(),
+        )]);
+        let mut renderer = LiveRenderer::new_for_tests(Vec::new(), 120);
+        let dir = tempfile::tempdir().unwrap();
+        let details = dir.path().join("details.log");
+
+        renderer.bootstrap(&snapshot);
+        renderer.finish(&snapshot, Some("update"), true, Some(&details));
+
+        let output = renderer.output_for_tests();
+        assert!(output.contains("\u{1b}[?25l"), "output: {output:?}");
+        assert!(output.contains("\u{1b}[?25h"), "output: {output:?}");
+        assert!(output.contains("Details"), "output: {output:?}");
+        assert!(output.contains(&details.display().to_string()), "output: {output:?}");
     }
 }

@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::progress::Stage;
+use crate::progress::PluginStage;
 
 /// Lazily-created failure detail log shared by reporter implementations.
 pub(crate) struct DetailLog {
@@ -35,7 +35,7 @@ impl DetailLog {
         &mut self,
         id: &str,
         name: &str,
-        stage: Option<Stage>,
+        stage: Option<PluginStage>,
         summary: &str,
         detail: &str,
         context: &[(&str, &str)],
@@ -85,7 +85,7 @@ fn log_filename(command: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::DetailLog;
-    use crate::progress::Stage;
+    use crate::progress::PluginStage;
 
     #[test]
     fn detail_log_includes_canonical_plugin_identity_and_stage() {
@@ -95,7 +95,7 @@ mod tests {
         log.record_plugin_failure(
             "github.com/tmux-plugins/tmux-sensible",
             "tmux-sensible",
-            Some(Stage::Fetching),
+            Some(PluginStage::Fetching),
             "git fetch origin failed",
             "full error output here",
             &[

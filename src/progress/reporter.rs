@@ -1,11 +1,11 @@
 use std::io::Write;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use crate::progress::catalog::DisplayCatalog;
 use crate::progress::live::LiveRenderer;
 use crate::progress::log::DetailLog;
-use crate::progress::reducer::{self, ProgressSnapshot};
+use crate::progress::reducer::{self, ProgressSnapshot, ReducerEvent};
 use crate::progress::render::{DisplayLine, TranscriptRenderer};
 use crate::progress::{ACTION_WIDTH, ProgressEvent, ProgressReporter};
 use crate::termui::{self, Accent};
@@ -66,7 +66,7 @@ impl<W: Write> ReporterSink<W> {
     fn write_reducer_lines(
         &mut self,
         snapshot: &ProgressSnapshot,
-        event: &reducer::ProgressEvent,
+        event: &ReducerEvent,
         lines: Vec<DisplayLine>,
     ) {
         match self {
@@ -135,6 +135,10 @@ impl ReducerReporter<anstream::AutoStream<std::io::Stderr>> {
 }
 
 impl<W: Write + Send> ReducerReporter<W> {
+    fn lock_state(&self) -> MutexGuard<'_, ReporterState<W>> {
+        self.state.lock().expect("progress reporter state mutex poisoned")
+    }
+
     fn new_with_writer(
         logs_root: &Path,
         command: &str,
@@ -177,30 +181,27 @@ impl<W: Write + Send> ReducerReporter<W> {
         inner.sink.finish(&inner.snapshot, command, success, details_path.as_deref());
     }
 
-    fn to_reducer_event(event: &ProgressEvent<'_>) -> Option<reducer::ProgressEvent> {
+    fn to_reducer_event(event: &ProgressEvent<'_>) -> Option<ReducerEvent> {
         match event {
             ProgressEvent::OperationStart { .. }
             | ProgressEvent::OperationFailed { .. }
             | ProgressEvent::OperationEnd { .. } => None,
             ProgressEvent::OperationStage { stage } => {
-                Some(reducer::ProgressEvent::OperationStageChanged { stage: *stage })
+                Some(ReducerEvent::OperationStageChanged { stage: *stage })
             }
             ProgressEvent::PluginStage { id, stage, detail, .. } => {
-                Some(reducer::ProgressEvent::PluginStageChanged {
-                    id: (*id).to_string(),
+                Some(ReducerEvent::PluginStageChanged {
+                    id: id.to_string(),
                     stage: *stage,
                     detail: detail.clone(),
                 })
             }
             ProgressEvent::PluginFinished { id, outcome, .. } => {
-                Some(reducer::ProgressEvent::PluginFinished {
-                    id: (*id).to_string(),
-                    outcome: outcome.clone(),
-                })
+                Some(ReducerEvent::PluginFinished { id: id.to_string(), outcome: outcome.clone() })
             }
             ProgressEvent::PluginFailed { id, stage, summary, .. } => {
-                Some(reducer::ProgressEvent::PluginFailed {
-                    id: (*id).to_string(),
+                Some(ReducerEvent::PluginFailed {
+                    id: id.to_string(),
                     stage: *stage,
                     summary: super::sanitize_summary(summary, super::SUMMARY_MAX_LEN),
                 })
@@ -211,7 +212,7 @@ impl<W: Write + Send> ReducerReporter<W> {
 
 impl<W: Write + Send> ProgressReporter for ReducerReporter<W> {
     fn report(&self, event: ProgressEvent<'_>) {
-        let mut inner = self.state.lock().unwrap();
+        let mut inner = self.lock_state();
         if inner.finished {
             return;
         }
@@ -280,7 +281,7 @@ impl ReducerReporter<Vec<u8>> {
     }
 
     fn snapshot_and_output_for_tests(&self) -> (ProgressSnapshot, String) {
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock().expect("progress reporter state mutex poisoned");
         let output = match &state.sink {
             ReporterSink::Transcript(sink) => String::from_utf8_lossy(&sink.writer).to_string(),
             ReporterSink::Live(_) => String::new(),
@@ -298,7 +299,7 @@ impl ReducerReporter<Vec<u8>> {
     }
 
     fn snapshot_and_live_output_for_tests(&self) -> (ProgressSnapshot, String) {
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock().expect("progress reporter state mutex poisoned");
         let output = match &state.sink {
             ReporterSink::Live(renderer) => renderer.output_for_tests(),
             ReporterSink::Transcript(_) => String::new(),
@@ -313,7 +314,7 @@ mod tests {
     use crate::model::{Config, Options, PluginSource, PluginSpec, Tracking};
     use crate::progress::catalog::DisplayCatalog;
     use crate::progress::model::PluginStageDetail;
-    use crate::progress::{OperationStage, ProgressEvent, ProgressReporter, Stage};
+    use crate::progress::{OperationStage, PluginStage, ProgressEvent, ProgressReporter};
 
     fn remote_plugin(raw: &str, id: &str, name: &str) -> PluginSpec {
         PluginSpec {
@@ -351,7 +352,7 @@ mod tests {
         reporter.report(ProgressEvent::PluginStage {
             id: "github.com/tmux-plugins/tmux-sensible",
             name: "tmux-sensible",
-            stage: Stage::Fetching,
+            stage: PluginStage::Fetching,
             detail: Some(PluginStageDetail::CloneUrl(
                 "https://github.com/tmux-plugins/tmux-sensible.git".to_string(),
             )),
@@ -359,7 +360,7 @@ mod tests {
         reporter.report(ProgressEvent::PluginFailed {
             id: "github.com/tmux-plugins/tmux-sensible",
             name: "tmux-sensible",
-            stage: Some(Stage::Fetching),
+            stage: Some(PluginStage::Fetching),
             summary: "git fetch origin failed".to_string(),
             detail: "full error output".to_string(),
             context: vec![(

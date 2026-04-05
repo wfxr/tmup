@@ -82,6 +82,32 @@ pub enum TrackingResolution {
     },
 }
 
+impl PluginStageDetail {
+    /// Build structured tracking-resolution detail from config and lock metadata.
+    pub(crate) fn from_tracking(
+        selector: &Tracking,
+        resolved: &TrackingRecord,
+        commit: &str,
+    ) -> Self {
+        let selector = match selector {
+            Tracking::DefaultBranch => TrackingSelector::DefaultBranch,
+            Tracking::Branch(branch) => TrackingSelector::Branch(branch.clone()),
+            Tracking::Tag(tag) => TrackingSelector::Tag(tag.clone()),
+            Tracking::Commit(commit) => TrackingSelector::Commit(commit.clone()),
+        };
+        let resolved = match resolved.kind.as_str() {
+            "default-branch" => {
+                TrackingResolution::DefaultBranch { branch: resolved.value.clone() }
+            }
+            "branch" => TrackingResolution::Branch { branch: resolved.value.clone() },
+            "tag" => TrackingResolution::Tag { tag: resolved.value.clone() },
+            "commit" => TrackingResolution::Commit { commit: resolved.value.clone() },
+            _ => TrackingResolution::Commit { commit: resolved.value.clone() },
+        };
+        Self::TrackingResolution { selector, resolved, commit: short_hash(commit).to_string() }
+    }
+}
+
 /// Final plugin outcomes emitted by the structured progress pipeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginOutcome {
@@ -160,7 +186,10 @@ impl std::fmt::Display for PluginStage {
             Self::Fetching => write!(f, "fetching"),
             Self::Resolving => write!(f, "resolving"),
             Self::CheckingOut => write!(f, "checking out"),
-            Self::Applying => write!(f, "publishing"),
+            Self::Applying => write!(f, "applying"),
         }
     }
 }
+use crate::lockfile::TrackingRecord;
+use crate::model::Tracking;
+use crate::short_hash;

@@ -8,10 +8,8 @@ use crate::lockfile::{
     write_lockfile_atomic,
 };
 use crate::model::{Config, PluginSource, PluginSpec, Tracking};
-use crate::progress::model::{
-    PluginOutcome, PluginStageDetail, SkipReason, TrackingResolution, TrackingSelector,
-};
-use crate::progress::{ProgressEvent, ProgressReporter, Stage};
+use crate::progress::model::{PluginOutcome, PluginStageDetail, SkipReason};
+use crate::progress::{PluginStage, ProgressEvent, ProgressReporter};
 use crate::state::{self, FailureMarker, Paths, build_command_hash, timestamp_now};
 use crate::{git, planner, plugin, prepare, repo, short_hash};
 
@@ -180,7 +178,7 @@ pub async fn run(
                         reporter,
                         id,
                         name,
-                        Stage::Applying,
+                        PluginStage::Applying,
                         &err,
                         vec![
                             ("clone_url", clone_url.clone()),
@@ -196,7 +194,7 @@ pub async fn run(
                     reporter,
                     id,
                     name,
-                    Stage::Fetching,
+                    PluginStage::Fetching,
                     &err,
                     vec![("clone_url", clone_url.clone()), ("tracking", tracking.clone())],
                 ));
@@ -325,7 +323,7 @@ async fn resolve_desired_plugin(
     reporter.report(ProgressEvent::PluginStage {
         id,
         name,
-        stage: Stage::Fetching,
+        stage: PluginStage::Fetching,
         detail: Some(PluginStageDetail::CloneUrl(clone_url.clone())),
     });
 
@@ -350,8 +348,8 @@ async fn resolve_desired_plugin(
             reporter.report(ProgressEvent::PluginStage {
                 id,
                 name,
-                stage: Stage::Resolving,
-                detail: Some(tracking_detail(&spec.tracking, &tracking, &commit)),
+                stage: PluginStage::Resolving,
+                detail: Some(PluginStageDetail::from_tracking(&spec.tracking, &tracking, &commit)),
             });
             tracking
         };
@@ -359,7 +357,7 @@ async fn resolve_desired_plugin(
         reporter.report(ProgressEvent::PluginStage {
             id,
             name,
-            stage: Stage::CheckingOut,
+            stage: PluginStage::CheckingOut,
             detail: None,
         });
         Ok::<_, anyhow::Error>(LockEntry { tracking, commit, config_hash: Some(config_hash) })
@@ -376,31 +374,6 @@ fn tracks_same_revision(spec: &PluginSpec, locked: &TrackingRecord) -> bool {
         Tracking::Branch(branch) => locked.kind == "branch" && locked.value == *branch,
         Tracking::Tag(tag) => locked.kind == "tag" && locked.value == *tag,
         Tracking::Commit(commit) => locked.kind == "commit" && locked.value == *commit,
-    }
-}
-
-fn tracking_detail(
-    selector: &Tracking,
-    resolved: &TrackingRecord,
-    commit: &str,
-) -> PluginStageDetail {
-    let selector = match selector {
-        Tracking::DefaultBranch => TrackingSelector::DefaultBranch,
-        Tracking::Branch(branch) => TrackingSelector::Branch(branch.clone()),
-        Tracking::Tag(tag) => TrackingSelector::Tag(tag.clone()),
-        Tracking::Commit(commit) => TrackingSelector::Commit(commit.clone()),
-    };
-    let resolved = match resolved.kind.as_str() {
-        "default-branch" => TrackingResolution::DefaultBranch { branch: resolved.value.clone() },
-        "branch" => TrackingResolution::Branch { branch: resolved.value.clone() },
-        "tag" => TrackingResolution::Tag { tag: resolved.value.clone() },
-        "commit" => TrackingResolution::Commit { commit: resolved.value.clone() },
-        _ => TrackingResolution::Commit { commit: resolved.value.clone() },
-    };
-    PluginStageDetail::TrackingResolution {
-        selector,
-        resolved,
-        commit: short_hash(commit).to_string(),
     }
 }
 
@@ -488,7 +461,7 @@ async fn reconcile_plugin(
     reporter.report(ProgressEvent::PluginStage {
         id: &id,
         name,
-        stage: Stage::Applying,
+        stage: PluginStage::Applying,
         detail: spec.build.clone().map(PluginStageDetail::BuildCommand),
     });
 
