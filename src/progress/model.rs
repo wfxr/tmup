@@ -1,3 +1,7 @@
+use crate::lockfile::TrackingRecord;
+use crate::model::Tracking;
+use crate::short_hash;
+
 /// Structured operation-level progress stages used by the new reducer pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationStage {
@@ -190,6 +194,3 @@ impl std::fmt::Display for PluginStage {
         }
     }
 }
-use crate::lockfile::TrackingRecord;
-use crate::model::Tracking;
-use crate::short_hash;

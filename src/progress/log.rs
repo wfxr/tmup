@@ -8,6 +8,8 @@ pub(crate) struct DetailLog {
     logs_root: PathBuf,
     log_path: PathBuf,
     file: Option<std::fs::File>,
+    pending_warning: Option<String>,
+    warning_emitted: bool,
 }
 
 impl DetailLog {
@@ -17,6 +19,8 @@ impl DetailLog {
             logs_root: logs_root.to_path_buf(),
             log_path: logs_root.join(log_filename(command)),
             file: None,
+            pending_warning: None,
+            warning_emitted: false,
         }
     }
 
@@ -28,6 +32,11 @@ impl DetailLog {
     /// Return the detail log path.
     pub(crate) fn path(&self) -> &Path {
         &self.log_path
+    }
+
+    /// Take the next user-visible warning produced while opening the detail log.
+    pub(crate) fn take_warning(&mut self) -> Option<String> {
+        self.pending_warning.take()
     }
 
     /// Record one plugin failure section.
@@ -55,9 +64,12 @@ impl DetailLog {
 
     fn write(&mut self, section: &str, summary: &str, detail: &str, context: &[(&str, &str)]) {
         if self.file.is_none() {
-            let _ = std::fs::create_dir_all(&self.logs_root);
-            if let Ok(f) = std::fs::File::create(&self.log_path) {
-                self.file = Some(f);
+            if let Err(err) = std::fs::create_dir_all(&self.logs_root) {
+                self.record_open_warning(&err);
+            } else if let Err(err) =
+                std::fs::File::create(&self.log_path).map(|file| self.file = Some(file))
+            {
+                self.record_open_warning(&err);
             }
         }
         if let Some(ref mut f) = self.file {
@@ -70,6 +82,15 @@ impl DetailLog {
             let _ = writeln!(f, "{detail}");
             let _ = writeln!(f);
         }
+    }
+
+    fn record_open_warning(&mut self, err: &std::io::Error) {
+        if self.warning_emitted {
+            return;
+        }
+        self.warning_emitted = true;
+        self.pending_warning =
+            Some(format!("failed to write detail log {}: {}", self.log_path.display(), err));
     }
 }
 

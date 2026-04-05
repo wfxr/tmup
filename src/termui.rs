@@ -1,5 +1,5 @@
 use owo_colors::OwoColorize;
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Visual accent style applied to labeled output lines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,24 +46,43 @@ pub fn format_styled_labeled_line_clamped(
     accent: Accent,
     max_width: usize,
 ) -> String {
-    let label_segment = format!("{label:>width$}");
-    let label_width =
-        label_segment.chars().map(|ch| UnicodeWidthChar::width(ch).unwrap_or(0)).sum::<usize>();
-    let available_message_width = max_width.saturating_sub(label_width.saturating_add(1));
+    if max_width == 0 {
+        return String::new();
+    }
+
+    let label_segment = truncate_display_width(&format!("{label:>width$}"), max_width);
+    let label_width = display_width(&label_segment);
+    if label_width >= max_width {
+        return style_text(&label_segment, accent);
+    }
+
+    let available_message_width = max_width.saturating_sub(label_width + 1);
     let clamped = truncate_display_width(message, available_message_width);
-    format_styled_labeled_line(label, width, &clamped, accent)
+    if clamped.is_empty() {
+        return style_text(&label_segment, accent);
+    }
+
+    format!("{} {}", style_text(&label_segment, accent), clamped)
 }
 
 fn style_labeled_text(label: &str, width: usize, accent: Accent) -> String {
     let padded = format!("{label:>width$}");
+    style_text(&padded, accent)
+}
+
+fn style_text(text: &str, accent: Accent) -> String {
     match accent {
-        Accent::Bold => format!("{}", padded.bold()),
-        Accent::Info => format!("{}", padded.bold().cyan()),
-        Accent::Success => format!("{}", padded.bold().green()),
-        Accent::Warning => format!("{}", padded.bold().yellow()),
-        Accent::Error => format!("{}", padded.bold().red()),
-        Accent::Muted => format!("{}", padded.dimmed()),
+        Accent::Bold => format!("{}", text.bold()),
+        Accent::Info => format!("{}", text.bold().cyan()),
+        Accent::Success => format!("{}", text.bold().green()),
+        Accent::Warning => format!("{}", text.bold().yellow()),
+        Accent::Error => format!("{}", text.bold().red()),
+        Accent::Muted => format!("{}", text.dimmed()),
     }
+}
+
+fn display_width(text: &str) -> usize {
+    UnicodeWidthStr::width(text)
 }
 
 /// Truncate a single logical line to the requested display width.
@@ -108,6 +127,8 @@ pub fn truncate_display_width(text: &str, max_width: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use unicode_width::UnicodeWidthStr;
+
     use super::{Accent, format_styled_labeled_line_clamped, truncate_display_width};
 
     #[test]
@@ -128,5 +149,18 @@ mod tests {
         );
         let plain = crate::progress::strip_ansi(&line);
         assert!(plain.chars().count() <= 16);
+    }
+
+    #[test]
+    fn format_styled_labeled_line_clamps_total_line_width_for_narrow_terminals() {
+        let line = format_styled_labeled_line_clamped(
+            "Applying writes",
+            12,
+            "plugin contents",
+            Accent::Info,
+            12,
+        );
+        let plain = crate::progress::strip_ansi(&line);
+        assert!(UnicodeWidthStr::width(plain.as_str()) <= 12, "plain line: {plain:?}");
     }
 }

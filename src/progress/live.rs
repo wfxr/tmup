@@ -122,6 +122,7 @@ impl<W: Write> LiveRenderer<W> {
         command: Option<&'static str>,
         success: bool,
         details_path: Option<&Path>,
+        warnings: &[String],
     ) {
         if self.frozen {
             return;
@@ -147,6 +148,16 @@ impl<W: Write> LiveRenderer<W> {
                 self.terminal_width,
             );
             let _ = writeln!(self.writer, "{details_line}");
+        }
+        for warning in warnings {
+            let warning_line = termui::format_styled_labeled_line_clamped(
+                "Warning",
+                ACTION_WIDTH,
+                warning,
+                Accent::Warning,
+                self.terminal_width,
+            );
+            let _ = writeln!(self.writer, "{warning_line}");
         }
 
         let _ = self.writer.queue(cursor::Show);
@@ -246,6 +257,8 @@ impl LiveRenderer<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use unicode_width::UnicodeWidthStr;
+
     use super::LiveRenderer;
     use crate::progress::model::{OperationStage, PluginOutcome, PluginStage, PluginStageDetail};
     use crate::progress::reducer::{ProgressSnapshot, ReducerEvent, apply_event};
@@ -309,7 +322,7 @@ mod tests {
         renderer.write_reducer_lines(&snapshot, &operation_event, operation_lines);
         assert_eq!(renderer.frame_line_for_tests(plugin_a_row).unwrap(), finished_line);
 
-        renderer.finish(&snapshot, Some("update"), true, None);
+        renderer.finish(&snapshot, Some("update"), true, None, &[]);
         assert!(renderer.frozen_for_tests());
         let frozen_line = renderer.frame_line_for_tests(plugin_a_row).unwrap().to_string();
 
@@ -370,12 +383,36 @@ mod tests {
         let details = dir.path().join("details.log");
 
         renderer.bootstrap(&snapshot);
-        renderer.finish(&snapshot, Some("update"), true, Some(&details));
+        renderer.finish(&snapshot, Some("update"), true, Some(&details), &[]);
 
         let output = renderer.output_for_tests();
         assert!(output.contains("\u{1b}[?25l"), "output: {output:?}");
         assert!(output.contains("\u{1b}[?25h"), "output: {output:?}");
         assert!(output.contains("Details"), "output: {output:?}");
         assert!(output.contains(&details.display().to_string()), "output: {output:?}");
+    }
+
+    #[test]
+    fn live_renderer_clamps_rows_for_narrow_widths() {
+        let mut snapshot = ProgressSnapshot::from_ordered_plugins(vec![(
+            "github.com/acme/a".to_string(),
+            "plugin-a".to_string(),
+        )]);
+        let mut renderer = LiveRenderer::new_for_tests(Vec::new(), 12);
+        let transcript = TranscriptRenderer::new();
+        let event = ReducerEvent::PluginStageChanged {
+            id: "github.com/acme/a".to_string(),
+            stage: PluginStage::CheckingOut,
+            detail: None,
+        };
+
+        renderer.bootstrap(&snapshot);
+        apply_event(&mut snapshot, event.clone());
+        let lines = transcript.render_lines(&snapshot, &event);
+        renderer.write_reducer_lines(&snapshot, &event, lines);
+
+        let row = snapshot.plugin("github.com/acme/a").unwrap().slot + 1;
+        let plain = crate::progress::strip_ansi(renderer.frame_line_for_tests(row).unwrap());
+        assert!(UnicodeWidthStr::width(plain.as_str()) <= 12, "plain line: {plain:?}");
     }
 }

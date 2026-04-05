@@ -55,6 +55,12 @@ impl<W: Write> TranscriptSink<W> {
         );
         let _ = writeln!(self.writer, "{rendered}");
     }
+
+    fn write_warning(&mut self, warning: &str) {
+        let rendered =
+            termui::format_styled_labeled_line("Warning", ACTION_WIDTH, warning, Accent::Warning);
+        let _ = writeln!(self.writer, "{rendered}");
+    }
 }
 
 enum ReporterSink<W: Write> {
@@ -88,6 +94,7 @@ impl<W: Write> ReporterSink<W> {
         command: Option<&'static str>,
         success: bool,
         details_path: Option<&Path>,
+        warnings: &[String],
     ) {
         match self {
             Self::Transcript(sink) => {
@@ -97,8 +104,13 @@ impl<W: Write> ReporterSink<W> {
                 if let Some(path) = details_path {
                     sink.write_details_path(path);
                 }
+                for warning in warnings {
+                    sink.write_warning(warning);
+                }
             }
-            Self::Live(renderer) => renderer.finish(snapshot, command, success, details_path),
+            Self::Live(renderer) => {
+                renderer.finish(snapshot, command, success, details_path, warnings)
+            }
         }
     }
 }
@@ -114,6 +126,7 @@ struct ReporterState<W: Write> {
     log: DetailLog,
     snapshot: ProgressSnapshot,
     catalog: DisplayCatalog,
+    deferred_warnings: Vec<String>,
     finished: bool,
 }
 
@@ -167,6 +180,7 @@ impl<W: Write + Send> ReducerReporter<W> {
                 log: DetailLog::new(logs_root, command),
                 snapshot,
                 catalog,
+                deferred_warnings: Vec::new(),
                 finished: false,
             }),
         }
@@ -178,9 +192,20 @@ impl<W: Write + Send> ReducerReporter<W> {
         }
         inner.finished = true;
         let details_path = inner.log.has_details().then(|| inner.log.path().to_path_buf());
-        inner.sink.finish(&inner.snapshot, command, success, details_path.as_deref());
+        inner.sink.finish(
+            &inner.snapshot,
+            command,
+            success,
+            details_path.as_deref(),
+            &inner.deferred_warnings,
+        );
     }
 
+    /// Convert public borrowed progress events into an owned reducer event so the
+    /// reducer can update snapshot state without borrowing the caller's payloads.
+    /// `OperationStart` / `OperationEnd` stay in the public API for external
+    /// reporters, but the reducer itself only needs state transitions and
+    /// plugin-terminal events.
     fn to_reducer_event(event: &ProgressEvent<'_>) -> Option<ReducerEvent> {
         match event {
             ProgressEvent::OperationStart { .. }
@@ -230,6 +255,8 @@ impl<W: Write + Send> ProgressReporter for ReducerReporter<W> {
         if let Some(reducer_event) = Self::to_reducer_event(&event) {
             reducer::apply_event(&mut inner.snapshot, reducer_event.clone());
             let lines = inner.renderer.render_lines(&inner.snapshot, &reducer_event);
+            // TODO: avoid cloning the whole snapshot once the sink API can render
+            // directly from a borrowed reporter state without fighting the mutex borrow.
             let snapshot = inner.snapshot.clone();
             inner.sink.write_reducer_lines(&snapshot, &reducer_event, lines);
         }
@@ -240,10 +267,16 @@ impl<W: Write + Send> ProgressReporter for ReducerReporter<W> {
                 let context: Vec<(&str, &str)> =
                     context.iter().map(|(k, v)| (*k, v.as_str())).collect();
                 inner.log.record_plugin_failure(id, name, *stage, &summary, detail, &context);
+                if let Some(warning) = inner.log.take_warning() {
+                    inner.deferred_warnings.push(warning);
+                }
             }
             ProgressEvent::OperationFailed { summary, detail } => {
                 let summary = super::sanitize_summary(summary, super::SUMMARY_MAX_LEN);
                 inner.log.record_operation_failure(&summary, detail);
+                if let Some(warning) = inner.log.take_warning() {
+                    inner.deferred_warnings.push(warning);
+                }
                 let snapshot = inner.snapshot.clone();
                 inner.sink.write_operation_failure(&snapshot, &summary);
             }
@@ -473,5 +506,59 @@ mod tests {
         let output = crate::progress::strip_ansi(&output);
         assert!(output.contains("Failed operation sync failed"), "output:\n{output}");
         assert!(!output.contains("Finished tmup init"), "output:\n{output}");
+    }
+
+    #[test]
+    fn reporter_warns_when_detail_log_cannot_be_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let logs_root = dir.path().join("not-a-directory");
+        std::fs::write(&logs_root, "occupied").unwrap();
+        let config = Config {
+            options: Options::default(),
+            plugins: vec![remote_plugin(
+                "tmux-plugins/tmux-sensible",
+                "github.com/tmux-plugins/tmux-sensible",
+                "tmux-sensible",
+            )],
+        };
+        let catalog = DisplayCatalog::from_config(&config, None);
+        let reporter =
+            ReducerReporter::new_with_writer_for_tests(&logs_root, "update", catalog, Vec::new());
+
+        reporter.report(ProgressEvent::PluginFailed {
+            id: "github.com/tmux-plugins/tmux-sensible",
+            name: "tmux-sensible",
+            stage: Some(PluginStage::Fetching),
+            summary: "git fetch failed".to_string(),
+            detail: "full error output".to_string(),
+            context: vec![],
+        });
+        reporter.report(ProgressEvent::OperationEnd { command: "update", success: false });
+
+        let (_, output) = reporter.snapshot_and_output_for_tests();
+        let output = crate::progress::strip_ansi(&output);
+        assert!(
+            output.contains("Warning failed to write detail log"),
+            "output should surface detail-log write failures:\n{output}"
+        );
+    }
+
+    #[test]
+    fn reporter_handles_empty_catalog_without_plugin_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config { options: Options::default(), plugins: vec![] };
+        let catalog = DisplayCatalog::from_config(&config, None);
+        let reporter =
+            ReducerReporter::new_with_writer_for_tests(dir.path(), "init", catalog, Vec::new());
+
+        reporter.report(ProgressEvent::OperationStart { command: "init" });
+        reporter.report(ProgressEvent::OperationStage { stage: OperationStage::WaitingForLock });
+        reporter.report(ProgressEvent::OperationEnd { command: "init", success: true });
+
+        let (snapshot, output) = reporter.snapshot_and_output_for_tests();
+        let output = crate::progress::strip_ansi(&output);
+        assert!(snapshot.plugins.is_empty(), "snapshot: {snapshot:?}");
+        assert!(output.contains("Waiting lock"), "output:\n{output}");
+        assert!(output.contains("Finished tmup init"), "output:\n{output}");
     }
 }
