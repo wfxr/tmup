@@ -8,8 +8,9 @@ use crate::lockfile::{
     write_lockfile_atomic,
 };
 use crate::model::{Config, PluginSource, PluginSpec, Tracking};
-use crate::progress::model::{PluginOutcome, PluginStageDetail, SkipReason};
-use crate::progress::{PluginStage, ProgressEvent, ProgressReporter};
+use crate::progress::{
+    PluginOutcome, PluginStage, PluginStageDetail, ProgressEvent, ProgressReporter, SkipReason,
+};
 use crate::state::{self, FailureMarker, Paths, build_command_hash, timestamp_now};
 use crate::{git, planner, plugin, prepare, repo, short_hash};
 

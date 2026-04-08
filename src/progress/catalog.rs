@@ -2,26 +2,25 @@ use std::collections::HashMap;
 
 use crate::model::Config;
 
-/// Stable plugin display metadata used by progress renderers.
+/// Plugin display metadata used only to seed reducer snapshot state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DisplayPlugin {
     /// Canonical plugin id.
     pub(crate) id: String,
     /// Human-readable display label.
     pub(crate) label: String,
-    /// Stable line slot index used by fixed-row renderers.
-    pub(crate) slot: usize,
 }
 
-/// Stable ordered plugin catalog used by progress reducers/renderers.
+/// Initialization-only helper for building the first snapshot plugin order/labels.
+///
+/// This catalog is not consulted for runtime lookup after reporter construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DisplayCatalog {
     plugins: Vec<DisplayPlugin>,
-    by_id: HashMap<String, usize>,
 }
 
 impl DisplayCatalog {
-    /// Build a stable ordered display catalog from config and optional target id.
+    /// Build ordered display metadata from config and optional target id.
     pub(crate) fn from_config(config: &Config, target_id: Option<&str>) -> Self {
         let mut by_name: HashMap<&str, Vec<&str>> = HashMap::new();
         let remote_plugins: Vec<_> = config
@@ -38,9 +37,8 @@ impl DisplayCatalog {
         }
 
         let mut plugins = Vec::with_capacity(remote_plugins.len());
-        let mut by_id = HashMap::with_capacity(remote_plugins.len());
 
-        for (slot, (id, name)) in remote_plugins.into_iter().enumerate() {
+        for (id, name) in remote_plugins {
             let colliding_ids = &by_name[name];
             let label = if colliding_ids.len() == 1 {
                 name.to_string()
@@ -52,28 +50,10 @@ impl DisplayCatalog {
                 if short_is_unique { short.to_string() } else { id.to_string() }
             };
 
-            let id_owned = id.to_string();
-            by_id.insert(id_owned.clone(), slot);
-            plugins.push(DisplayPlugin { id: id_owned, label, slot });
+            plugins.push(DisplayPlugin { id: id.to_string(), label });
         }
 
-        Self { plugins, by_id }
-    }
-
-    /// Return plugin metadata by canonical id.
-    pub(crate) fn plugin(&self, id: &str) -> Option<&DisplayPlugin> {
-        self.by_id.get(id).and_then(|idx| self.plugins.get(*idx))
-    }
-
-    /// Resolve the display label for an id, falling back to provided name.
-    pub(crate) fn label_for<'a>(&'a self, id: &'a str, fallback_name: &'a str) -> &'a str {
-        self.plugin(id).map(|plugin| plugin.label.as_str()).unwrap_or(fallback_name)
-    }
-
-    /// Resolve the stable slot index for an id.
-    #[cfg(test)]
-    pub(crate) fn slot_for(&self, id: &str) -> Option<usize> {
-        self.by_id.get(id).copied()
+        Self { plugins }
     }
 
     /// Return the number of plugins in this display catalog.
@@ -82,7 +62,7 @@ impl DisplayCatalog {
         self.plugins.len()
     }
 
-    /// Iterate through display plugin metadata in slot order.
+    /// Iterate through initial plugin metadata in stable declaration order.
     pub(crate) fn iter(&self) -> impl Iterator<Item = &DisplayPlugin> {
         self.plugins.iter()
     }
@@ -113,7 +93,7 @@ mod tests {
     }
 
     #[test]
-    fn display_catalog_assigns_stable_slots() {
+    fn display_catalog_assigns_stable_order_and_labels() {
         let config = Config {
             options: Options::default(),
             plugins: vec![
@@ -137,30 +117,23 @@ mod tests {
 
         let all = DisplayCatalog::from_config(&config, None);
         assert_eq!(all.len(), 3);
-        assert_eq!(all.slot_for("github.com/tmux-plugins/tmux-sensible"), Some(0));
-        assert_eq!(all.slot_for("github.com/acme/tmux-sensible"), Some(1));
-        assert_eq!(all.slot_for("github.com/tmux-plugins/tmux-yank"), Some(2));
-
+        let all_visible: Vec<_> =
+            all.iter().map(|plugin| (plugin.id.as_str(), plugin.label.as_str())).collect();
         assert_eq!(
-            all.label_for("github.com/tmux-plugins/tmux-sensible", "fallback"),
-            "tmux-plugins/tmux-sensible"
+            all_visible,
+            vec![
+                ("github.com/tmux-plugins/tmux-sensible", "tmux-plugins/tmux-sensible"),
+                ("github.com/acme/tmux-sensible", "acme/tmux-sensible"),
+                ("github.com/tmux-plugins/tmux-yank", "tmux-yank"),
+            ]
         );
-        assert_eq!(
-            all.label_for("github.com/acme/tmux-sensible", "fallback"),
-            "acme/tmux-sensible"
-        );
-        assert_eq!(all.label_for("github.com/tmux-plugins/tmux-yank", "fallback"), "tmux-yank");
-        assert_eq!(all.label_for("github.com/unknown/plugin", "fallback"), "fallback");
 
         let filtered =
             DisplayCatalog::from_config(&config, Some("github.com/tmux-plugins/tmux-yank"));
         assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered.slot_for("github.com/tmux-plugins/tmux-yank"), Some(0));
-        assert_eq!(filtered.slot_for("github.com/tmux-plugins/tmux-sensible"), None);
-        assert_eq!(
-            filtered.label_for("github.com/tmux-plugins/tmux-yank", "fallback"),
-            "tmux-yank"
-        );
+        let filtered_visible: Vec<_> =
+            filtered.iter().map(|plugin| (plugin.id.as_str(), plugin.label.as_str())).collect();
+        assert_eq!(filtered_visible, vec![("github.com/tmux-plugins/tmux-yank", "tmux-yank")]);
 
         let visible_ids: Vec<_> = all.iter().map(|plugin| plugin.id.as_str()).collect();
         assert_eq!(

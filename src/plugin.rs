@@ -9,8 +9,10 @@ use crate::lockfile::{
 };
 use crate::model::{Config, PluginSource, Tracking};
 use crate::planner::{self, PluginStatus, collect_failed_builds};
-use crate::progress::model::{PluginOutcome, PluginStageDetail, SkipReason};
-use crate::progress::{self, PluginStage, ProgressEvent, ProgressReporter};
+use crate::progress::{
+    self, PluginOutcome, PluginStage, PluginStageDetail, ProgressEvent, ProgressReporter,
+    SkipReason,
+};
 use crate::state::{self, FailureKey, FailureMarker, Paths, build_command_hash, timestamp_now};
 use crate::{git, prepare, repo, short_hash};
 

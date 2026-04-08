@@ -5,8 +5,7 @@ use tempfile::tempdir;
 use tmup::lockfile::{LockEntry, LockFile, TrackingRecord};
 use tmup::model::{Config, Options, PluginSource, PluginSpec, Tracking};
 use tmup::plugin;
-use tmup::progress::model::PluginOutcome;
-use tmup::progress::{NullReporter, PluginStage, ProgressEvent, ProgressReporter};
+use tmup::progress::{NullReporter, PluginOutcome, PluginStage, ProgressEvent, ProgressReporter};
 use tmup::state::Paths;
 use utils::*;
 

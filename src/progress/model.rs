@@ -84,6 +84,32 @@ pub enum TrackingResolution {
         /// Concrete commit hash.
         commit: String,
     },
+    /// Unexpected tracking kind/value from lock metadata.
+    Unknown {
+        /// Raw unexpected kind string.
+        kind: String,
+        /// Raw value associated with the kind.
+        value: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ParsedTrackingKind {
+    DefaultBranch,
+    Branch,
+    Tag,
+    Commit,
+    Unknown(String),
+}
+
+fn parse_tracking_kind(kind: &str) -> ParsedTrackingKind {
+    match kind {
+        "default-branch" => ParsedTrackingKind::DefaultBranch,
+        "branch" => ParsedTrackingKind::Branch,
+        "tag" => ParsedTrackingKind::Tag,
+        "commit" => ParsedTrackingKind::Commit,
+        other => ParsedTrackingKind::Unknown(other.to_string()),
+    }
 }
 
 impl PluginStageDetail {
@@ -99,14 +125,20 @@ impl PluginStageDetail {
             Tracking::Tag(tag) => TrackingSelector::Tag(tag.clone()),
             Tracking::Commit(commit) => TrackingSelector::Commit(commit.clone()),
         };
-        let resolved = match resolved.kind.as_str() {
-            "default-branch" => {
+        let resolved = match parse_tracking_kind(&resolved.kind) {
+            ParsedTrackingKind::DefaultBranch => {
                 TrackingResolution::DefaultBranch { branch: resolved.value.clone() }
             }
-            "branch" => TrackingResolution::Branch { branch: resolved.value.clone() },
-            "tag" => TrackingResolution::Tag { tag: resolved.value.clone() },
-            "commit" => TrackingResolution::Commit { commit: resolved.value.clone() },
-            _ => TrackingResolution::Commit { commit: resolved.value.clone() },
+            ParsedTrackingKind::Branch => {
+                TrackingResolution::Branch { branch: resolved.value.clone() }
+            }
+            ParsedTrackingKind::Tag => TrackingResolution::Tag { tag: resolved.value.clone() },
+            ParsedTrackingKind::Commit => {
+                TrackingResolution::Commit { commit: resolved.value.clone() }
+            }
+            ParsedTrackingKind::Unknown(kind) => {
+                TrackingResolution::Unknown { kind, value: resolved.value.clone() }
+            }
         };
         Self::TrackingResolution { selector, resolved, commit: short_hash(commit).to_string() }
     }
@@ -246,7 +278,10 @@ mod tests {
             (
                 "unexpected-kind",
                 "fedcba9876543210",
-                TrackingResolution::Commit { commit: "fedcba9876543210".to_string() },
+                TrackingResolution::Unknown {
+                    kind: "unexpected-kind".to_string(),
+                    value: "fedcba9876543210".to_string(),
+                },
             ),
         ] {
             let detail = PluginStageDetail::from_tracking(

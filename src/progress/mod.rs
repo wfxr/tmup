@@ -1,7 +1,5 @@
 use std::io::IsTerminal;
 
-use model::{PluginOutcome, PluginStageDetail};
-
 use crate::model::Config;
 use crate::state::Paths;
 
@@ -12,7 +10,7 @@ pub(crate) mod live;
 /// Shared failure-detail logging primitives.
 pub(crate) mod log;
 /// Structured progress event/value types.
-pub mod model;
+pub(crate) mod model;
 /// Reducer and snapshot state for structured progress.
 pub(crate) mod reducer;
 /// Shared progress line rendering from structured snapshot state.
@@ -20,7 +18,7 @@ pub(crate) mod render;
 /// Reducer-driven runtime reporter core.
 pub(crate) mod reporter;
 
-pub use model::{OperationStage, PluginStage};
+pub use model::{OperationStage, PluginOutcome, PluginStage, PluginStageDetail, SkipReason};
 
 pub(crate) const SUMMARY_MAX_LEN: usize = 80;
 pub(crate) const ACTION_WIDTH: usize = 12;
@@ -164,31 +162,66 @@ pub fn create_reporter(
 
 /// Strip ANSI escape sequences and non-printable control characters.
 pub(crate) fn strip_ansi(s: &str) -> String {
+    #[derive(Clone, Copy)]
+    enum StripState {
+        Normal,
+        Escape,
+        Csi,
+        Osc,
+        OscEscape,
+    }
+
     let mut result = String::with_capacity(s.len());
-    let mut in_escape = false;
-    let mut in_csi = false;
+    let mut state = StripState::Normal;
+
     for ch in s.chars() {
-        if in_csi {
-            if ch.is_ascii() && (ch as u8) >= 0x40 && (ch as u8) <= 0x7e {
-                in_csi = false;
+        state = match state {
+            StripState::Normal => {
+                if ch == '\x1b' {
+                    StripState::Escape
+                } else {
+                    if !ch.is_control() {
+                        result.push(ch);
+                    }
+                    StripState::Normal
+                }
             }
-            continue;
-        }
-        if in_escape {
-            in_escape = false;
-            if ch == '[' {
-                in_csi = true;
+            StripState::Escape => match ch {
+                '[' => StripState::Csi,
+                ']' => StripState::Osc,
+                _ => StripState::Normal,
+            },
+            StripState::Csi => {
+                if ch.is_ascii() && matches!(ch as u8, 0x40..=0x7e) {
+                    StripState::Normal
+                } else {
+                    StripState::Csi
+                }
             }
-            continue;
-        }
-        if ch == '\x1b' {
-            in_escape = true;
-            continue;
-        }
-        if !ch.is_control() {
-            result.push(ch);
+            StripState::Osc => {
+                if ch == '\x07' {
+                    // OSC terminated by BEL.
+                    StripState::Normal
+                } else if ch == '\x1b' {
+                    // Potential ST terminator (ESC \).
+                    StripState::OscEscape
+                } else {
+                    StripState::Osc
+                }
+            }
+            StripState::OscEscape => {
+                if ch == '\\' {
+                    StripState::Normal
+                } else if ch == '\x1b' {
+                    // Stay pending in case multiple ESC bytes are emitted.
+                    StripState::OscEscape
+                } else {
+                    StripState::Osc
+                }
+            }
         }
     }
+
     result
 }
 
@@ -229,6 +262,17 @@ mod tests {
     fn strip_ansi_removes_csi_sequences() {
         assert_eq!(strip_ansi("\x1b[31mhello\x1b[0m"), "hello");
         assert_eq!(strip_ansi("\x1b[1;33;40mworld\x1b[0m"), "world");
+    }
+
+    #[test]
+    fn strip_ansi_removes_osc_sequences() {
+        assert_eq!(strip_ansi("\x1b]8;;https://example.com\x07link\x1b]8;;\x07"), "link");
+        assert_eq!(strip_ansi("\x1b]0;title\x1b\\hello"), "hello");
+    }
+
+    #[test]
+    fn strip_ansi_removes_control_chars() {
+        assert_eq!(strip_ansi("hello\x07world\tok"), "helloworldok");
     }
 
     #[test]
