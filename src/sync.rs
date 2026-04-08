@@ -195,8 +195,8 @@ pub async fn run(
                     reporter,
                     id,
                     name,
-                    PluginStage::Fetching,
-                    &err,
+                    err.stage,
+                    &err.err,
                     vec![("clone_url", clone_url.clone()), ("tracking", tracking.clone())],
                 ));
             }
@@ -315,7 +315,7 @@ async fn resolve_desired_plugin(
     config_hash: String,
     paths: &Paths,
     reporter: &dyn ProgressReporter,
-) -> Result<ResolvedPlugin> {
+) -> std::result::Result<ResolvedPlugin, plugin::PrepareStageError> {
     let PluginSource::Remote { id, clone_url, .. } = &spec.source else {
         unreachable!("sync only processes remote plugins");
     };
@@ -332,37 +332,50 @@ async fn resolve_desired_plugin(
         let revision = if let Some(entry) = current_entry
             && tracks_same_revision(spec, &entry.tracking)
         {
-            repo::ensure_locked_revision(paths, id, clone_url, &entry.commit).await?
+            plugin::stage_result(
+                PluginStage::Fetching,
+                repo::ensure_locked_revision(paths, id, clone_url, &entry.commit).await,
+            )?
         } else {
-            repo::resolve_tracking_revision(paths, id, clone_url, &spec.tracking).await?
+            plugin::resolve_tracking_revision_with_stages(paths, id, clone_url, &spec.tracking)
+                .await?
         };
-        let prepared =
-            repo::materialize_staging_at_revision(paths, id, clone_url, &revision).await?;
-
-        let commit = prepared.commit;
         let tracking = if let Some(entry) = current_entry
             && tracks_same_revision(spec, &entry.tracking)
         {
             entry.tracking.clone()
         } else {
-            let tracking = prepared.tracking.expect("tracking metadata required");
+            let tracking = revision.tracking.clone().expect("tracking metadata required");
             reporter.report(ProgressEvent::PluginStage {
                 id,
                 name,
                 stage: PluginStage::Resolving,
-                detail: Some(PluginStageDetail::from_tracking(&spec.tracking, &tracking, &commit)),
+                detail: Some(PluginStageDetail::from_tracking(
+                    &spec.tracking,
+                    &tracking,
+                    &revision.commit,
+                )),
             });
             tracking
         };
-
         reporter.report(ProgressEvent::PluginStage {
             id,
             name,
             stage: PluginStage::CheckingOut,
             detail: None,
         });
-        Ok::<_, anyhow::Error>(LockEntry { tracking, commit, config_hash: Some(config_hash) })
-            .map(|entry| (prepared.staging_dir, entry))
+        let prepared = plugin::stage_result(
+            PluginStage::CheckingOut,
+            repo::materialize_staging_at_revision(paths, id, clone_url, &revision).await,
+        )?;
+
+        let commit = prepared.commit;
+        Ok::<_, plugin::PrepareStageError>(LockEntry {
+            tracking,
+            commit,
+            config_hash: Some(config_hash),
+        })
+        .map(|entry| (prepared.staging_dir, entry))
     }
     .await;
 

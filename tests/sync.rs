@@ -1,10 +1,12 @@
 mod utils;
+use std::sync::Mutex;
+
 use tempfile::tempdir;
 use tmup::lockfile::{
     LockEntry, LockFile, config_fingerprint, read_lockfile, remote_plugin_config_hash,
 };
 use tmup::model::{Config, Options, PluginSource, PluginSpec, Tracking};
-use tmup::progress::NullReporter;
+use tmup::progress::{NullReporter, PluginStage, ProgressEvent, ProgressReporter};
 use tmup::state::{FailureMarker, Paths, build_command_hash};
 use tmup::sync::{self, SyncMode, SyncPolicy};
 use utils::*;
@@ -36,6 +38,25 @@ fn make_config(plugins: Vec<PluginSpec>) -> Config {
 
 fn plugin_head(paths: &Paths, id: &str) -> String {
     git(&["rev-parse", "HEAD"], &paths.plugin_dir(id))
+}
+
+#[derive(Default)]
+struct CaptureFailureStages {
+    stages: Mutex<Vec<Option<PluginStage>>>,
+}
+
+impl CaptureFailureStages {
+    fn take(&self) -> Vec<Option<PluginStage>> {
+        std::mem::take(&mut *self.stages.lock().unwrap())
+    }
+}
+
+impl ProgressReporter for CaptureFailureStages {
+    fn report(&self, event: ProgressEvent<'_>) {
+        if let ProgressEvent::PluginFailed { stage, .. } = event {
+            self.stages.lock().unwrap().push(stage);
+        }
+    }
 }
 
 #[tokio::test]
@@ -242,6 +263,48 @@ async fn sync_creates_repo_cache_for_remote_plugin() {
 
     assert!(paths.repo_cache_dir("example.com/test/plugin").exists());
     assert_eq!(plugin_head(&paths, "example.com/test/plugin"), commit);
+}
+
+#[tokio::test]
+async fn sync_prepare_checkout_failure_reports_checking_out_stage() {
+    let dir = tempdir().unwrap();
+    let (bare, _commit) = make_bare_repo(&dir.path().join("repo"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let plugin = make_plugin(
+        "test/plugin",
+        "example.com/test/plugin",
+        &clone_url,
+        Tracking::DefaultBranch,
+        None,
+    );
+    let cfg = make_config(vec![plugin]);
+    let mut lock = LockFile::new();
+    lock.plugins.insert(
+        "example.com/test/plugin".into(),
+        LockEntry {
+            tracking: tmup::lockfile::TrackingRecord {
+                kind: "default-branch".into(),
+                value: "main".into(),
+            },
+            // Deliberately absent from remote refs so checkout fails in staging.
+            commit: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".into(),
+            config_hash: Some("placeholder-hash".into()),
+        },
+    );
+
+    let reporter = CaptureFailureStages::default();
+    let outcome =
+        sync::run(&cfg, &mut lock, &paths, None, SyncPolicy::SYNC, SyncMode::Normal, &reporter)
+            .await
+            .unwrap();
+
+    assert_eq!(outcome.plugin_failures.len(), 1);
+    let stages = reporter.take();
+    assert_eq!(stages.len(), 1);
+    assert!(matches!(stages[0], Some(PluginStage::CheckingOut)));
 }
 
 #[tokio::test]

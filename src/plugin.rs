@@ -18,6 +18,36 @@ use crate::{git, prepare, repo, short_hash};
 
 type UpdatePrepareResult = (PathBuf, String, TrackingRecord, Option<String>);
 
+#[derive(Debug)]
+pub(crate) struct PrepareStageError {
+    pub(crate) stage: PluginStage,
+    pub(crate) err: anyhow::Error,
+}
+
+pub(crate) fn stage_result<T>(
+    stage: PluginStage,
+    result: anyhow::Result<T>,
+) -> std::result::Result<T, PrepareStageError> {
+    result.map_err(|err| PrepareStageError { stage, err })
+}
+
+pub(crate) async fn resolve_tracking_revision_with_stages(
+    paths: &Paths,
+    plugin_id: &str,
+    clone_url: &str,
+    tracking: &Tracking,
+) -> std::result::Result<repo::ResolvedRevision, PrepareStageError> {
+    stage_result(
+        PluginStage::Fetching,
+        repo::ensure_cache_repo(paths, plugin_id, clone_url).await,
+    )?;
+    let cache_dir = paths.repo_cache_dir(plugin_id);
+    stage_result(PluginStage::Fetching, repo::fetch_for_tracking(&cache_dir, tracking).await)?;
+    let (commit, tracking_record) =
+        stage_result(PluginStage::Resolving, repo::resolve_tracking(&cache_dir, tracking).await)?;
+    Ok(repo::ResolvedRevision { commit, tracking: Some(tracking_record) })
+}
+
 /// Install missing remote plugins. Lock-first: uses lock entry if present.
 ///
 /// When `skip_known_failures` is true (legacy second-phase init install path),
@@ -76,25 +106,31 @@ pub async fn install(
                     detail: Some(PluginStageDetail::CloneUrl(clone_url.clone())),
                 });
                 if let Some(entry) = lock_ref.plugins.get(id.as_str()) {
-                    let revision =
-                        repo::ensure_locked_revision(paths, id, clone_url, &entry.commit).await?;
-                    let prepared =
+                    let revision = stage_result(
+                        PluginStage::Fetching,
+                        repo::ensure_locked_revision(paths, id, clone_url, &entry.commit).await,
+                    )?;
+                    reporter.report(ProgressEvent::PluginStage {
+                        id,
+                        name: &spec.name,
+                        stage: PluginStage::CheckingOut,
+                        detail: None,
+                    });
+                    let prepared = stage_result(
+                        PluginStage::CheckingOut,
                         repo::materialize_staging_at_revision(paths, id, clone_url, &revision)
-                            .await?;
-                    Ok::<_, anyhow::Error>((
+                            .await,
+                    )?;
+                    Ok::<_, PrepareStageError>((
                         prepared.staging_dir,
                         entry.commit.clone(),
                         entry.tracking.clone(),
                     ))
                 } else {
                     let revision =
-                        repo::resolve_tracking_revision(paths, id, clone_url, &spec.tracking)
+                        resolve_tracking_revision_with_stages(paths, id, clone_url, &spec.tracking)
                             .await?;
-                    let prepared =
-                        repo::materialize_staging_at_revision(paths, id, clone_url, &revision)
-                            .await?;
-                    let commit = prepared.commit;
-                    let record = prepared.tracking.expect("tracking metadata required");
+                    let record = revision.tracking.clone().expect("tracking metadata required");
                     reporter.report(ProgressEvent::PluginStage {
                         id,
                         name: &spec.name,
@@ -102,10 +138,21 @@ pub async fn install(
                         detail: Some(PluginStageDetail::from_tracking(
                             &spec.tracking,
                             &record,
-                            &commit,
+                            &revision.commit,
                         )),
                     });
-                    Ok((prepared.staging_dir, commit, record))
+                    reporter.report(ProgressEvent::PluginStage {
+                        id,
+                        name: &spec.name,
+                        stage: PluginStage::CheckingOut,
+                        detail: None,
+                    });
+                    let prepared = stage_result(
+                        PluginStage::CheckingOut,
+                        repo::materialize_staging_at_revision(paths, id, clone_url, &revision)
+                            .await,
+                    )?;
+                    Ok((prepared.staging_dir, prepared.commit, record))
                 }
             }
         })
@@ -121,14 +168,7 @@ pub async fn install(
             Ok(v) => v,
             Err(e) => {
                 let context = remote_failure_context(spec, paths);
-                failures.push(report_plugin_failure(
-                    reporter,
-                    id,
-                    name,
-                    PluginStage::Fetching,
-                    &e,
-                    context,
-                ));
+                failures.push(report_plugin_failure(reporter, id, name, e.stage, &e.err, context));
                 continue;
             }
         };
@@ -262,11 +302,9 @@ pub async fn update(
                     detail: Some(PluginStageDetail::CloneUrl(clone_url.clone())),
                 });
                 let revision =
-                    repo::resolve_tracking_revision(paths, id, clone_url, &spec.tracking).await?;
-                let prepared =
-                    repo::materialize_staging_at_revision(paths, id, clone_url, &revision).await?;
-                let new_commit = prepared.commit;
-                let record = prepared.tracking.expect("tracking metadata required");
+                    resolve_tracking_revision_with_stages(paths, id, clone_url, &spec.tracking)
+                        .await?;
+                let record = revision.tracking.clone().expect("tracking metadata required");
                 reporter.report(ProgressEvent::PluginStage {
                     id,
                     name: &spec.name,
@@ -274,24 +312,36 @@ pub async fn update(
                     detail: Some(PluginStageDetail::from_tracking(
                         &spec.tracking,
                         &record,
-                        &new_commit,
+                        &revision.commit,
                     )),
                 });
+                reporter.report(ProgressEvent::PluginStage {
+                    id,
+                    name: &spec.name,
+                    stage: PluginStage::CheckingOut,
+                    detail: None,
+                });
+                let prepared = stage_result(
+                    PluginStage::CheckingOut,
+                    repo::materialize_staging_at_revision(paths, id, clone_url, &revision).await,
+                )?;
+                let new_commit = prepared.commit;
                 let disk_commit = if target_dir.exists() {
                     git::head_commit(&target_dir).await.ok()
                 } else {
                     None
                 };
-                Ok::<_, anyhow::Error>((prepared.staging_dir, new_commit, record, disk_commit))
+                Ok::<_, PrepareStageError>((prepared.staging_dir, new_commit, record, disk_commit))
             }
         })
         .collect();
-    let mut prepare_results: Vec<Option<Result<UpdatePrepareResult, anyhow::Error>>> =
-        prepare::run_bounded(config.options.concurrency, prepare_jobs)
-            .await
-            .into_iter()
-            .map(Some)
-            .collect();
+    let mut prepare_results: Vec<
+        Option<std::result::Result<UpdatePrepareResult, PrepareStageError>>,
+    > = prepare::run_bounded(config.options.concurrency, prepare_jobs)
+        .await
+        .into_iter()
+        .map(Some)
+        .collect();
 
     // Phase 3: Serial apply in declaration order.
     for (idx, spec) in candidates.iter().enumerate() {
@@ -304,14 +354,7 @@ pub async fn update(
             Ok(v) => v,
             Err(e) => {
                 let context = remote_failure_context(spec, paths);
-                failures.push(report_plugin_failure(
-                    reporter,
-                    id,
-                    name,
-                    PluginStage::Fetching,
-                    &e,
-                    context,
-                ));
+                failures.push(report_plugin_failure(reporter, id, name, e.stage, &e.err, context));
                 continue;
             }
         };
@@ -466,11 +509,21 @@ pub async fn restore(
                     stage: PluginStage::Fetching,
                     detail: Some(PluginStageDetail::CloneUrl(clone_url.clone())),
                 });
-                let revision =
-                    repo::ensure_locked_revision(paths, id, clone_url, &entry.commit).await?;
-                let prepared =
-                    repo::materialize_staging_at_revision(paths, id, clone_url, &revision).await?;
-                Ok::<_, anyhow::Error>(prepared.staging_dir)
+                let revision = stage_result(
+                    PluginStage::Fetching,
+                    repo::ensure_locked_revision(paths, id, clone_url, &entry.commit).await,
+                )?;
+                reporter.report(ProgressEvent::PluginStage {
+                    id,
+                    name: &spec.name,
+                    stage: PluginStage::CheckingOut,
+                    detail: None,
+                });
+                let prepared = stage_result(
+                    PluginStage::CheckingOut,
+                    repo::materialize_staging_at_revision(paths, id, clone_url, &revision).await,
+                )?;
+                Ok::<_, PrepareStageError>(prepared.staging_dir)
             }
         })
         .collect();
@@ -487,14 +540,7 @@ pub async fn restore(
             Err(e) => {
                 let mut context = remote_failure_context(spec, paths);
                 context.push(("locked_commit", entry.commit.clone()));
-                failures.push(report_plugin_failure(
-                    reporter,
-                    id,
-                    name,
-                    PluginStage::Fetching,
-                    &e,
-                    context,
-                ));
+                failures.push(report_plugin_failure(reporter, id, name, e.stage, &e.err, context));
                 continue;
             }
         };
@@ -631,7 +677,7 @@ fn publish_and_track(
 }
 
 fn cleanup_pending_update_staging(
-    pending: &mut [Option<Result<UpdatePrepareResult, anyhow::Error>>],
+    pending: &mut [Option<std::result::Result<UpdatePrepareResult, PrepareStageError>>],
 ) {
     for item in pending {
         if let Some(Ok((staging, ..))) = item.take() {
