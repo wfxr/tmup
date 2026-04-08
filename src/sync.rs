@@ -168,7 +168,7 @@ pub async fn run(
         let PluginSource::Remote { clone_url, .. } = &spec.source else {
             unreachable!("sync only processes remote plugins")
         };
-        let tracking = describe_tracking_selector(&spec.tracking);
+        let tracking = plugin::tracking_selector(&spec.tracking);
         match result {
             Ok(resolved) => {
                 let resolved_commit = resolved.entry.commit.clone();
@@ -375,15 +375,6 @@ fn tracks_same_revision(spec: &PluginSpec, locked: &TrackingRecord) -> bool {
         Tracking::Branch(branch) => locked.kind == "branch" && locked.value == *branch,
         Tracking::Tag(tag) => locked.kind == "tag" && locked.value == *tag,
         Tracking::Commit(commit) => locked.kind == "commit" && locked.value == *commit,
-    }
-}
-
-fn describe_tracking_selector(tracking: &Tracking) -> String {
-    match tracking {
-        Tracking::DefaultBranch => "default-branch".to_string(),
-        Tracking::Branch(branch) => format!("branch:{branch}"),
-        Tracking::Tag(tag) => format!("tag:{tag}"),
-        Tracking::Commit(commit) => format!("commit:{commit}"),
     }
 }
 

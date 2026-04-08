@@ -75,22 +75,8 @@ fn short_remote_id(id: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::DisplayCatalog;
-    use crate::model::{Config, Options, PluginSource, PluginSpec, Tracking};
-
-    fn remote_plugin(raw: &str, id: &str, name: &str) -> PluginSpec {
-        PluginSpec {
-            source: PluginSource::Remote {
-                raw: raw.to_string(),
-                id: id.to_string(),
-                clone_url: format!("https://{id}.git"),
-            },
-            name: name.to_string(),
-            opt_prefix: "@plugin".to_string(),
-            tracking: Tracking::DefaultBranch,
-            build: None,
-            opts: Vec::new(),
-        }
-    }
+    use crate::model::{Config, Options};
+    use crate::progress::test_support::remote_plugin;
 
     #[test]
     fn display_catalog_assigns_stable_order_and_labels() {

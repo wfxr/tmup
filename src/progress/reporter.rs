@@ -440,27 +440,13 @@ mod tests {
     use std::io::{self, Write};
 
     use super::ReducerReporter;
-    use crate::model::{Config, Options, PluginSource, PluginSpec, Tracking};
+    use crate::model::{Config, Options};
     use crate::progress::catalog::DisplayCatalog;
     use crate::progress::reducer::OperationTerminalState;
+    use crate::progress::test_support::remote_plugin;
     use crate::progress::{
         OperationStage, PluginStage, PluginStageDetail, ProgressEvent, ProgressReporter,
     };
-
-    fn remote_plugin(raw: &str, id: &str, name: &str) -> PluginSpec {
-        PluginSpec {
-            source: PluginSource::Remote {
-                raw: raw.to_string(),
-                id: id.to_string(),
-                clone_url: format!("https://{id}.git"),
-            },
-            name: name.to_string(),
-            opt_prefix: "@plugin".to_string(),
-            tracking: Tracking::DefaultBranch,
-            build: None,
-            opts: Vec::new(),
-        }
-    }
 
     #[derive(Default)]
     struct FailingWriter;

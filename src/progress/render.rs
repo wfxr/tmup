@@ -194,22 +194,36 @@ fn tracking_detail_text(
         | (TrackingSelector::DefaultBranch, TrackingResolution::Branch { branch }) => {
             format!("default-branch -> branch@{branch} -> commit@{commit}")
         }
-        (TrackingSelector::Branch(branch), _) => format!("branch@{branch} -> commit@{commit}"),
-        (TrackingSelector::Tag(tag), _) => format!("tag@{tag} -> commit@{commit}"),
-        (TrackingSelector::Commit(commit), _) => format!("commit@{commit}"),
-        _ => format!(
-            "{} -> {}",
-            tracking_selector_text(selector),
-            match resolved {
-                TrackingResolution::DefaultBranch { branch }
-                | TrackingResolution::Branch { branch } => {
-                    format!("branch@{branch} -> commit@{commit}")
-                }
-                TrackingResolution::Tag { tag } => format!("tag@{tag} -> commit@{commit}"),
-                TrackingResolution::Commit { commit } => format!("commit@{commit}"),
-                TrackingResolution::Unknown { .. } => unreachable!("handled above"),
-            }
-        ),
+        (TrackingSelector::DefaultBranch, TrackingResolution::Tag { tag }) => {
+            format!("default-branch -> tag@{tag} -> commit@{commit}")
+        }
+        (
+            TrackingSelector::DefaultBranch,
+            TrackingResolution::Commit { commit: resolved_commit },
+        ) => {
+            format!("default-branch -> commit@{resolved_commit}")
+        }
+        (
+            TrackingSelector::Branch(branch),
+            TrackingResolution::DefaultBranch { .. }
+            | TrackingResolution::Branch { .. }
+            | TrackingResolution::Tag { .. }
+            | TrackingResolution::Commit { .. },
+        ) => format!("branch@{branch} -> commit@{commit}"),
+        (
+            TrackingSelector::Tag(tag),
+            TrackingResolution::DefaultBranch { .. }
+            | TrackingResolution::Branch { .. }
+            | TrackingResolution::Tag { .. }
+            | TrackingResolution::Commit { .. },
+        ) => format!("tag@{tag} -> commit@{commit}"),
+        (
+            TrackingSelector::Commit(selector_commit),
+            TrackingResolution::DefaultBranch { .. }
+            | TrackingResolution::Branch { .. }
+            | TrackingResolution::Tag { .. }
+            | TrackingResolution::Commit { .. },
+        ) => format!("commit@{selector_commit}"),
     }
 }
 
@@ -293,7 +307,6 @@ mod tests {
         let mut snapshot = ProgressSnapshot::new_for_tests([(
             "github.com/tmux-plugins/tmux-sensible",
             "tmux-sensible",
-            0,
         )]);
         let renderer = TranscriptRenderer::new();
 
@@ -398,7 +411,6 @@ mod tests {
         let mut snapshot = ProgressSnapshot::new_for_tests([(
             "github.com/tmux-plugins/tmux-sensible",
             "tmux-sensible",
-            0,
         )]);
         let renderer = TranscriptRenderer::new();
 
@@ -456,7 +468,6 @@ mod tests {
         let mut snapshot = ProgressSnapshot::new_for_tests([(
             "github.com/tmux-plugins/tmux-sensible",
             "tmux-sensible",
-            0,
         )]);
         let renderer = TranscriptRenderer::new();
 
@@ -495,7 +506,6 @@ mod tests {
         let mut snapshot = ProgressSnapshot::new_for_tests([(
             "github.com/tmux-plugins/tmux-sensible",
             "tmux-sensible",
-            0,
         )]);
         let renderer = TranscriptRenderer::new();
 
@@ -532,7 +542,6 @@ mod tests {
         let mut snapshot = ProgressSnapshot::new_for_tests([(
             "github.com/tmux-plugins/tmux-sensible",
             "tmux-sensible",
-            0,
         )]);
         let renderer = TranscriptRenderer::new();
         let event = SnapshotUpdate::PluginStageChanged {
@@ -549,7 +558,6 @@ mod tests {
         let mut snapshot = ProgressSnapshot::new_for_tests([(
             "github.com/tmux-plugins/tmux-sensible",
             "tmux-sensible",
-            0,
         )]);
         let renderer = TranscriptRenderer::new();
         let event = SnapshotUpdate::PluginStageChanged {
@@ -579,7 +587,6 @@ mod tests {
         let mut snapshot = ProgressSnapshot::new_for_tests([(
             "github.com/tmux-plugins/tmux-sensible",
             "tmux-sensible",
-            0,
         )]);
         let renderer = TranscriptRenderer::new();
 
@@ -616,7 +623,6 @@ mod tests {
         let mut snapshot = ProgressSnapshot::new_for_tests([(
             "github.com/tmux-plugins/tmux-sensible",
             "tmux-sensible",
-            0,
         )]);
         let renderer = TranscriptRenderer::new();
 
@@ -650,7 +656,6 @@ mod tests {
         let mut snapshot = ProgressSnapshot::new_for_tests([(
             "github.com/tmux-plugins/tmux-sensible",
             "tmux-sensible",
-            0,
         )]);
         let renderer = TranscriptRenderer::new();
 

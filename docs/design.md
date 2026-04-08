@@ -86,3 +86,6 @@ When behavior changes, this document should only change if repository-level
 invariants changed. Command internals, progress/reporting mechanics, exact
 layout examples, and roadmap/status tracking belong in operational docs or
 code-level documentation, not here.
+
+For implementation-level progress internals, see module docs and comments in
+`src/progress/` (especially `mod.rs`, `reducer.rs`, and `reporter.rs`).

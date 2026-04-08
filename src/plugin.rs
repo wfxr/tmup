@@ -660,7 +660,7 @@ pub(crate) fn report_plugin_failure(
     format!("{id}: {err}")
 }
 
-fn tracking_selector(tracking: &Tracking) -> String {
+pub(crate) fn tracking_selector(tracking: &Tracking) -> String {
     match tracking {
         Tracking::DefaultBranch => "default-branch".to_string(),
         Tracking::Branch(branch) => format!("branch:{branch}"),

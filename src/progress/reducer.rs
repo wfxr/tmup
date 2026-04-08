@@ -36,6 +36,9 @@ pub(crate) enum SnapshotUpdate {
         /// Canonical plugin id.
         id: String,
         /// Optional failure stage.
+        ///
+        /// Runtime command paths usually provide a concrete stage, while `None`
+        /// supports callers that only have terminal failure context.
         stage: Option<PluginStage>,
         /// One-line failure summary.
         summary: String,
@@ -89,6 +92,9 @@ pub(crate) enum PluginDisplayState {
     /// Plugin failed with a final error summary.
     Failed {
         /// Optional stage at failure point.
+        ///
+        /// This remains optional to preserve compatibility with progress events
+        /// that report failures without stage-level context.
         stage: Option<PluginStage>,
         /// One-line failure summary.
         summary: String,
@@ -144,13 +150,11 @@ impl ProgressSnapshot {
     }
 
     /// Construct a snapshot with deterministic display order for reducer tests.
-    ///
-    /// The third tuple field is ignored and kept only to avoid broad test-call-site churn.
     #[cfg(test)]
-    pub(crate) fn new_for_tests<const N: usize>(plugins: [(&str, &str, usize); N]) -> Self {
+    pub(crate) fn new_for_tests<const N: usize>(plugins: [(&str, &str); N]) -> Self {
         let mut entries = Vec::with_capacity(plugins.len());
         let mut index = HashMap::with_capacity(plugins.len());
-        for (id, label, _ignored_order) in plugins {
+        for (id, label) in plugins {
             let id = id.to_string();
             index.insert(id.clone(), entries.len());
             entries.push(PluginSnapshot {
@@ -235,7 +239,7 @@ mod tests {
 
     #[test]
     fn reducer_preserves_finished_plugin_order() {
-        let mut snapshot = ProgressSnapshot::new_for_tests([("github.com/acme/a", "plugin-a", 0)]);
+        let mut snapshot = ProgressSnapshot::new_for_tests([("github.com/acme/a", "plugin-a")]);
 
         apply_event(
             &mut snapshot,
@@ -316,8 +320,8 @@ mod tests {
     #[test]
     fn reducer_handles_interleaved_plugins_and_direct_finish() {
         let mut snapshot = ProgressSnapshot::new_for_tests([
-            ("github.com/acme/a", "plugin-a", 0),
-            ("github.com/acme/b", "plugin-b", 1),
+            ("github.com/acme/a", "plugin-a"),
+            ("github.com/acme/b", "plugin-b"),
         ]);
 
         apply_event(
@@ -358,7 +362,7 @@ mod tests {
 
     #[test]
     fn reducer_ignores_unknown_plugin_ids() {
-        let mut snapshot = ProgressSnapshot::new_for_tests([("github.com/acme/a", "plugin-a", 0)]);
+        let mut snapshot = ProgressSnapshot::new_for_tests([("github.com/acme/a", "plugin-a")]);
 
         apply_event(
             &mut snapshot,
@@ -382,7 +386,7 @@ mod tests {
 
     #[test]
     fn reducer_does_not_reopen_plugin_after_terminal_state() {
-        let mut snapshot = ProgressSnapshot::new_for_tests([("github.com/acme/a", "plugin-a", 0)]);
+        let mut snapshot = ProgressSnapshot::new_for_tests([("github.com/acme/a", "plugin-a")]);
 
         apply_event(
             &mut snapshot,
@@ -408,7 +412,7 @@ mod tests {
 
     #[test]
     fn reducer_keeps_first_terminal_state() {
-        let mut snapshot = ProgressSnapshot::new_for_tests([("github.com/acme/a", "plugin-a", 0)]);
+        let mut snapshot = ProgressSnapshot::new_for_tests([("github.com/acme/a", "plugin-a")]);
 
         apply_event(
             &mut snapshot,
@@ -434,7 +438,7 @@ mod tests {
 
     #[test]
     fn reducer_does_not_reopen_failed_plugin_after_stage_change() {
-        let mut snapshot = ProgressSnapshot::new_for_tests([("github.com/acme/a", "plugin-a", 0)]);
+        let mut snapshot = ProgressSnapshot::new_for_tests([("github.com/acme/a", "plugin-a")]);
 
         apply_event(
             &mut snapshot,
@@ -461,7 +465,7 @@ mod tests {
 
     #[test]
     fn reducer_records_operation_failure_terminal_state() {
-        let mut snapshot = ProgressSnapshot::new_for_tests([("github.com/acme/a", "plugin-a", 0)]);
+        let mut snapshot = ProgressSnapshot::new_for_tests([("github.com/acme/a", "plugin-a")]);
 
         apply_event(
             &mut snapshot,
