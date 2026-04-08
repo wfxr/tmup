@@ -118,7 +118,6 @@ impl<W: Write> LiveRenderer<W> {
         if self.frozen {
             return;
         }
-        self.bootstrap(snapshot);
         let rendered = termui::format_styled_labeled_line_clamped(
             "Failed",
             ACTION_WIDTH,
@@ -126,7 +125,13 @@ impl<W: Write> LiveRenderer<W> {
             Accent::Error,
             self.render_width(),
         );
-        self.write_row(0, rendered);
+        if self.initialized {
+            self.bootstrap(snapshot);
+            self.write_row(0, rendered);
+        } else {
+            self.try_writeln(ProgressIoAction::RowUpdate, &rendered);
+            self.try_flush();
+        }
     }
 
     /// Freeze the final frame and restore cursor state.
@@ -141,7 +146,9 @@ impl<W: Write> LiveRenderer<W> {
         if self.frozen {
             return;
         }
-        self.bootstrap(snapshot);
+        if self.initialized {
+            self.bootstrap(snapshot);
+        }
 
         if matches!(command, Some("init")) && success {
             let rendered = termui::format_styled_labeled_line_clamped(
@@ -151,7 +158,11 @@ impl<W: Write> LiveRenderer<W> {
                 Accent::Success,
                 self.render_width(),
             );
-            self.write_row(0, rendered);
+            if self.initialized {
+                self.write_row(0, rendered);
+            } else {
+                self.try_writeln(ProgressIoAction::RowUpdate, &rendered);
+            }
         }
         if let Some(path) = details_path {
             let details_line = termui::format_styled_labeled_line_clamped(
@@ -174,7 +185,9 @@ impl<W: Write> LiveRenderer<W> {
             self.try_writeln(ProgressIoAction::RowUpdate, &warning_line);
         }
 
-        if let Err(err) = self.writer.queue(cursor::Show) {
+        if self.initialized
+            && let Err(err) = self.writer.queue(cursor::Show)
+        {
             self.record_io_failure(ProgressIoAction::ShowCursor, &err);
         }
         self.try_flush();
@@ -497,6 +510,47 @@ mod tests {
 
         let row = crate::progress::strip_ansi(renderer.frame_line_for_tests(0).unwrap());
         assert!(row.contains("Failed operation sync failed"), "row: {row:?}");
+    }
+
+    #[test]
+    fn live_renderer_operation_failure_without_bootstrap_avoids_placeholder_frame() {
+        let snapshot = ProgressSnapshot::from_ordered_plugins(vec![(
+            "github.com/acme/a".to_string(),
+            "plugin-a".to_string(),
+        )]);
+        let mut renderer = LiveRenderer::new_for_tests(Vec::new(), 120);
+
+        renderer.write_operation_failure(&snapshot, "sync failed");
+
+        let output = crate::progress::strip_ansi(&renderer.output_for_tests());
+        assert!(output.contains("Failed operation sync failed"), "output:\n{output}");
+        assert!(!output.contains("Status"), "output:\n{output}");
+        assert!(!output.contains("Pending"), "output:\n{output}");
+    }
+
+    #[test]
+    fn live_renderer_finish_without_bootstrap_writes_tail_only() {
+        let snapshot = ProgressSnapshot::from_ordered_plugins(vec![(
+            "github.com/acme/a".to_string(),
+            "plugin-a".to_string(),
+        )]);
+        let mut renderer = LiveRenderer::new_for_tests(Vec::new(), 120);
+        let dir = tempfile::tempdir().unwrap();
+        let details = dir.path().join("details.log");
+        let warnings = vec!["detail log warning".to_string()];
+
+        renderer.finish(&snapshot, Some("init"), true, Some(&details), &warnings);
+
+        let raw = renderer.output_for_tests();
+        let output = crate::progress::strip_ansi(&raw);
+        assert!(output.contains("Finished tmup init"), "output:\n{output}");
+        assert!(output.contains("Details"), "output:\n{output}");
+        assert!(output.contains(&details.display().to_string()), "output:\n{output}");
+        assert!(output.contains("Warning detail log warning"), "output:\n{output}");
+        assert!(!output.contains("Status"), "output:\n{output}");
+        assert!(!output.contains("Pending"), "output:\n{output}");
+        assert!(!raw.contains("\u{1b}[?25l"), "raw: {raw:?}");
+        assert!(!raw.contains("\u{1b}[?25h"), "raw: {raw:?}");
     }
 
     #[test]

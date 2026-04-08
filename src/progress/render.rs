@@ -1,5 +1,5 @@
 use crate::progress::model::{TrackingResolution, TrackingSelector};
-use crate::progress::reducer::{ProgressSnapshot, SnapshotUpdate};
+use crate::progress::reducer::{PluginSnapshot, ProgressSnapshot, SnapshotUpdate};
 use crate::progress::{OperationStage, PluginOutcome, PluginStage, PluginStageDetail, SkipReason};
 use crate::termui::{self, Accent};
 
@@ -84,12 +84,8 @@ impl TranscriptRenderer {
                 {
                     return Vec::new();
                 }
-                let plugin = match snapshot.plugin(id) {
-                    Some(plugin) => plugin,
-                    None => {
-                        debug_assert!(false, "missing plugin snapshot for id={id}");
-                        return Vec::new();
-                    }
+                let Some(plugin) = snapshot_plugin(snapshot, id) else {
+                    return Vec::new();
                 };
                 vec![DisplayLine {
                     kind: LineKind::Stage,
@@ -99,23 +95,15 @@ impl TranscriptRenderer {
                 }]
             }
             SnapshotUpdate::PluginFinished { id, outcome } => {
-                let plugin = match snapshot.plugin(id) {
-                    Some(plugin) => plugin,
-                    None => {
-                        debug_assert!(false, "missing plugin snapshot for id={id}");
-                        return Vec::new();
-                    }
+                let Some(plugin) = snapshot_plugin(snapshot, id) else {
+                    return Vec::new();
                 };
                 let (kind, accent, label, message) = plugin_outcome_message(&plugin.label, outcome);
                 vec![DisplayLine { kind, accent, label: label.to_string(), message }]
             }
             SnapshotUpdate::PluginFailed { id, summary, .. } => {
-                let plugin = match snapshot.plugin(id) {
-                    Some(plugin) => plugin,
-                    None => {
-                        debug_assert!(false, "missing plugin snapshot for id={id}");
-                        return Vec::new();
-                    }
+                let Some(plugin) = snapshot_plugin(snapshot, id) else {
+                    return Vec::new();
                 };
                 vec![DisplayLine {
                     kind: LineKind::Failure,
@@ -124,6 +112,16 @@ impl TranscriptRenderer {
                     message: format!("{} {}", plugin.label, summary),
                 }]
             }
+        }
+    }
+}
+
+fn snapshot_plugin<'a>(snapshot: &'a ProgressSnapshot, id: &str) -> Option<&'a PluginSnapshot> {
+    match snapshot.plugin(id) {
+        Some(plugin) => Some(plugin),
+        None => {
+            debug_assert!(false, "missing plugin snapshot for id={id}");
+            None
         }
     }
 }

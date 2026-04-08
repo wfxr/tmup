@@ -304,6 +304,41 @@ async fn restore_failure_reports_stage_and_context_metadata() {
 }
 
 #[tokio::test]
+async fn restore_prepare_checkout_failure_reports_stage_metadata() {
+    let dir = tempdir().unwrap();
+    let (bare, _commit) = make_bare_repo(&dir.path().join("repo"));
+
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let clone_url = format!("file://{}", bare.display());
+    let cfg = make_config(&clone_url, None);
+
+    let mut lock = LockFile::new();
+    lock.plugins.insert(
+        "example.com/test/plugin".into(),
+        LockEntry {
+            tracking: TrackingRecord { kind: "branch".into(), value: "main".into() },
+            // Deliberately missing from the remote/cache so checkout fails after fetch.
+            commit: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".into(),
+            config_hash: None,
+        },
+    );
+
+    let reporter = CaptureFailures::default();
+    let result = plugin::restore(&cfg, &lock, &paths, None, &reporter).await;
+    assert!(result.is_err());
+
+    let events = reporter.take();
+    assert_eq!(events.len(), 1, "expected exactly one failure event");
+    assert!(matches!(events[0].stage, Some(PluginStage::CheckingOut)));
+    assert!(events[0].context_keys.contains(&"clone_url".to_string()));
+    assert!(events[0].context_keys.contains(&"tracking".to_string()));
+    assert!(events[0].context_keys.contains(&"target_dir".to_string()));
+    assert!(events[0].context_keys.contains(&"locked_commit".to_string()));
+}
+
+#[tokio::test]
 async fn install_build_failure_leaves_no_target_or_lock_entry() {
     let dir = tempdir().unwrap();
     let (bare, _commit) = make_bare_repo(&dir.path().join("repo"));
