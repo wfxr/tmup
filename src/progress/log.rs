@@ -3,6 +3,26 @@ use std::path::{Path, PathBuf};
 
 use crate::progress::PluginStage;
 
+/// Shared progress-output I/O diagnostic action taxonomy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ProgressIoAction {
+    HideCursor,
+    RowUpdate,
+    ShowCursor,
+    Flush,
+}
+
+impl ProgressIoAction {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::HideCursor => "hide_cursor",
+            Self::RowUpdate => "row_update",
+            Self::ShowCursor => "show_cursor",
+            Self::Flush => "flush",
+        }
+    }
+}
+
 /// Lazily-created failure detail log shared by reporter implementations.
 pub(crate) struct DetailLog {
     logs_root: PathBuf,
@@ -60,6 +80,12 @@ impl DetailLog {
     /// Record one operation-level failure section.
     pub(crate) fn record_operation_failure(&mut self, summary: &str, detail: &str) {
         self.write("operation", summary, detail, &[]);
+    }
+
+    /// Record one internal progress-output I/O diagnostic section.
+    pub(crate) fn record_progress_io_diagnostic(&mut self, action: ProgressIoAction, detail: &str) {
+        let section = format!("progress io action={}", action.as_str());
+        self.write(&section, "terminal output write failure", detail, &[]);
     }
 
     fn write(&mut self, section: &str, summary: &str, detail: &str, context: &[(&str, &str)]) {

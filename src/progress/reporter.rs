@@ -1,10 +1,11 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 use crate::progress::catalog::DisplayCatalog;
 use crate::progress::live::LiveRenderer;
-use crate::progress::log::DetailLog;
+use crate::progress::log::{DetailLog, ProgressIoAction};
 use crate::progress::reducer::{self, ProgressSnapshot, SnapshotUpdate};
 use crate::progress::render::{DisplayLine, TranscriptRenderer};
 use crate::progress::{ACTION_WIDTH, ProgressEvent, ProgressReporter};
@@ -12,17 +13,18 @@ use crate::termui::{self, Accent};
 
 struct TranscriptSink<W: Write> {
     writer: W,
+    io_failures: BTreeMap<ProgressIoAction, String>,
 }
 
 impl<W: Write> TranscriptSink<W> {
     fn new(writer: W) -> Self {
-        Self { writer }
+        Self { writer, io_failures: BTreeMap::new() }
     }
 
     fn write_lines(&mut self, lines: Vec<DisplayLine>) {
         for line in lines {
             let rendered = line.styled(ACTION_WIDTH);
-            let _ = writeln!(self.writer, "{rendered}");
+            self.try_writeln(ProgressIoAction::RowUpdate, &rendered);
         }
     }
 
@@ -33,7 +35,7 @@ impl<W: Write> TranscriptSink<W> {
             &format!("operation {summary}"),
             Accent::Error,
         );
-        let _ = writeln!(self.writer, "{rendered}");
+        self.try_writeln(ProgressIoAction::RowUpdate, &rendered);
     }
 
     fn write_init_finished(&mut self) {
@@ -43,7 +45,7 @@ impl<W: Write> TranscriptSink<W> {
             "tmup init",
             Accent::Success,
         );
-        let _ = writeln!(self.writer, "{rendered}");
+        self.try_writeln(ProgressIoAction::RowUpdate, &rendered);
     }
 
     fn write_details_path(&mut self, path: &Path) {
@@ -53,13 +55,23 @@ impl<W: Write> TranscriptSink<W> {
             &path.display().to_string(),
             Accent::Muted,
         );
-        let _ = writeln!(self.writer, "{rendered}");
+        self.try_writeln(ProgressIoAction::RowUpdate, &rendered);
     }
 
     fn write_warning(&mut self, warning: &str) {
         let rendered =
             termui::format_styled_labeled_line("Warning", ACTION_WIDTH, warning, Accent::Warning);
-        let _ = writeln!(self.writer, "{rendered}");
+        self.try_writeln(ProgressIoAction::RowUpdate, &rendered);
+    }
+
+    fn try_writeln(&mut self, action: ProgressIoAction, rendered: &str) {
+        if let Err(err) = writeln!(self.writer, "{rendered}") {
+            self.io_failures.entry(action).or_insert_with(|| err.to_string());
+        }
+    }
+
+    fn take_io_diagnostics(&mut self) -> Vec<(ProgressIoAction, String)> {
+        std::mem::take(&mut self.io_failures).into_iter().collect()
     }
 }
 
@@ -68,25 +80,19 @@ enum ReporterSink<W: Write> {
     Live(LiveRenderer<W>),
 }
 
-enum SinkMode {
-    Transcript,
-    Live,
-}
-
 struct ReporterState<W: Write> {
     sink: ReporterSink<W>,
     renderer: TranscriptRenderer,
     log: DetailLog,
     snapshot: ProgressSnapshot,
-    catalog: DisplayCatalog,
+    recorded_io_actions: BTreeSet<ProgressIoAction>,
     deferred_warnings: Vec<String>,
     finished: bool,
 }
 
 impl<W: Write> ReporterState<W> {
     fn ensure_plugin_slot(&mut self, id: &str, name: &str) {
-        let label = self.catalog.label_for(id, name).to_string();
-        self.snapshot.ensure_plugin(id, &label);
+        self.snapshot.ensure_plugin(id, name);
     }
 
     fn apply_snapshot_update(&mut self, snapshot_update: SnapshotUpdate) {
@@ -115,6 +121,7 @@ impl<W: Write> ReporterState<W> {
             return;
         }
         self.finished = true;
+        self.drain_sink_io_diagnostics();
 
         let details_path = self.log.has_details().then(|| self.log.path().to_path_buf());
         let snapshot = &self.snapshot;
@@ -136,6 +143,130 @@ impl<W: Write> ReporterState<W> {
                 renderer.finish(snapshot, command, success, details_path.as_deref(), warnings)
             }
         }
+
+        self.drain_sink_io_diagnostics();
+    }
+
+    fn drain_sink_io_diagnostics(&mut self) {
+        let diagnostics = match &mut self.sink {
+            ReporterSink::Transcript(sink) => sink.take_io_diagnostics(),
+            ReporterSink::Live(renderer) => renderer.take_io_diagnostics(),
+        };
+        for (action, detail) in diagnostics {
+            if self.recorded_io_actions.insert(action) {
+                self.log.record_progress_io_diagnostic(action, &detail);
+            }
+        }
+        if let Some(warning) = self.log.take_warning() {
+            self.deferred_warnings.push(warning);
+        }
+    }
+}
+
+/// Private normalized event form used by the runtime reporter.
+///
+/// Public progress events borrow caller-owned data. The reporter converts them
+/// once at the boundary into owned values and sanitized failure summaries, so
+/// reducer/log/sink consumers share the same normalized payload.
+enum NormalizedEvent {
+    OperationStart,
+    OperationStage {
+        stage: crate::progress::OperationStage,
+    },
+    PluginStage {
+        id: String,
+        name: String,
+        stage: crate::progress::PluginStage,
+        detail: Option<crate::progress::PluginStageDetail>,
+    },
+    PluginFinished {
+        id: String,
+        name: String,
+        outcome: crate::progress::PluginOutcome,
+    },
+    PluginFailed {
+        id: String,
+        name: String,
+        stage: Option<crate::progress::PluginStage>,
+        summary: String,
+        detail: String,
+        context: Vec<(&'static str, String)>,
+    },
+    OperationFailed {
+        summary: String,
+        detail: String,
+    },
+    OperationEnd {
+        command: &'static str,
+        success: bool,
+    },
+}
+
+impl NormalizedEvent {
+    fn from_public(event: ProgressEvent<'_>) -> Self {
+        match event {
+            ProgressEvent::OperationStart { .. } => Self::OperationStart,
+            ProgressEvent::OperationStage { stage } => Self::OperationStage { stage },
+            ProgressEvent::PluginStage { id, name, stage, detail } => {
+                Self::PluginStage { id: id.to_string(), name: name.to_string(), stage, detail }
+            }
+            ProgressEvent::PluginFinished { id, name, outcome } => {
+                Self::PluginFinished { id: id.to_string(), name: name.to_string(), outcome }
+            }
+            ProgressEvent::PluginFailed { id, name, stage, summary, detail, context } => {
+                Self::PluginFailed {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    stage,
+                    summary: super::sanitize_summary(&summary, super::SUMMARY_MAX_LEN),
+                    detail,
+                    context,
+                }
+            }
+            ProgressEvent::OperationFailed { summary, detail } => Self::OperationFailed {
+                summary: super::sanitize_summary(&summary, super::SUMMARY_MAX_LEN),
+                detail,
+            },
+            ProgressEvent::OperationEnd { command, success } => {
+                Self::OperationEnd { command, success }
+            }
+        }
+    }
+
+    fn plugin_identity(&self) -> Option<(&str, &str)> {
+        match self {
+            Self::PluginStage { id, name, .. }
+            | Self::PluginFinished { id, name, .. }
+            | Self::PluginFailed { id, name, .. } => Some((id.as_str(), name.as_str())),
+            _ => None,
+        }
+    }
+
+    fn snapshot_update(&self) -> Option<SnapshotUpdate> {
+        match self {
+            Self::OperationStart | Self::OperationEnd { .. } => None,
+            Self::OperationStage { stage } => {
+                Some(SnapshotUpdate::OperationStageChanged { stage: *stage })
+            }
+            Self::OperationFailed { summary, .. } => {
+                Some(SnapshotUpdate::OperationFailed { summary: summary.clone() })
+            }
+            Self::PluginStage { id, stage, detail, .. } => {
+                Some(SnapshotUpdate::PluginStageChanged {
+                    id: id.clone(),
+                    stage: *stage,
+                    detail: detail.clone(),
+                })
+            }
+            Self::PluginFinished { id, outcome, .. } => {
+                Some(SnapshotUpdate::PluginFinished { id: id.clone(), outcome: outcome.clone() })
+            }
+            Self::PluginFailed { id, stage, summary, .. } => Some(SnapshotUpdate::PluginFailed {
+                id: id.clone(),
+                stage: *stage,
+                summary: summary.clone(),
+            }),
+        }
     }
 }
 
@@ -152,7 +283,7 @@ impl ReducerReporter<anstream::AutoStream<std::io::Stderr>> {
 
     /// Create a reducer-driven reporter with the live TTY sink.
     pub(crate) fn new_live(logs_root: &Path, command: &str, catalog: DisplayCatalog) -> Self {
-        Self::new_with_mode(logs_root, command, catalog, anstream::stderr(), SinkMode::Live)
+        Self::new_with_live_writer(logs_root, command, catalog, anstream::stderr())
     }
 }
 
@@ -167,128 +298,94 @@ impl<W: Write + Send> ReducerReporter<W> {
         catalog: DisplayCatalog,
         writer: W,
     ) -> Self {
-        Self::new_with_mode(logs_root, command, catalog, writer, SinkMode::Transcript)
+        Self::new_with_sink(
+            logs_root,
+            command,
+            catalog,
+            ReporterSink::Transcript(TranscriptSink::new(writer)),
+        )
     }
 
-    fn new_with_mode(
+    fn new_with_live_writer(
         logs_root: &Path,
         command: &str,
         catalog: DisplayCatalog,
         writer: W,
-        mode: SinkMode,
+    ) -> Self {
+        Self::new_with_sink(
+            logs_root,
+            command,
+            catalog,
+            ReporterSink::Live(LiveRenderer::new(writer)),
+        )
+    }
+
+    fn new_with_sink(
+        logs_root: &Path,
+        command: &str,
+        catalog: DisplayCatalog,
+        sink: ReporterSink<W>,
     ) -> Self {
         let snapshot = snapshot_from_catalog(&catalog);
-        let sink = match mode {
-            SinkMode::Transcript => ReporterSink::Transcript(TranscriptSink::new(writer)),
-            SinkMode::Live => ReporterSink::Live(LiveRenderer::new(writer)),
-        };
         Self {
             state: Mutex::new(ReporterState {
                 sink,
                 renderer: TranscriptRenderer::new(),
                 log: DetailLog::new(logs_root, command),
                 snapshot,
-                catalog,
+                recorded_io_actions: BTreeSet::new(),
                 deferred_warnings: Vec::new(),
                 finished: false,
             }),
-        }
-    }
-
-    fn finish(inner: &mut ReporterState<W>, command: Option<&'static str>, success: bool) {
-        inner.finish(command, success);
-    }
-
-    /// Convert public borrowed progress events into an owned reducer event so the
-    /// reducer can update snapshot state without borrowing the caller's payloads.
-    /// `OperationStart` / `OperationEnd` stay in the public API for external
-    /// reporters, but the reducer itself only needs state transitions and
-    /// plugin-terminal events.
-    fn to_snapshot_update(event: &ProgressEvent<'_>) -> Option<SnapshotUpdate> {
-        match event {
-            ProgressEvent::OperationStart { .. } | ProgressEvent::OperationEnd { .. } => None,
-            ProgressEvent::OperationStage { stage } => {
-                Some(SnapshotUpdate::OperationStageChanged { stage: *stage })
-            }
-            ProgressEvent::OperationFailed { summary, .. } => {
-                Some(SnapshotUpdate::OperationFailed {
-                    summary: super::sanitize_summary(summary, super::SUMMARY_MAX_LEN),
-                })
-            }
-            ProgressEvent::PluginStage { id, stage, detail, .. } => {
-                Some(SnapshotUpdate::PluginStageChanged {
-                    id: id.to_string(),
-                    stage: *stage,
-                    detail: detail.clone(),
-                })
-            }
-            ProgressEvent::PluginFinished { id, outcome, .. } => {
-                Some(SnapshotUpdate::PluginFinished {
-                    id: id.to_string(),
-                    outcome: outcome.clone(),
-                })
-            }
-            ProgressEvent::PluginFailed { id, stage, summary, .. } => {
-                Some(SnapshotUpdate::PluginFailed {
-                    id: id.to_string(),
-                    stage: *stage,
-                    summary: super::sanitize_summary(summary, super::SUMMARY_MAX_LEN),
-                })
-            }
         }
     }
 }
 
 impl<W: Write + Send> ProgressReporter for ReducerReporter<W> {
     fn report(&self, event: ProgressEvent<'_>) {
+        let event = NormalizedEvent::from_public(event);
         let mut inner = self.lock_state();
         if inner.finished {
             return;
         }
 
-        match &event {
-            ProgressEvent::PluginStage { id, name, .. }
-            | ProgressEvent::PluginFinished { id, name, .. }
-            | ProgressEvent::PluginFailed { id, name, .. } => {
-                inner.ensure_plugin_slot(id, name);
-            }
-            _ => {}
+        if let Some((id, name)) = event.plugin_identity() {
+            inner.ensure_plugin_slot(id, name);
         }
 
-        if let Some(snapshot_update) = Self::to_snapshot_update(&event) {
+        if let Some(snapshot_update) = event.snapshot_update() {
             inner.apply_snapshot_update(snapshot_update);
         }
 
-        match &event {
-            ProgressEvent::PluginFailed { id, name, stage, summary, detail, context } => {
-                let summary = super::sanitize_summary(summary, super::SUMMARY_MAX_LEN);
+        match event {
+            NormalizedEvent::PluginFailed { id, name, stage, summary, detail, context } => {
                 let context: Vec<(&str, &str)> =
                     context.iter().map(|(k, v)| (*k, v.as_str())).collect();
-                inner.log.record_plugin_failure(id, name, *stage, &summary, detail, &context);
+                inner.log.record_plugin_failure(&id, &name, stage, &summary, &detail, &context);
                 if let Some(warning) = inner.log.take_warning() {
                     inner.deferred_warnings.push(warning);
                 }
             }
-            ProgressEvent::OperationFailed { summary, detail } => {
-                let summary = super::sanitize_summary(summary, super::SUMMARY_MAX_LEN);
-                inner.log.record_operation_failure(&summary, detail);
+            NormalizedEvent::OperationFailed { summary, detail } => {
+                inner.log.record_operation_failure(&summary, &detail);
                 if let Some(warning) = inner.log.take_warning() {
                     inner.deferred_warnings.push(warning);
                 }
                 inner.write_operation_failure(&summary);
             }
-            ProgressEvent::OperationEnd { command, success } => {
-                Self::finish(&mut inner, Some(command), *success);
+            NormalizedEvent::OperationEnd { command, success } => {
+                inner.finish(Some(command), success);
             }
             _ => {}
         }
+        inner.drain_sink_io_diagnostics();
     }
 }
 
 impl<W: Write + Send> Drop for ReducerReporter<W> {
     fn drop(&mut self) {
         if let Ok(mut inner) = self.state.lock() {
-            Self::finish(&mut inner, None, false);
+            inner.finish(None, false);
         }
     }
 }
@@ -325,7 +422,7 @@ impl ReducerReporter<Vec<u8>> {
         catalog: DisplayCatalog,
         writer: Vec<u8>,
     ) -> Self {
-        Self::new_with_mode(logs_root, command, catalog, writer, SinkMode::Live)
+        Self::new_with_live_writer(logs_root, command, catalog, writer)
     }
 
     fn snapshot_and_live_output_for_tests(&self) -> (ProgressSnapshot, String) {
@@ -340,12 +437,15 @@ impl ReducerReporter<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{self, Write};
+
     use super::ReducerReporter;
     use crate::model::{Config, Options, PluginSource, PluginSpec, Tracking};
     use crate::progress::catalog::DisplayCatalog;
-    use crate::progress::model::PluginStageDetail;
     use crate::progress::reducer::OperationTerminalState;
-    use crate::progress::{OperationStage, PluginStage, ProgressEvent, ProgressReporter};
+    use crate::progress::{
+        OperationStage, PluginStage, PluginStageDetail, ProgressEvent, ProgressReporter,
+    };
 
     fn remote_plugin(raw: &str, id: &str, name: &str) -> PluginSpec {
         PluginSpec {
@@ -359,6 +459,19 @@ mod tests {
             tracking: Tracking::DefaultBranch,
             build: None,
             opts: Vec::new(),
+        }
+    }
+
+    #[derive(Default)]
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other("simulated transcript sink failure"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::other("simulated transcript sink flush failure"))
         }
     }
 
@@ -569,6 +682,37 @@ mod tests {
             output.contains("Warning failed to write detail log"),
             "output should surface detail-log write failures:\n{output}"
         );
+    }
+
+    #[test]
+    fn reporter_logs_terminal_io_diagnostics_without_failing_operation() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config {
+            options: Options::default(),
+            plugins: vec![remote_plugin(
+                "tmux-plugins/tmux-sensible",
+                "github.com/tmux-plugins/tmux-sensible",
+                "tmux-sensible",
+            )],
+        };
+        let catalog = DisplayCatalog::from_config(&config, None);
+        let reporter =
+            ReducerReporter::new_with_writer(dir.path(), "update", catalog, FailingWriter);
+
+        reporter.report(ProgressEvent::OperationStart { command: "update" });
+        reporter.report(ProgressEvent::OperationStage { stage: OperationStage::WaitingForLock });
+        reporter.report(ProgressEvent::OperationEnd { command: "update", success: true });
+        drop(reporter);
+
+        let log_file = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .find(|entry| entry.path().extension().is_some_and(|ext| ext == "log"))
+            .expect("expected detail log with terminal I/O diagnostics");
+        let log = std::fs::read_to_string(log_file.path()).unwrap();
+
+        assert!(log.contains("== progress io action=row_update =="), "log: {log}");
+        assert!(log.contains("terminal output write failure"), "log: {log}");
     }
 
     #[test]

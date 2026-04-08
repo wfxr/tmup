@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::progress::model::{OperationStage, PluginOutcome, PluginStage, PluginStageDetail};
+use crate::progress::{OperationStage, PluginOutcome, PluginStage, PluginStageDetail};
 
 /// Narrowed snapshot updates derived from public progress events.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,8 +68,6 @@ pub(crate) struct PluginSnapshot {
     pub(crate) id: String,
     /// Display label.
     pub(crate) label: String,
-    /// Stable display slot.
-    pub(crate) slot: usize,
     /// Current display state.
     pub(crate) state: PluginDisplayState,
 }
@@ -102,35 +100,35 @@ pub(crate) enum PluginDisplayState {
 pub(crate) struct ProgressSnapshot {
     /// Current operation state.
     pub(crate) operation: OperationSnapshot,
-    /// Stable plugin snapshots in slot order.
+    /// Stable plugin snapshots in display order.
     pub(crate) plugins: Vec<PluginSnapshot>,
     plugin_index: HashMap<String, usize>,
 }
 
 impl ProgressSnapshot {
-    /// Construct a snapshot with fixed plugin slots from ordered `(id, label)` pairs.
+    /// Construct a snapshot from ordered `(id, label)` pairs.
+    ///
+    /// The order determines stable display row assignment at runtime.
     pub(crate) fn from_ordered_plugins(plugins: Vec<(String, String)>) -> Self {
         let mut entries = Vec::with_capacity(plugins.len());
         let mut plugin_index = HashMap::with_capacity(plugins.len());
-        for (slot, (id, label)) in plugins.into_iter().enumerate() {
-            plugin_index.insert(id.clone(), slot);
-            entries.push(PluginSnapshot { id, label, slot, state: PluginDisplayState::Pending });
+        for (id, label) in plugins {
+            plugin_index.insert(id.clone(), entries.len());
+            entries.push(PluginSnapshot { id, label, state: PluginDisplayState::Pending });
         }
         Self { operation: OperationSnapshot::default(), plugins: entries, plugin_index }
     }
 
-    /// Ensure a plugin slot exists for `id`, adding a pending entry if absent.
+    /// Ensure a plugin entry exists for `id`, adding a pending entry if absent.
     pub(crate) fn ensure_plugin(&mut self, id: &str, label: &str) {
         if self.plugin_index.contains_key(id) {
             return;
         }
-        let slot = self.plugins.len();
         let id = id.to_string();
-        self.plugin_index.insert(id.clone(), slot);
+        self.plugin_index.insert(id.clone(), self.plugins.len());
         self.plugins.push(PluginSnapshot {
             id,
             label: label.to_string(),
-            slot,
             state: PluginDisplayState::Pending,
         });
     }
@@ -140,18 +138,24 @@ impl ProgressSnapshot {
         self.plugin_index.get(id).and_then(|idx| self.plugins.get(*idx))
     }
 
-    /// Construct a snapshot with fixed plugin slots for reducer tests.
+    /// Return live-frame row index for `id` (`0` is operation row).
+    pub(crate) fn plugin_row(&self, id: &str) -> Option<usize> {
+        self.plugin_index.get(id).map(|idx| idx + 1)
+    }
+
+    /// Construct a snapshot with deterministic display order for reducer tests.
+    ///
+    /// The third tuple field is ignored and kept only to avoid broad test-call-site churn.
     #[cfg(test)]
     pub(crate) fn new_for_tests<const N: usize>(plugins: [(&str, &str, usize); N]) -> Self {
         let mut entries = Vec::with_capacity(plugins.len());
         let mut index = HashMap::with_capacity(plugins.len());
-        for (id, label, slot) in plugins {
+        for (id, label, _ignored_order) in plugins {
             let id = id.to_string();
             index.insert(id.clone(), entries.len());
             entries.push(PluginSnapshot {
                 id,
                 label: label.to_string(),
-                slot,
                 state: PluginDisplayState::Pending,
             });
         }
@@ -225,12 +229,12 @@ pub(crate) fn apply_event(snapshot: &mut ProgressSnapshot, event: &SnapshotUpdat
 #[cfg(test)]
 mod tests {
     use super::{ProgressSnapshot, SnapshotUpdate, apply_event};
-    use crate::progress::model::{
+    use crate::progress::{
         OperationStage, PluginOutcome, PluginStage, PluginStageDetail, SkipReason,
     };
 
     #[test]
-    fn reducer_preserves_finished_plugin_slot() {
+    fn reducer_preserves_finished_plugin_order() {
         let mut snapshot = ProgressSnapshot::new_for_tests([("github.com/acme/a", "plugin-a", 0)]);
 
         apply_event(
@@ -290,7 +294,6 @@ mod tests {
                 },
             },
         );
-        assert_eq!(snapshot.plugins[0].slot, 0);
         assert!(matches!(
             snapshot.plugins[0].state,
             super::PluginDisplayState::Finished(PluginOutcome::Skipped { .. })
@@ -304,7 +307,6 @@ mod tests {
                 summary: "build failed".to_string(),
             },
         );
-        assert_eq!(snapshot.plugins[0].slot, 0);
         assert!(matches!(
             snapshot.plugins[0].state,
             super::PluginDisplayState::Finished(PluginOutcome::Skipped { .. })
@@ -350,8 +352,8 @@ mod tests {
             snapshot.plugins[1].state,
             super::PluginDisplayState::Finished(PluginOutcome::Installed { .. })
         ));
-        assert_eq!(snapshot.plugins[0].slot, 0);
-        assert_eq!(snapshot.plugins[1].slot, 1);
+        assert_eq!(snapshot.plugin_row("github.com/acme/a"), Some(1));
+        assert_eq!(snapshot.plugin_row("github.com/acme/b"), Some(2));
     }
 
     #[test]

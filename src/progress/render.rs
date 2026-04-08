@@ -1,8 +1,6 @@
-use crate::progress::model::{
-    OperationStage, PluginOutcome, PluginStage, PluginStageDetail, SkipReason, TrackingResolution,
-    TrackingSelector,
-};
+use crate::progress::model::{TrackingResolution, TrackingSelector};
 use crate::progress::reducer::{ProgressSnapshot, SnapshotUpdate};
+use crate::progress::{OperationStage, PluginOutcome, PluginStage, PluginStageDetail, SkipReason};
 use crate::termui::{self, Accent};
 
 #[cfg(test)]
@@ -189,6 +187,9 @@ fn tracking_detail_text(
     commit: &str,
 ) -> String {
     match (selector, resolved) {
+        (_, TrackingResolution::Unknown { kind, value }) => {
+            unknown_tracking_detail_text(selector, kind, value, commit)
+        }
         (TrackingSelector::DefaultBranch, TrackingResolution::DefaultBranch { branch })
         | (TrackingSelector::DefaultBranch, TrackingResolution::Branch { branch }) => {
             format!("default-branch -> branch@{branch} -> commit@{commit}")
@@ -206,9 +207,19 @@ fn tracking_detail_text(
                 }
                 TrackingResolution::Tag { tag } => format!("tag@{tag} -> commit@{commit}"),
                 TrackingResolution::Commit { commit } => format!("commit@{commit}"),
+                TrackingResolution::Unknown { .. } => unreachable!("handled above"),
             }
         ),
     }
+}
+
+fn unknown_tracking_detail_text(
+    selector: &TrackingSelector,
+    kind: &str,
+    value: &str,
+    commit: &str,
+) -> String {
+    format!("{} -> {}@{} -> commit@{}", tracking_selector_text(selector), kind, value, commit)
 }
 
 fn plugin_outcome_message(
@@ -269,13 +280,12 @@ fn title_case(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{LineKind, TranscriptRenderer};
-    use crate::progress::ProgressEvent;
-    use crate::progress::model::{
-        OperationStage, PluginOutcome, PluginStage, PluginStageDetail, SkipReason,
-        TrackingResolution, TrackingSelector,
-    };
+    use crate::progress::model::{TrackingResolution, TrackingSelector};
     use crate::progress::reducer::{
         PluginDisplayState, ProgressSnapshot, SnapshotUpdate, apply_event,
+    };
+    use crate::progress::{
+        OperationStage, PluginOutcome, PluginStage, PluginStageDetail, ProgressEvent, SkipReason,
     };
 
     #[test]
@@ -633,5 +643,37 @@ mod tests {
             assert_eq!(lines[0].label, "Skipped");
             assert_eq!(lines[0].message, expected);
         }
+    }
+
+    #[test]
+    fn transcript_renderer_preserves_unknown_tracking_kind_in_resolving_output() {
+        let mut snapshot = ProgressSnapshot::new_for_tests([(
+            "github.com/tmux-plugins/tmux-sensible",
+            "tmux-sensible",
+            0,
+        )]);
+        let renderer = TranscriptRenderer::new();
+
+        let event = SnapshotUpdate::PluginStageChanged {
+            id: "github.com/tmux-plugins/tmux-sensible".to_string(),
+            stage: PluginStage::Resolving,
+            detail: Some(PluginStageDetail::TrackingResolution {
+                selector: TrackingSelector::DefaultBranch,
+                resolved: TrackingResolution::Unknown {
+                    kind: "unexpected-kind".to_string(),
+                    value: "mainline".to_string(),
+                },
+                commit: "8c1eeec".to_string(),
+            }),
+        };
+
+        apply_event(&mut snapshot, &event);
+        assert_eq!(
+            renderer.render_event(&snapshot, &event),
+            vec![
+                "   Resolving tmux-sensible default-branch -> unexpected-kind@mainline -> commit@8c1eeec"
+                    .to_string()
+            ]
+        );
     }
 }

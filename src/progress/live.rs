@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 
@@ -6,6 +7,7 @@ use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{QueueableCommand, cursor};
 
 use crate::progress::ACTION_WIDTH;
+use crate::progress::log::ProgressIoAction;
 use crate::progress::reducer::{ProgressSnapshot, SnapshotUpdate};
 use crate::progress::render::DisplayLine;
 use crate::termui::{self, Accent};
@@ -16,6 +18,7 @@ const DEFAULT_TERMINAL_WIDTH: usize = 120;
 pub(crate) struct LiveRenderer<W: Write> {
     writer: W,
     frame_lines: Vec<String>,
+    io_failures: BTreeMap<ProgressIoAction, String>,
     terminal_width: usize,
     initialized: bool,
     frozen: bool,
@@ -33,42 +36,45 @@ impl<W: Write> LiveRenderer<W> {
         Self {
             writer,
             frame_lines: Vec::new(),
+            io_failures: BTreeMap::new(),
             terminal_width: terminal_width.max(1),
             initialized: false,
             frozen: false,
         }
     }
 
-    /// Reserve one operation row plus one row for each plugin slot.
+    /// Reserve one operation row plus one row for each plugin entry.
     pub(crate) fn bootstrap(&mut self, snapshot: &ProgressSnapshot) {
         if self.frozen {
             return;
         }
         if !self.initialized {
             self.frame_lines = self.placeholder_frame(snapshot);
-            let _ = self.writer.queue(cursor::Hide);
-            for line in &self.frame_lines {
-                let _ = writeln!(self.writer, "{line}");
+            if let Err(err) = self.writer.queue(cursor::Hide) {
+                self.record_io_failure(ProgressIoAction::HideCursor, &err);
             }
-            let _ = self.writer.flush();
+            let initial_rows = self.frame_lines.clone();
+            for line in initial_rows {
+                self.try_writeln(ProgressIoAction::RowUpdate, &line);
+            }
+            self.try_flush();
             self.initialized = true;
             return;
         }
 
         let required_rows = 1 + snapshot.plugins.len();
         while self.frame_lines.len() < required_rows {
-            let slot = self.frame_lines.len() - 1;
+            let plugin_idx = self.frame_lines.len() - 1;
             let label = snapshot
                 .plugins
-                .iter()
-                .find(|plugin| plugin.slot == slot)
+                .get(plugin_idx)
                 .map(|plugin| plugin.label.as_str())
                 .unwrap_or("plugin");
             let line = self.placeholder_plugin_line(label);
             self.frame_lines.push(line.clone());
-            let _ = writeln!(self.writer, "{line}");
+            self.try_writeln(ProgressIoAction::RowUpdate, &line);
         }
-        let _ = self.writer.flush();
+        self.try_flush();
     }
 
     /// Update the live frame for one reducer event.
@@ -147,7 +153,7 @@ impl<W: Write> LiveRenderer<W> {
                 Accent::Muted,
                 self.render_width(),
             );
-            let _ = writeln!(self.writer, "{details_line}");
+            self.try_writeln(ProgressIoAction::RowUpdate, &details_line);
         }
         for warning in warnings {
             let warning_line = termui::format_styled_labeled_line_clamped(
@@ -157,22 +163,21 @@ impl<W: Write> LiveRenderer<W> {
                 Accent::Warning,
                 self.render_width(),
             );
-            let _ = writeln!(self.writer, "{warning_line}");
+            self.try_writeln(ProgressIoAction::RowUpdate, &warning_line);
         }
 
-        let _ = self.writer.queue(cursor::Show);
-        let _ = self.writer.flush();
+        if let Err(err) = self.writer.queue(cursor::Show) {
+            self.record_io_failure(ProgressIoAction::ShowCursor, &err);
+        }
+        self.try_flush();
         self.frozen = true;
     }
 
     fn placeholder_frame(&self, snapshot: &ProgressSnapshot) -> Vec<String> {
-        let mut rows = vec![self.placeholder_operation_line(); 1 + snapshot.plugins.len()];
+        let mut rows = Vec::with_capacity(1 + snapshot.plugins.len());
+        rows.push(self.placeholder_operation_line());
         for plugin in &snapshot.plugins {
-            let row = plugin.slot + 1;
-            if row >= rows.len() {
-                rows.resize(row + 1, self.placeholder_operation_line());
-            }
-            rows[row] = self.placeholder_plugin_line(&plugin.label);
+            rows.push(self.placeholder_plugin_line(&plugin.label));
         }
         rows
     }
@@ -211,17 +216,49 @@ impl<W: Write> LiveRenderer<W> {
         }
 
         let up = self.frame_lines.len().saturating_sub(row) as u16;
-        if up > 0 {
-            let _ = self.writer.queue(cursor::MoveUp(up));
+        if up > 0
+            && let Err(err) = self.writer.queue(cursor::MoveUp(up))
+        {
+            self.record_io_failure(ProgressIoAction::RowUpdate, &err);
         }
-        let _ = self.writer.queue(cursor::MoveToColumn(0));
-        let _ = self.writer.queue(Clear(ClearType::CurrentLine));
-        let _ = self.writer.queue(Print(rendered));
-        if up > 0 {
-            let _ = self.writer.queue(cursor::MoveDown(up));
+        if let Err(err) = self.writer.queue(cursor::MoveToColumn(0)) {
+            self.record_io_failure(ProgressIoAction::RowUpdate, &err);
         }
-        let _ = self.writer.queue(cursor::MoveToColumn(0));
-        let _ = self.writer.flush();
+        if let Err(err) = self.writer.queue(Clear(ClearType::CurrentLine)) {
+            self.record_io_failure(ProgressIoAction::RowUpdate, &err);
+        }
+        if let Err(err) = self.writer.queue(Print(rendered)) {
+            self.record_io_failure(ProgressIoAction::RowUpdate, &err);
+        }
+        if up > 0
+            && let Err(err) = self.writer.queue(cursor::MoveDown(up))
+        {
+            self.record_io_failure(ProgressIoAction::RowUpdate, &err);
+        }
+        if let Err(err) = self.writer.queue(cursor::MoveToColumn(0)) {
+            self.record_io_failure(ProgressIoAction::RowUpdate, &err);
+        }
+        self.try_flush();
+    }
+
+    fn record_io_failure(&mut self, action: ProgressIoAction, err: &std::io::Error) {
+        self.io_failures.entry(action).or_insert_with(|| err.to_string());
+    }
+
+    fn try_writeln(&mut self, action: ProgressIoAction, line: &str) {
+        if let Err(err) = writeln!(self.writer, "{line}") {
+            self.record_io_failure(action, &err);
+        }
+    }
+
+    fn try_flush(&mut self) {
+        if let Err(err) = self.writer.flush() {
+            self.record_io_failure(ProgressIoAction::Flush, &err);
+        }
+    }
+
+    pub(crate) fn take_io_diagnostics(&mut self) -> Vec<(ProgressIoAction, String)> {
+        std::mem::take(&mut self.io_failures).into_iter().collect()
     }
 }
 
@@ -232,9 +269,7 @@ fn row_for_event(snapshot: &ProgressSnapshot, event: &SnapshotUpdate) -> Option<
         }
         SnapshotUpdate::PluginStageChanged { id, .. }
         | SnapshotUpdate::PluginFinished { id, .. }
-        | SnapshotUpdate::PluginFailed { id, .. } => {
-            snapshot.plugin(id).map(|plugin| plugin.slot + 1)
-        }
+        | SnapshotUpdate::PluginFailed { id, .. } => snapshot.plugin_row(id),
     }
 }
 
@@ -266,9 +301,9 @@ mod tests {
     use unicode_width::UnicodeWidthStr;
 
     use super::LiveRenderer;
-    use crate::progress::model::{OperationStage, PluginOutcome, PluginStage, PluginStageDetail};
     use crate::progress::reducer::{ProgressSnapshot, SnapshotUpdate, apply_event};
     use crate::progress::render::TranscriptRenderer;
+    use crate::progress::{OperationStage, PluginOutcome, PluginStage, PluginStageDetail};
 
     #[test]
     fn live_renderer_preserves_fixed_plugin_slots() {
@@ -282,8 +317,8 @@ mod tests {
         renderer.bootstrap(&snapshot);
         assert_eq!(renderer.frame_len_for_tests(), 3);
 
-        let plugin_a_row = snapshot.plugin("github.com/acme/a").unwrap().slot + 1;
-        let plugin_b_row = snapshot.plugin("github.com/acme/b").unwrap().slot + 1;
+        let plugin_a_row = snapshot.plugin_row("github.com/acme/a").unwrap();
+        let plugin_b_row = snapshot.plugin_row("github.com/acme/b").unwrap();
 
         let plugin_a_event = SnapshotUpdate::PluginStageChanged {
             id: "github.com/acme/a".to_string(),
@@ -432,7 +467,7 @@ mod tests {
         let lines = transcript.render_lines(&snapshot, &event);
         renderer.write_reducer_lines(&snapshot, &event, lines);
 
-        let row = snapshot.plugin("github.com/acme/a").unwrap().slot + 1;
+        let row = snapshot.plugin_row("github.com/acme/a").unwrap();
         let plain = crate::progress::strip_ansi(renderer.frame_line_for_tests(row).unwrap());
         assert!(UnicodeWidthStr::width(plain.as_str()) <= 12, "plain line: {plain:?}");
     }
@@ -456,7 +491,7 @@ mod tests {
         let lines = transcript.render_lines(&snapshot, &event);
         renderer.write_reducer_lines(&snapshot, &event, lines);
 
-        let row = snapshot.plugin("github.com/acme/a").unwrap().slot + 1;
+        let row = snapshot.plugin_row("github.com/acme/a").unwrap();
         let plain = crate::progress::strip_ansi(renderer.frame_line_for_tests(row).unwrap());
         assert!(
             UnicodeWidthStr::width(plain.as_str()) < 12,
