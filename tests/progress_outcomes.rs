@@ -9,7 +9,7 @@ use tmup::progress::{NullReporter, PluginOutcome, ProgressEvent, ProgressReporte
 use tmup::state::{self, Paths, build_command_hash};
 use tmup::sync::{self, SyncMode, SyncPolicy};
 use tmup::{plugin, short_hash};
-use utils::make_bare_repo;
+use utils::{make_bare_repo, push_commit};
 
 fn make_plugin(id: &str, clone_url: &str, tracking: Tracking, build: Option<&str>) -> PluginSpec {
     PluginSpec {
@@ -378,5 +378,35 @@ async fn init_mode_skips_known_failure_marker() {
     assert!(matches!(
         outcomes.as_slice(),
         [PluginOutcome::Skipped { reason: SkipReason::KnownFailure { commit: c } }] if c == &short_hash(&commit)
+    ));
+}
+
+#[tokio::test]
+async fn update_emits_updated_outcome_with_from_and_to_commits() {
+    let dir = tempdir().unwrap();
+    let (bare, initial_commit) = make_bare_repo(&dir.path().join("repo"));
+    let paths = Paths::for_test(dir.path().join("data"), dir.path().join("state"));
+    paths.ensure_dirs().unwrap();
+
+    let plugin = make_plugin(
+        "example.com/test/plugin",
+        &format!("file://{}", bare.display()),
+        Tracking::DefaultBranch,
+        None,
+    );
+    let cfg = make_config(vec![plugin]);
+    let mut lock = LockFile::new();
+
+    plugin::install(&cfg, &mut lock, &paths, None, false, &NullReporter).await.unwrap();
+    let next_commit = push_commit(&bare, "next");
+
+    let capture = CaptureProgress::default();
+    plugin::update(&cfg, &mut lock, &paths, None, &capture).await.unwrap();
+
+    let outcomes = capture.outcomes_for("example.com/test/plugin");
+    assert!(matches!(
+        outcomes.as_slice(),
+        [PluginOutcome::Updated { from, to }]
+            if from == short_hash(&initial_commit) && to == short_hash(&next_commit)
     ));
 }

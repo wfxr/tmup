@@ -26,6 +26,9 @@ pub(crate) struct LiveRenderer<W: Write> {
 
 impl<W: Write> LiveRenderer<W> {
     /// Create a live renderer using terminal width when available.
+    ///
+    /// Width is sampled once at construction time. tmup operations are typically
+    /// short-lived, so we intentionally avoid resize tracking complexity.
     pub(crate) fn new(writer: W) -> Self {
         let terminal_width =
             terminal::size().map(|(width, _)| width as usize).unwrap_or(DEFAULT_TERMINAL_WIDTH);
@@ -92,6 +95,11 @@ impl<W: Write> LiveRenderer<W> {
         let Some(row) = row_for_event(snapshot, event) else {
             return;
         };
+        debug_assert!(
+            lines.len() <= 1,
+            "live renderer expects at most one line per event; got {}",
+            lines.len()
+        );
         let Some(line) = lines.into_iter().next() else {
             return;
         };
@@ -262,6 +270,21 @@ impl<W: Write> LiveRenderer<W> {
     }
 }
 
+impl<W: Write> Drop for LiveRenderer<W> {
+    fn drop(&mut self) {
+        // Best-effort fallback for panic/poisoned-drop paths where reporter
+        // cleanup may be skipped after the cursor has been hidden.
+        if !self.initialized || self.frozen {
+            return;
+        }
+        if let Err(err) = self.writer.queue(cursor::Show) {
+            self.record_io_failure(ProgressIoAction::ShowCursor, &err);
+        }
+        self.try_flush();
+        self.frozen = true;
+    }
+}
+
 fn row_for_event(snapshot: &ProgressSnapshot, event: &SnapshotUpdate) -> Option<usize> {
     match event {
         SnapshotUpdate::OperationStageChanged { .. } | SnapshotUpdate::OperationFailed { .. } => {
@@ -298,12 +321,40 @@ impl LiveRenderer<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::io;
+    use std::io::Write;
+    use std::rc::Rc;
+
     use unicode_width::UnicodeWidthStr;
 
     use super::LiveRenderer;
     use crate::progress::reducer::{ProgressSnapshot, SnapshotUpdate, apply_event};
-    use crate::progress::render::TranscriptRenderer;
+    use crate::progress::render::{DisplayLine, LineKind, TranscriptRenderer};
     use crate::progress::{OperationStage, PluginOutcome, PluginStage, PluginStageDetail};
+    use crate::termui::Accent;
+
+    #[derive(Clone, Default)]
+    struct SharedWriter {
+        output: Rc<RefCell<Vec<u8>>>,
+    }
+
+    impl SharedWriter {
+        fn new(output: Rc<RefCell<Vec<u8>>>) -> Self {
+            Self { output }
+        }
+    }
+
+    impl Write for SharedWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.output.borrow_mut().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn live_renderer_preserves_fixed_plugin_slots() {
@@ -497,5 +548,51 @@ mod tests {
             UnicodeWidthStr::width(plain.as_str()) < 12,
             "live rows must leave one spare column to avoid terminal autowrap: {plain:?}"
         );
+    }
+
+    #[test]
+    fn live_renderer_drop_restores_cursor_after_bootstrap_without_finish() {
+        let output = Rc::new(RefCell::new(Vec::new()));
+        let snapshot = ProgressSnapshot::from_ordered_plugins(vec![(
+            "github.com/acme/a".to_string(),
+            "plugin-a".to_string(),
+        )]);
+
+        {
+            let mut renderer = LiveRenderer::new_with_width(SharedWriter::new(output.clone()), 120);
+            renderer.bootstrap(&snapshot);
+        }
+
+        let output = String::from_utf8_lossy(output.borrow().as_slice()).to_string();
+        assert!(output.contains("\u{1b}[?25l"), "output: {output:?}");
+        assert!(output.contains("\u{1b}[?25h"), "output: {output:?}");
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "live renderer expects at most one line per event")]
+    fn live_renderer_panics_when_event_renders_multiple_lines() {
+        let snapshot = ProgressSnapshot::from_ordered_plugins(vec![(
+            "github.com/acme/a".to_string(),
+            "plugin-a".to_string(),
+        )]);
+        let mut renderer = LiveRenderer::new_for_tests(Vec::new(), 120);
+        let event = SnapshotUpdate::OperationStageChanged { stage: OperationStage::Syncing };
+        let lines = vec![
+            DisplayLine {
+                kind: LineKind::Stage,
+                accent: Accent::Info,
+                label: "Syncing".to_string(),
+                message: "remote plugins".to_string(),
+            },
+            DisplayLine {
+                kind: LineKind::Stage,
+                accent: Accent::Info,
+                label: "Extra".to_string(),
+                message: "line".to_string(),
+            },
+        ];
+
+        renderer.write_reducer_lines(&snapshot, &event, lines);
     }
 }

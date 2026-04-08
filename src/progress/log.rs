@@ -98,15 +98,10 @@ impl DetailLog {
                 self.record_open_warning(&err);
             }
         }
-        if let Some(ref mut f) = self.file {
-            let _ = writeln!(f, "== {section} ==");
-            let _ = writeln!(f, "summary: {summary}");
-            for (key, value) in context {
-                let _ = writeln!(f, "{key}: {value}");
-            }
-            let _ = writeln!(f);
-            let _ = writeln!(f, "{detail}");
-            let _ = writeln!(f);
+        if let Some(ref mut f) = self.file
+            && let Err(err) = write_section(f, section, summary, detail, context)
+        {
+            self.record_append_warning(&err);
         }
     }
 
@@ -118,6 +113,33 @@ impl DetailLog {
         self.pending_warning =
             Some(format!("failed to write detail log {}: {}", self.log_path.display(), err));
     }
+
+    fn record_append_warning(&mut self, err: &std::io::Error) {
+        if self.warning_emitted {
+            return;
+        }
+        self.warning_emitted = true;
+        self.pending_warning =
+            Some(format!("failed to append detail log {}: {}", self.log_path.display(), err));
+    }
+}
+
+fn write_section(
+    writer: &mut std::fs::File,
+    section: &str,
+    summary: &str,
+    detail: &str,
+    context: &[(&str, &str)],
+) -> std::io::Result<()> {
+    writeln!(writer, "== {section} ==")?;
+    writeln!(writer, "summary: {summary}")?;
+    for (key, value) in context {
+        writeln!(writer, "{key}: {value}")?;
+    }
+    writeln!(writer)?;
+    writeln!(writer, "{detail}")?;
+    writeln!(writer)?;
+    Ok(())
 }
 
 fn log_filename(command: &str) -> String {
@@ -163,5 +185,22 @@ mod tests {
             "log: {content}"
         );
         assert!(content.contains("tracking: default-branch"), "log: {content}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn detail_log_surfaces_warning_when_write_fails_after_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut log = DetailLog::new(dir.path(), "test");
+        let full = std::fs::OpenOptions::new().write(true).open("/dev/full").unwrap();
+        log.file = Some(full);
+
+        log.record_operation_failure("summary", "detail");
+
+        let warning = log.take_warning();
+        assert!(
+            warning.as_deref().is_some_and(|text| text.contains("failed to append detail log")),
+            "warning: {warning:?}"
+        );
     }
 }
