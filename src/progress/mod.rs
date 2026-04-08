@@ -23,6 +23,26 @@ pub use model::{OperationStage, PluginOutcome, PluginStage, PluginStageDetail, S
 pub(crate) const SUMMARY_MAX_LEN: usize = 80;
 pub(crate) const ACTION_WIDTH: usize = 12;
 
+#[cfg(test)]
+pub(crate) mod test_support {
+    use crate::model::{PluginSource, PluginSpec, Tracking};
+
+    pub(crate) fn remote_plugin(raw: &str, id: &str, name: &str) -> PluginSpec {
+        PluginSpec {
+            source: PluginSource::Remote {
+                raw: raw.to_string(),
+                id: id.to_string(),
+                clone_url: format!("https://{id}.git"),
+            },
+            name: name.to_string(),
+            opt_prefix: "@plugin".to_string(),
+            tracking: Tracking::DefaultBranch,
+            build: None,
+            opts: Vec::new(),
+        }
+    }
+}
+
 /// Progress events emitted during command execution.
 pub enum ProgressEvent<'a> {
     /// The named command has started.
@@ -61,7 +81,10 @@ pub enum ProgressEvent<'a> {
         id: &'a str,
         /// Human-readable plugin name.
         name: &'a str,
-        /// The processing stage at which the failure occurred.
+        /// The processing stage at which the failure occurred, when known.
+        ///
+        /// Runtime command paths usually emit `Some(stage)`, but `None` remains
+        /// valid for callers that only have a terminal failure summary.
         stage: Option<PluginStage>,
         /// One-line failure summary suitable for terminal output.
         summary: String,
@@ -161,6 +184,10 @@ pub fn create_reporter(
 }
 
 /// Strip ANSI escape sequences and non-printable control characters.
+///
+/// This helper intentionally handles the sequences that tmup emits/consumes in
+/// progress output (`CSI` and `OSC`) rather than implementing full terminal
+/// control-sequence parsing.
 pub(crate) fn strip_ansi(s: &str) -> String {
     #[derive(Clone, Copy)]
     enum StripState {
@@ -230,7 +257,11 @@ fn sanitize(s: &str) -> String {
     strip_ansi(s).split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Sanitize and truncate to `max_chars`.
+/// Sanitize and truncate to `max_chars` by character count.
+///
+/// This summary budget is character-based (not display-width-based) because the
+/// same summary string is reused in logs and non-terminal contexts. Terminal
+/// renderers clamp display width separately when drawing lines.
 pub(crate) fn sanitize_summary(s: &str, max_chars: usize) -> String {
     let clean = sanitize(s);
     if clean.chars().count() <= max_chars {
@@ -286,6 +317,13 @@ mod tests {
         let result = sanitize_summary(&long, 10);
         assert_eq!(result.chars().count(), 10);
         assert!(result.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn sanitize_summary_uses_character_budget_for_wide_chars() {
+        let result = sanitize_summary("你好世界", 3);
+        assert_eq!(result, "你好…");
+        assert_eq!(result.chars().count(), 3);
     }
 
     #[test]
